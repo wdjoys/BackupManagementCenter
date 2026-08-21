@@ -26,12 +26,27 @@ type CheckTask struct {
 	Repository RepoAccess `json:"repository"`
 }
 
-// ForgetTask drives OPERATION_FORGET.
+// ForgetTask drives OPERATION_FORGET (retention pruning).
 type ForgetTask struct {
 	PlanID     string     `json:"plan_id"`
 	Kind       string     `json:"kind"`
 	Repository RepoAccess `json:"repository"`
 	Retention  Retention  `json:"retention"`
+}
+
+// RestoreTask drives OPERATION_RESTORE and OPERATION_RESTORE_DRY_RUN.
+type RestoreTask struct {
+	Kind       string             `json:"kind"`
+	Repository RepoAccess         `json:"repository"`
+	Filesystem *FilesystemRestore `json:"filesystem,omitempty"`
+	Database   *DatabaseRestore   `json:"database,omitempty"`
+}
+
+// InitTask drives repository bootstrap via OPERATION_FORGET with
+// ResticInit=true: the agent runs `restic init` instead of forget.
+type InitTask struct {
+	Repository RepoAccess `json:"repository"`
+	ResticInit bool       `json:"restic_init"`
 }
 
 // SnapshotsTask drives OPERATION_SNAPSHOTS.
@@ -65,13 +80,6 @@ type DatabaseRestore struct {
 	ReplaceExisting bool   `json:"replace_existing"`
 }
 
-// RestoreTask drives OPERATION_RESTORE and OPERATION_RESTORE_DRY_RUN.
-type RestoreTask struct {
-	Kind       string            `json:"kind"`
-	Repository RepoAccess        `json:"repository"`
-	Filesystem *FilesystemRestore `json:"filesystem,omitempty"`
-	Database   *DatabaseRestore   `json:"database,omitempty"`
-}
 
 // VerifyRemoteTask drives OPERATION_VERIFY_STORAGE_REMOTE: the agent writes
 // the conf to a private temp file and runs rclone listremotes + lsd.

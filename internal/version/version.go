@@ -26,6 +26,26 @@ func Parts() (int, int, int, bool) {
 	return m, n, p, true
 }
 
+// PartsFromString parses major.minor.patch from a version string.
+func PartsFromString(ver string) (int, int, int, bool) {
+	major, rest, ok := cut(ver)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	minor, rest, ok := cut(rest)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	patch, _, _ := cut(rest)
+	m, err1 := strconv.Atoi(major)
+	n, err2 := strconv.Atoi(minor)
+	p, err3 := strconv.Atoi(patch)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return 0, 0, 0, false
+	}
+	return m, n, p, true
+}
+
 func cut(s string) (head, tail string, ok bool) {
 	for i := range s {
 		if s[i] == '.' {

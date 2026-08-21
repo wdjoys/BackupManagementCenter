@@ -1,0 +1,231 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  color: #303133;
+  background-color: #f5f7fa;
+}
+
+#app {
+  height: 100%;
+}
+
+/* Layout */
+.layout-container {
+  display: flex;
+  height: 100vh;
+}
+
+.layout-sidebar {
+  width: 220px;
+  background-color: #1d1e1f;
+  color: #bfcbd9;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.layout-sidebar .logo {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.layout-sidebar .el-menu {
+  border-right: none;
+  background-color: transparent;
+}
+
+.layout-sidebar .el-menu-item {
+  color: #bfcbd9;
+}
+
+.layout-sidebar .el-menu-item:hover {
+  background-color: #2a2b2d;
+}
+
+.layout-sidebar .el-menu-item.is-active {
+  color: #409eff;
+  background-color: #2a2b2d;
+}
+
+.layout-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.layout-header {
+  height: 60px;
+  background-color: #fff;
+  border-bottom: 1px solid #e4e7ed;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 24px;
+  flex-shrink: 0;
+}
+
+.layout-header .user-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.layout-content {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  background-color: #f5f7fa;
+}
+
+/* Card grid */
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.stat-card .stat-label {
+  font-size: 13px;
+  color: #909399;
+  margin-bottom: 8px;
+}
+
+.stat-card .stat-value {
+  font-size: 28px;
+  font-weight: 600;
+  color: #303133;
+}
+
+/* Placeholder */
+.placeholder-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  color: #909399;
+}
+
+.placeholder-page .placeholder-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.placeholder-page h2 {
+  font-size: 20px;
+  margin-bottom: 8px;
+  color: #606266;
+}
+
+/* Auth pages */
+.auth-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background-color: #f5f7fa;
+}
+
+.auth-card {
+  width: 400px;
+  padding: 40px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+.auth-card h1 {
+  text-align: center;
+  margin-bottom: 32px;
+  font-size: 24px;
+  color: #303133;
+}
+
+/* Error state */
+.error-state {
+  text-align: center;
+  padding: 40px;
+  color: #909399;
+}
+
+.error-state .el-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+/* Password strength */
+.password-strength {
+  margin-top: 4px;
+  height: 4px;
+  border-radius: 2px;
+  transition: all 0.3s;
+}
+
+.password-strength.weak {
+  background: #f56c6c;
+  width: 33%;
+}
+
+.password-strength.medium {
+  background: #e6a23c;
+  width: 66%;
+}
+
+.password-strength.strong {
+  background: #67c23a;
+  width: 100%;
+}
+
+/* Token display */
+.token-display {
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  padding: 12px 16px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+  user-select: all;
+  cursor: text;
+  margin: 12px 0;
+}
+
+/* Capabilities table */
+.capabilities-table {
+  margin-top: 8px;
+}
+
+.capabilities-table .el-table__header th {
+  background-color: #f5f7fa;
+  font-weight: 600;
+}
+
+/* Section title */
+.section-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 16px;
+}

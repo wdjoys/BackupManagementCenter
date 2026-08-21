@@ -189,7 +189,8 @@ type PlanSource struct {
 
 type Run struct {
 	ID           string     `json:"id"`
-	PlanID       string     `json:"plan_id"`
+	// PlanID empty => system-initiated run not bound to a plan (stored NULL).
+	PlanID       string     `json:"plan_id,omitempty"`
 	AgentID      string     `json:"agent_id"`
 	Operation    string     `json:"operation"`
 	Status       string     `json:"status"`
@@ -201,6 +202,7 @@ type Run struct {
 	SnapshotID   string     `json:"snapshot_id,omitempty"`
 	ErrorCode    string     `json:"error_code,omitempty"`
 	ErrorMessage string     `json:"error_message,omitempty"`
+	RepositoryID string     `json:"repository_id,omitempty"`
 	// ScheduledAt is the cron slot this run fulfils; (plan_id, scheduled_at)
 	// is unique to prevent double-queueing. Empty for manual runs.
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`

@@ -84,7 +84,9 @@ CREATE INDEX idx_plans_agent ON backup_plans(agent_id);
 
 CREATE TABLE runs (
     id            TEXT PRIMARY KEY,
-    plan_id       TEXT NOT NULL REFERENCES backup_plans(id),
+    -- NULL for system-initiated ops not bound to a plan (snapshots browse,
+    -- repository check, verify remote...). UNIQUE treats NULLs as distinct.
+    plan_id       TEXT REFERENCES backup_plans(id),
     agent_id      TEXT NOT NULL,
     operation     TEXT NOT NULL CHECK (operation IN ('backup','restore','check','forget','restore_dry_run','snapshots','snapshot_ls','verify_storage_remote','validate_paths','probe_capabilities')),
     status        TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','dispatched','running','succeeded','failed','cancelled')),
@@ -95,13 +97,15 @@ CREATE TABLE runs (
     snapshot_id   TEXT,
     error_code    TEXT,
     error_message TEXT,
+    repository_id TEXT,
     scheduled_at  TEXT,
-    -- one run per cron slot per plan; manual runs keep scheduled_at NULL
+    -- one run per cron slot per plan; manual/system runs keep NULL
     UNIQUE (plan_id, scheduled_at)
 );
 CREATE INDEX idx_runs_status ON runs(status);
 CREATE INDEX idx_runs_agent_status ON runs(agent_id, status);
 CREATE INDEX idx_runs_plan_queued ON runs(plan_id, queued_at DESC);
+CREATE INDEX idx_runs_repo ON runs(repository_id);
 
 CREATE TABLE run_logs (
     run_id    TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

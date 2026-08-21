@@ -10,6 +10,15 @@ import (
 	"backupmanagementcenter/internal/model"
 )
 
+// Plan kind constants, mirrored from model for convenience.
+const (
+	KindFilesystem = "filesystem"
+	KindPostgreSQL = "postgresql"
+	KindMySQL      = "mysql"
+	KindMongoDB    = "mongodb"
+	KindSQLite     = "sqlite"
+)
+
 // Cmd is one process to run. Args are passed verbatim to exec; no shell.
 type Cmd struct {
 	Exe  string   // absolute path of the tool

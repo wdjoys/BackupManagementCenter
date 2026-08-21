@@ -24,7 +24,14 @@ const KeyLen = 32
 
 var ErrTooShort = errors.New("secrets: ciphertext too short")
 
-type Sealer struct {
+// Sealer is implemented by AESGCMSealer (production) and NoopSealer (dev).
+type Sealer interface {
+	Seal(table, rowID, column, plaintext string) ([]byte, error)
+	Open(table, rowID, column string, data []byte) (string, error)
+}
+
+// AESGCMSealer seals with AES-256-GCM and AAD "<table>:<row-id>:<column>".
+type AESGCMSealer struct {
 	aead cipher.AEAD
 }
 
@@ -42,7 +49,7 @@ func LoadKey(path string) ([]byte, error) {
 	return key, nil
 }
 
-func NewSealer(key []byte) (*Sealer, error) {
+func NewSealer(key []byte) (Sealer, error) {
 	if len(key) != KeyLen {
 		return nil, fmt.Errorf("secrets: key must be %d bytes", KeyLen)
 	}
@@ -54,7 +61,7 @@ func NewSealer(key []byte) (*Sealer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Sealer{aead: aead}, nil
+	return &AESGCMSealer{aead: aead}, nil
 }
 
 func aad(table, rowID, column string) []byte {
@@ -62,7 +69,7 @@ func aad(table, rowID, column string) []byte {
 }
 
 // Seal encrypts plaintext; output = nonce || ciphertext, base64 std encoding.
-func (s *Sealer) Seal(table, rowID, column, plaintext string) ([]byte, error) {
+func (s *AESGCMSealer) Seal(table, rowID, column, plaintext string) ([]byte, error) {
 	if plaintext == "" {
 		return nil, nil
 	}
@@ -77,7 +84,7 @@ func (s *Sealer) Seal(table, rowID, column, plaintext string) ([]byte, error) {
 }
 
 // Open decrypts data produced by Seal with identical table/rowID/column.
-func (s *Sealer) Open(table, rowID, column string, data []byte) (string, error) {
+func (s *AESGCMSealer) Open(table, rowID, column string, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", nil
 	}

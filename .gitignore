@@ -1,0 +1,10 @@
+/data/
+/bin/
+/internal/server/webui/dist/
+*.test
+*.out
+.env
+*.local
+node_modules/
+web/dist/
+.DS_Store

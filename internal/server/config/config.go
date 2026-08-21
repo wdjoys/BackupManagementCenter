@@ -1,0 +1,60 @@
+// Package config loads server configuration from the environment.
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+)
+
+type Server struct {
+	ListenAddr    string // BMC_LISTEN_ADDR, default :8080
+	GRPCAddr      string // BMC_GRPC_ADDR, default :9090
+	MetricsAddr   string // BMC_METRICS_ADDR, default 127.0.0.1:9100
+	DataDir       string // BMC_DATA_DIR, default ./data
+	PublicURL     string // BMC_PUBLIC_URL
+	MasterKeyFile string // BMC_MASTER_KEY_FILE
+	TLSCertFile   string // BMC_TLS_CERT_FILE
+	TLSKeyFile    string // BMC_TLS_KEY_FILE
+	DevInsecure   bool   // BMC_DEV_INSECURE=1 allows missing TLS/master key (local dev only)
+}
+
+func LoadServer() (Server, error) {
+	c := Server{
+		ListenAddr:    env("BMC_LISTEN_ADDR", ":8080"),
+		GRPCAddr:      env("BMC_GRPC_ADDR", ":9090"),
+		MetricsAddr:   env("BMC_METRICS_ADDR", "127.0.0.1:9100"),
+		DataDir:       env("BMC_DATA_DIR", "./data"),
+		PublicURL:     os.Getenv("BMC_PUBLIC_URL"),
+		MasterKeyFile: os.Getenv("BMC_MASTER_KEY_FILE"),
+		TLSCertFile:   os.Getenv("BMC_TLS_CERT_FILE"),
+		TLSKeyFile:    os.Getenv("BMC_TLS_KEY_FILE"),
+		DevInsecure:   env("BMC_DEV_INSECURE", "") == "1",
+	}
+	if c.DevInsecure {
+		return c, nil
+	}
+	if c.TLSCertFile == "" || c.TLSKeyFile == "" {
+		return c, fmt.Errorf("config: BMC_TLS_CERT_FILE and BMC_TLS_KEY_FILE are required (or BMC_DEV_INSECURE=1 for local development)")
+	}
+	if c.MasterKeyFile == "" {
+		return c, fmt.Errorf("config: BMC_MASTER_KEY_FILE is required (or BMC_DEV_INSECURE=1 for local development)")
+	}
+	return c, nil
+}
+
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func EnvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}

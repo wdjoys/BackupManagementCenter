@@ -89,7 +89,8 @@ func main() {
 	orch := jobs.New(st, seal, nil, bus, instanceID)
 	disp := dispatchgrpc.NewDispatcher(st, reg, dispatchgrpc.DefaultConfig())
 	disp.Src = orch
-
+	orch.Disp = disp // break constructor cycle: dispatcher needs orchestrator as CommandSource
+	disp.StartWatchdog()
 	svc := agentreg.NewService(st, reg, bus, agentreg.Config{
 		HeartbeatIntervalSeconds: 30,
 		OfflineCheckInterval:     30 * time.Second,
@@ -107,6 +108,7 @@ func main() {
 	sched := scheduler.New(st, schedAdapter{orch})
 	sched.Start()
 	defer sched.Stop()
+	defer disp.StopWatchdog()
 
 	// gRPC listener (TLS when configured).
 	tlsCfg, err := serverTLS(cfg)

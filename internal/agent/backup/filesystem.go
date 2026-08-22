@@ -57,7 +57,14 @@ func (a *FilesystemAdapter) Restore(ctx context.Context, spec *RestoreSpec) erro
 	return errors.New("filesystem restore is handled by pipeline via restic; adapter.Restore not used")
 }
 
-// isAbs checks if a path is absolute for Linux targets.
+// isAbs checks if a path is absolute. Production agents are Linux ("/..."),
+// but Windows development hosts ("D:\...") must validate too.
 func isAbs(p string) bool {
-	return strings.HasPrefix(p, "/")
+	if strings.HasPrefix(p, "/") {
+		return true
+	}
+	if len(p) >= 2 && p[1] == ':' && ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) {
+		return true
+	}
+	return false
 }

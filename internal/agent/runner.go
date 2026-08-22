@@ -2,28 +2,34 @@ package agent
 
 import (
 	"context"
-
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/agent/backup"
 	"backupmanagementcenter/internal/agent/pipeline"
+	"backupmanagementcenter/internal/agent/restic"
 	"backupmanagementcenter/internal/model"
 )
 
 // Runner executes commands received from the server.
 type Runner struct {
-	deps       pipeline.Deps
-	dataDir    string
-	identity   *Identity
-	executeFn  func(ctx context.Context, d pipeline.Deps, tempDir string, op bmcv1.ExecuteCommand_Operation, params []byte, secrets backup.SecretBundle) (*pipeline.Result, error)
+	deps      pipeline.Deps
+	dataDir   string
+	identity  *Identity
+	executeFn func(ctx context.Context, d pipeline.Deps, tempDir string, op bmcv1.ExecuteCommand_Operation, params []byte, secrets backup.SecretBundle) (*pipeline.Result, error)
 
 	// In-flight runs: run_id -> cancel func
 	mu       sync.Mutex
 	running  map[string]context.CancelFunc
 	finished *lruCache // run_id -> RunResult (cached for idempotency)
+
+	prober *Prober // optional; refreshed tool paths before each execution
 }
 
 // NewRunner creates a new runner.
@@ -41,6 +47,9 @@ func NewRunner(deps pipeline.Deps, dataDir string, identity *Identity) *Runner {
 	}
 	return r
 }
+
+// SetProber wires the capability prober so tool paths stay fresh.
+func (r *Runner) SetProber(p *Prober) { r.prober = p }
 
 // Execute handles an ExecuteCommand from the server.
 func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectClient, cmd *bmcv1.ExecuteCommand) {
@@ -78,6 +87,7 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 	}
 
 	// Create private temp directory
+	_ = os.MkdirAll(r.dataDir, 0o700)
 	tempDir, err := os.MkdirTemp(r.dataDir, "bmc-run-*")
 	if err != nil {
 		log.Printf("[ERROR] create temp dir: %v", err)
@@ -103,11 +113,61 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 			_ = os.RemoveAll(tempDir)
 		}()
 
+		// Clone deps with per-run log/progress sinks that stream upstream.
+		deps := r.deps
+		var logSeq atomic.Uint64
+		deps.Logf = func(level, format string, args ...any) {
+			msg := fmt.Sprintf(format, args...)
+			log.Printf("[run %s] [%s] %s", runID, level, msg)
+			seq := logSeq.Add(1)
+			batch := &bmcv1.AgentMessage{
+				MessageId: newMessageID(),
+				Payload: &bmcv1.AgentMessage_RunLogBatch{
+					RunLogBatch: &bmcv1.RunLogBatch{
+						RunId: runID,
+						Entries: []*bmcv1.LogEntry{{
+							Seq:                uint64(seq),
+							TimestampUnixNanos: time.Now().UnixNano(),
+							Level:              protoLevel(level),
+							Message:            msg,
+						}},
+					},
+				},
+			}
+			if err := stream.Send(batch); err != nil {
+				log.Printf("[WARN] send log batch run %s: %v", runID, err)
+			}
+		}
+		deps.Progress = func(p model.Progress) {
+			msg := &bmcv1.AgentMessage{
+				MessageId: newMessageID(),
+				Payload: &bmcv1.AgentMessage_RunProgress{
+					RunProgress: &bmcv1.RunProgress{
+						RunId:      runID,
+						Phase:      p.Phase,
+						Percent:    p.Percent,
+						BytesDone:  p.BytesDone,
+						BytesTotal: p.BytesTotal,
+						FilesDone:  p.FilesDone,
+						FilesTotal: p.FilesTotal,
+					},
+				},
+			}
+			if err := stream.Send(msg); err != nil {
+				log.Printf("[WARN] send progress run %s: %v", runID, err)
+			}
+		}
+
+		if r.prober != nil {
+			for k, v := range r.prober.GetCached() {
+				deps.Tools[k] = v
+			}
+		}
 		// Extract secrets from SecretSet
 		secrets := r.extractSecrets(cmd.Secrets)
 
 		// Execute pipeline
-		result, err := r.executeFn(runCtx, r.deps, tempDir, cmd.Operation, cmd.ParamsJson, secrets)
+		result, err := r.executeFn(runCtx, deps, tempDir, cmd.Operation, cmd.ParamsJson, secrets)
 
 		var runResult *bmcv1.RunResult
 		if err != nil {
@@ -115,25 +175,41 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 			if ctx.Err() != nil {
 				// Context was cancelled — treat as CANCELLED
 				runResult = &bmcv1.RunResult{
-					RunId:       runID,
-					Status:      bmcv1.RunResult_CANCELLED,
-					ErrorCode:   "cancelled",
+					RunId:        runID,
+					Status:       bmcv1.RunResult_CANCELLED,
+					ErrorCode:    "cancelled",
 					ErrorMessage: "run cancelled by server",
 				}
 			} else {
+				code, msg := "pipeline_error", err.Error()
+				var pe *pipeline.PipelineError
+				if errors.As(err, &pe) {
+					if pe.Code != "" {
+						code = pe.Code
+					}
+					// Prefer the stable restic-mapped code (e.g.
+					// repository_missing) over the generic op failure code.
+					var re *restic.ResticError
+					if errors.As(err, &re) && re.Code != "" {
+						code = re.Code
+					}
+					if pe.Cause != nil {
+						msg = pe.Cause.Error()
+					}
+				}
 				runResult = &bmcv1.RunResult{
 					RunId:        runID,
 					Status:       bmcv1.RunResult_FAILED,
-					ErrorCode:    "pipeline_error",
-					ErrorMessage: err.Error(),
+					ErrorCode:    code,
+					ErrorMessage: msg,
 				}
 			}
 		} else {
 			runResult = &bmcv1.RunResult{
-				RunId:        runID,
-				Status:       bmcv1.RunResult_SUCCEEDED,
-				SnapshotIds:  result.SnapshotIDs,
-				ResultJson:   string(result.ResultJSON),
+				RunId:       runID,
+				Status:      bmcv1.RunResult_SUCCEEDED,
+				SnapshotIds: result.SnapshotIDs,
+				ResultJson:  string(result.ResultJSON),
 			}
 		}
 
@@ -201,10 +277,10 @@ func (r *Runner) extractSecrets(secrets *bmcv1.SecretSet) backup.SecretBundle {
 
 // lruCache is a simple LRU cache for run results.
 type lruCache struct {
-	mu      sync.Mutex
-	cap     int
-	items   map[string]*bmcv1.RunResult
-	order   []string
+	mu    sync.Mutex
+	cap   int
+	items map[string]*bmcv1.RunResult
+	order []string
 }
 
 func newLRUCache(cap int) *lruCache {
@@ -256,5 +332,19 @@ func (c *lruCache) moveToFront(key string) {
 			}
 			break
 		}
+	}
+}
+
+// protoLevel maps log level strings to proto enum values.
+func protoLevel(level string) bmcv1.LogLevel_Level {
+	switch level {
+	case "debug":
+		return bmcv1.LogLevel_DEBUG
+	case "warn":
+		return bmcv1.LogLevel_WARN
+	case "error":
+		return bmcv1.LogLevel_ERROR
+	default:
+		return bmcv1.LogLevel_INFO
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -42,10 +43,10 @@ func init() {
 type Service struct {
 	bmcv1.UnimplementedAgentControlServer
 
-	store  store.Store
-	reg    *Registry
-	bus    events.Bus
-	cfg    Config
+	store store.Store
+	reg   *Registry
+	bus   events.Bus
+	cfg   Config
 
 	// mu protects lastSeenWrite for the heartbeat throttle
 	lastSeenMu     sync.Mutex
@@ -238,10 +239,10 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 
 	// Send Welcome message
 	welcome := &bmcv1.Welcome{
-		ServerVersion:          version.Version,
-		ServerInstanceId:       instanceID,
+		ServerVersion:            version.Version,
+		ServerInstanceId:         instanceID,
 		HeartbeatIntervalSeconds: s.cfg.HeartbeatIntervalSeconds,
-		VersionMinorMismatch:   versionMinorMismatch,
+		VersionMinorMismatch:     versionMinorMismatch,
 	}
 
 	welcomeMsg := &bmcv1.ServerMessage{
@@ -476,24 +477,43 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 		}
 		return err
 	}
-
 	// Build the snapshot ID from the first entry
 	snapshotID := ""
 	if len(result.GetSnapshotIds()) > 0 {
 		snapshotID = result.GetSnapshotIds()[0]
 	}
 
-	// Transition: running -> terminal
+	// Terminal transition accepts both running and dispatched source states.
+	resultJSON := result.GetResultJson()
+	now := time.Now().UTC()
+
 	err = s.store.TransitionRun(ctx, runID, model.RunRunning, toStatus, func(r *model.Run) {
-		now := time.Now().UTC()
 		r.FinishedAt = &now
 		r.ErrorCode = result.GetErrorCode()
 		r.ErrorMessage = result.GetErrorMessage()
 		r.SnapshotID = snapshotID
+		if len(resultJSON) > 0 {
+			r.ProgressJSON = string(resultJSON)
+		}
 	})
 
+	if errors.Is(err, store.ErrInvalidTransition) {
+		// Fast-finished runs may still be 'dispatched'.
+		err = s.store.TransitionRun(ctx, runID, model.RunDispatched, toStatus, func(r *model.Run) {
+			now := time.Now().UTC()
+			r.StartedAt = &now
+			r.FinishedAt = &now
+			r.ErrorCode = result.GetErrorCode()
+			r.ErrorMessage = result.GetErrorMessage()
+			r.SnapshotID = snapshotID
+			if len(resultJSON) > 0 {
+				r.ProgressJSON = string(resultJSON)
+			}
+		})
+	}
+
 	if err == store.ErrInvalidTransition {
-		// Maybe already in terminal state — idempotent
+		// Already terminal — idempotent.
 		return nil
 	}
 	if err != nil {
@@ -504,12 +524,12 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	if toStatus == model.RunSucceeded && run.Operation != "" {
 		if run.Operation == model.OpBackup || run.Operation == model.OpCheck {
 			// Find the plan to get the repository (plan_id may be empty for system operations)
-		if run.PlanID != "" {
-			plan, planErr := s.store.GetPlan(ctx, run.PlanID)
-			if planErr == nil && plan.RepositoryID != "" {
-				_ = s.store.MarkRepositoryChecked(ctx, plan.RepositoryID, time.Now().UTC())
+			if run.PlanID != "" {
+				plan, planErr := s.store.GetPlan(ctx, run.PlanID)
+				if planErr == nil && plan.RepositoryID != "" {
+					_ = s.store.MarkRepositoryChecked(ctx, plan.RepositoryID, time.Now().UTC())
+				}
 			}
-		}
 		}
 	}
 

@@ -177,7 +177,7 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	_ = stream
+	ss := newSafeStream(stream)
 
 	// Reset heartbeat interval
 	c.mu.Lock()
@@ -186,27 +186,27 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 
 	// Send Hello (first message)
 	hello := c.buildHello()
-	if err := stream.Send(hello); err != nil {
+	if err := ss.Send(hello); err != nil {
 		return fmt.Errorf("send hello: %w", err)
 	}
 
 	// Start heartbeat goroutine
 	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
 	defer heartbeatCancel()
-	go c.heartbeatLoop(heartbeatCtx, stream)
+	go c.heartbeatLoop(heartbeatCtx, ss)
 
 	// Start capability probe goroutine
 	probeCtx, probeCancel := context.WithCancel(ctx)
 	defer probeCancel()
-	go c.capabilityLoop(probeCtx, stream)
+	go c.capabilityLoop(probeCtx, ss)
 
 	// Receive messages from server
 	for {
-		msg, err := stream.Recv()
+		msg, err := ss.Recv()
 		if err != nil {
 			return fmt.Errorf("recv: %w", err)
 		}
-		if err := c.handleServerMessage(ctx, stream, msg); err != nil {
+		if err := c.handleServerMessage(ctx, ss, msg); err != nil {
 			log.Printf("[ERROR] handling message: %v", err)
 		}
 	}

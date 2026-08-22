@@ -1,6 +1,7 @@
 /data/
 /bin/
-/internal/server/webui/dist/
+/internal/server/webui/dist/*
+!/internal/server/webui/dist/index.html
 *.test
 *.out
 .env

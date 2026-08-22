@@ -1,7 +1,15 @@
 GO ?= go
+
+ifeq ($(OS),Windows_NT)
+SHELL := C:/tools/git/usr/bin/sh.exe
+PNPM := cmd.exe /c pnpm
+else
+PNPM := pnpm
+endif
 GOFLAGS ?=
-GO_LDFLAGS := -s -w -X backupmanagementcenter/internal/version.Version=$(VERSION)
 VERSION ?= 0.1.0
+VERSION := $(if $(VERSION),$(VERSION),0.1.0)
+GO_LDFLAGS := -s -w -X backupmanagementcenter/internal/version.Version=$(VERSION)
 WEB_DIST := internal/server/webui/dist
 
 PLATFORMS ?= linux/amd64
@@ -16,7 +24,7 @@ generate:
 
 ## web-build: build the Vue app into internal/server/webui/dist
 web-build:
-	cd web && pnpm install --frozen-lockfile && pnpm run build
+	cd web && $(PNPM) install --frozen-lockfile && $(PNPM) run build
 	rm -rf $(WEB_DIST)
 	mkdir -p $(WEB_DIST)
 	cp -r web/dist/. $(WEB_DIST)/

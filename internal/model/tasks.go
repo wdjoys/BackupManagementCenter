@@ -58,6 +58,9 @@ type SnapshotsTask struct {
 type SnapshotLsTask struct {
 	Repository RepoAccess `json:"repository"`
 	SnapshotID string     `json:"snapshot_id"`
+	// Path filters entries to the direct children of this directory
+	// ("/" = snapshot root). Empty means the whole snapshot.
+	Path string `json:"path,omitempty"`
 }
 
 // FilesystemRestore is the target branch of RestoreTask for kind filesystem.
@@ -102,6 +105,8 @@ func MapResticExitCode(code int) string {
 	switch code {
 	case 3:
 		return ErrPartialSourceRead
+	case 10:
+		return ErrRepositoryMissing
 	case 11:
 		return ErrRepositoryLocked
 	case 12:

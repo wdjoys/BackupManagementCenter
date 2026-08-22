@@ -57,9 +57,15 @@ func main() {
 		log.Printf("[INFO] enrolled as agent %s", agentID)
 	}
 
-	runner := agent.NewRunner(pipeline.Deps{}, cfg.DataDir, ident)
+	runner := agent.NewRunner(pipeline.Deps{
+		Exec: agent.OSExecutor{},
+		Logf: func(level, format string, args ...any) {
+			log.Printf("[%s] "+format, append([]any{level}, args...)...)
+		},
+	}, cfg.DataDir, ident)
 
 	prober := agent.NewProber()
+	runner.SetProber(prober)
 	client := agent.NewConnectClient(cfgAdapter{cfg}, im, prober, runner)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

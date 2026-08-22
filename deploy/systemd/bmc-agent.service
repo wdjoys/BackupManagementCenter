@@ -1,0 +1,25 @@
+[Unit]
+Description=BMC Backup Management Center - Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bmc-agent
+Group=bmc-agent
+UMask=0077
+NoNewPrivileges=true
+# NOTE: no filesystem sandbox by design — the agent must read whatever source
+# paths administrators choose to back up. Grant read access deliberately.
+PrivateTmp=true
+LimitNOFILE=4096
+Restart=always
+RestartSec=3
+Environment=BMC_AGENT_STATE_DIR=/var/lib/bmc-agent
+# Fill these in via drop-in (systemctl edit bmc-agent):
+# Environment=BMC_SERVER_GRPC_URL=bmc.example.com:9090
+# Environment=BMC_ENROLLMENT_TOKEN=<one-time token, first boot only>
+ExecStart=/usr/local/bin/backup-center-agent
+
+[Install]
+WantedBy=multi-user.target

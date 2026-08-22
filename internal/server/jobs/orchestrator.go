@@ -3,7 +3,7 @@
 // store / events bus / dispatcher and exposes the business-level surface
 // the API layer and scheduler call into.
 //
-// System-run result convention
+// # System-run result convention
 //
 // The Run model has no dedicated result_json column. System runs
 // (snapshots, snapshot_ls, verify_storage_remote, restore_dry_run) carry
@@ -60,7 +60,7 @@ func (e *MissingToolsError) Error() string {
 type RestoreInput struct {
 	RepositoryID   string
 	SnapshotID     string
-	RestoreKind    string              // filesystem|postgresql|mysql|mongodb|sqlite
+	RestoreKind    string // filesystem|postgresql|mysql|mongodb|sqlite
 	Target         model.RestoreTarget
 	Overwrite      bool
 	Confirmation   string
@@ -83,15 +83,16 @@ type DryRunStats struct {
 
 // TreeResult is the parsed payload of a SNAPSHOT_LS run.
 type TreeResult struct {
-	Entries []TreeEntry
-	Path    string
+	Entries []TreeEntry `json:"entries"`
+	Path    string      `json:"path"`
 }
 
 type TreeEntry struct {
-	Name  string
-	Type  string // file|dir|symlink
-	Size  int64
-	Mtime string
+	Name  string `json:"name"`
+	Type  string `json:"type"` // file|dir|symlink
+	Path  string `json:"path,omitempty"`
+	Size  int64  `json:"size"`
+	Mtime string `json:"mtime"`
 }
 
 // internalResult is a generic wrapper used to interpret agent-side
@@ -223,6 +224,17 @@ func (o *Orchestrator) ManualRun(ctx context.Context, planID string) (*model.Run
 // it to the dispatcher and returns the queued run. Result payloads live in
 // the run's ProgressJSON column after terminal (see package comment).
 func (o *Orchestrator) SystemRun(ctx context.Context, agentID, repositoryID, operation string, params any, timeout time.Duration) (*model.Run, error) {
+	return o.systemRun(ctx, agentID, repositoryID, operation, params, timeout, "")
+}
+
+// SystemRunWithConf is SystemRun with a per-run rclone config stash consumed
+// by BuildCommand for verify-remote runs. The stash is written before the run
+// becomes visible to the dispatcher, closing the enqueue race.
+func (o *Orchestrator) SystemRunWithConf(ctx context.Context, agentID, repositoryID, operation string, params any, timeout time.Duration, conf string) (*model.Run, error) {
+	return o.systemRun(ctx, agentID, repositoryID, operation, params, timeout, conf)
+}
+
+func (o *Orchestrator) systemRun(ctx context.Context, agentID, repositoryID, operation string, params any, timeout time.Duration, conf string) (*model.Run, error) {
 	agent, err := o.Store.GetAgent(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -250,6 +262,10 @@ func (o *Orchestrator) SystemRun(ctx context.Context, agentID, repositoryID, ope
 	}
 	if err := o.Store.CreateRun(ctx, run); err != nil {
 		return nil, err
+	}
+
+	if conf != "" {
+		o.stashConf(run.ID, conf)
 	}
 
 	if repositoryID != "" {
@@ -402,6 +418,7 @@ func (o *Orchestrator) SnapshotTree(ctx context.Context, repoID, agentID, snapsh
 	params := model.SnapshotLsTask{
 		Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath},
 		SnapshotID: snapshotID,
+		Path:       path,
 	}
 	run, err := o.SystemRun(ctx, agentID, repoID, model.OpSnapshotLs, params, 0)
 	if err != nil {
@@ -453,13 +470,10 @@ func (o *Orchestrator) ValidatePlanSource(ctx context.Context, kind string, src 
 // ValidateStorageRemote runs a verify remote check on the given agent.
 func (o *Orchestrator) ValidateStorageRemote(ctx context.Context, confContent, remoteName, agentID string) (*VerifyResult, error) {
 	params := model.VerifyRemoteTask{ConfigProvided: true, RemoteName: remoteName}
-	run, err := o.SystemRun(ctx, agentID, "", model.OpVerifyRemote, params, 0)
+	run, err := o.SystemRunWithConf(ctx, agentID, "", model.OpVerifyRemote, params, 0, confContent)
 	if err != nil {
 		return nil, err
 	}
-	// For verify-remote, we need to inject rclone conf into the command.
-	// BuildCommand will do this via a per-run secret stash.
-	o.stashConf(run.ID, confContent)
 
 	term, err := o.WaitRun(ctx, run.ID, 30*time.Second)
 	if err != nil {
@@ -471,17 +485,14 @@ func (o *Orchestrator) ValidateStorageRemote(ctx context.Context, confContent, r
 		}
 		return nil, fmt.Errorf("verify remote failed: %s", term.ErrorMessage)
 	}
-	if term.ProgressJSON == "" || term.ProgressJSON == "{}" {
-		return nil, nil
-	}
 	var vr VerifyResult
-	// Result schema: {"remote":"...","entries":[...]}.
+	// Agent result schema: {"remote_type":"...","entries":N}.
 	var raw struct {
-		Remote  string   `json:"remote"`
-		Entries []struct{} `json:"entries"`
+		RemoteType string `json:"remote_type"`
+		Entries    int    `json:"entries"`
 	}
 	if err := json.Unmarshal([]byte(term.ProgressJSON), &raw); err == nil {
-		vr = VerifyResult{RemoteType: raw.Remote, Entries: len(raw.Entries)}
+		vr = VerifyResult{RemoteType: raw.RemoteType, Entries: raw.Entries}
 	}
 	return &vr, nil
 }
@@ -507,14 +518,14 @@ func (o *Orchestrator) CreateStorageTarget(ctx context.Context, actorID, name, c
 	}
 
 	t := &model.StorageTarget{
-		ID:            model.NewUUIDv7(),
-		Name:          name,
-		Type:          "rclone",
-		RemoteName:    remoteName,
-		RemotePath:    remotePath,
+		ID:              model.NewUUIDv7(),
+		Name:            name,
+		Type:            "rclone",
+		RemoteName:      remoteName,
+		RemotePath:      remotePath,
 		EncryptedConfig: sealed,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if err := o.Store.CreateStorageTarget(ctx, t); err != nil {
 		return nil, err
@@ -539,13 +550,14 @@ func (o *Orchestrator) CreateStorageTargetWithAgent(ctx context.Context, actorID
 	}
 
 	now := time.Now().UTC()
-	sealed, err := o.Seal.Seal("storage_targets", name, "encrypted_config", conf)
+	targetID := model.NewUUIDv7()
+	sealed, err := o.Seal.Seal("storage_targets", targetID, "encrypted_config", conf)
 	if err != nil {
 		return nil, err
 	}
 
 	t := &model.StorageTarget{
-		ID:              model.NewUUIDv7(),
+		ID:              targetID,
 		Name:            name,
 		Type:            "rclone",
 		RemoteName:      remoteName,
@@ -586,13 +598,14 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 
 	repoPath := buildRepoPath(target, o.InstanceID, agentID)
 
-	sealedPw, err := o.Seal.Seal("repositories", "", "encrypted_password", repoPw)
+	repoID := model.NewUUIDv7()
+	sealedPw, err := o.Seal.Seal("repositories", repoID, "encrypted_password", repoPw)
 	if err != nil {
 		return nil, err
 	}
 
 	repo := &model.Repository{
-		ID:                model.NewUUIDv7(),
+		ID:                repoID,
 		AgentID:           agentID,
 		StorageTargetID:   storageTargetID,
 		RepositoryPath:    repoPath,
@@ -614,14 +627,14 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 
 // EnsureRepository executes the init-or-adopt flow:
 //
-//   1. Probe via SystemRun(snapshots, SnapshotsTask{Repository}) —
-//      success → adopt (status ready);
-//      exit_code 10 (repo missing, error_code=="") → step 2;
-//      exit_code 12 (wrong password, model.ErrWrongRepositoryPassword) → error;
-//      exit_code 11 (repository locked, model.ErrRepositoryLocked) → error.
+//  1. Probe via SystemRun(snapshots, SnapshotsTask{Repository}) —
+//     success → adopt (status ready);
+//     exit_code 10 (repo missing, error_code=="") → step 2;
+//     exit_code 12 (wrong password, model.ErrWrongRepositoryPassword) → error;
+//     exit_code 11 (repository locked, model.ErrRepositoryLocked) → error.
 //
-//   2. Init via SystemRun(forget, InitTask{Repository, ResticInit:true}).
-//      success → status ready.
+//  2. Init via SystemRun(forget, InitTask{Repository, ResticInit:true}).
+//     success → status ready.
 //
 // Convention note: the agent's RunResult carries the raw exit code in its
 // result_json (or error_code for mapped codes). The Orchestrator distinguishes
@@ -645,8 +658,8 @@ func (o *Orchestrator) EnsureRepository(ctx context.Context, repo *model.Reposit
 	}
 	if term.Status == model.RunFailed {
 		switch term.ErrorCode {
-		case "":
-			// Unmapped exit code — convention: treat as exit 10 (repo missing).
+		case model.ErrRepositoryMissing:
+			// restic exit 10 — repository does not exist; fall through to init.
 		case model.ErrWrongRepositoryPassword:
 			return ErrRepoPassword
 		case model.ErrRepositoryLocked:
@@ -763,11 +776,11 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 
 	o.Audit(ctx, "admin", actorID, "restore.start", "restore_request", rr.ID,
 		map[string]string{
-			"run_id":          run.ID,
-			"snapshot_id":     in.SnapshotID,
-			"restore_kind":    in.RestoreKind,
-			"overwrite":       fmt.Sprintf("%v", in.Overwrite),
-			"confirmation":    confirmationHash,
+			"run_id":       run.ID,
+			"snapshot_id":  in.SnapshotID,
+			"restore_kind": in.RestoreKind,
+			"overwrite":    fmt.Sprintf("%v", in.Overwrite),
+			"confirmation": confirmationHash,
 		})
 
 	return rr, run, nil

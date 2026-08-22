@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/agent/backup"
-	"backupmanagementcenter/internal/agent/restic"
 	"backupmanagementcenter/internal/agent/rclone"
+	"backupmanagementcenter/internal/agent/restic"
 	"backupmanagementcenter/internal/model"
 )
 
@@ -129,14 +131,9 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 		return nil, &PipelineError{Code: "backup_failed", Message: "adapter backup failed", Cause: err}
 	}
 
-	resticOpts := restic.Options{
-		Exe:         toolExe(d, "restic"),
-		RepoPath:    task.Repository.RepositoryPath,
-		PasswordFile: filepath.Join(tempDir, "restic_pw"),
-		CacheDir:    task.Repository.CacheDir,
-	}
-	if _, err := backup.WriteSecretFile(tempDir, "restic_pw", secrets.ResticPassword); err != nil {
-		return nil, &PipelineError{Code: "internal", Message: "write restic password", Cause: err}
+	resticOpts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
+	if err != nil {
+		return nil, err
 	}
 
 	var snapshotID string
@@ -169,14 +166,9 @@ func runRestore(ctx context.Context, d Deps, tempDir string, params []byte, secr
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal restore task", Cause: err}
 	}
 
-	resticOpts := restic.Options{
-		Exe:         toolExe(d, "restic"),
-		RepoPath:    task.Repository.RepositoryPath,
-		PasswordFile: filepath.Join(tempDir, "restic_pw"),
-		CacheDir:    task.Repository.CacheDir,
-	}
-	if _, err := backup.WriteSecretFile(tempDir, "restic_pw", secrets.ResticPassword); err != nil {
-		return nil, &PipelineError{Code: "internal", Message: "write restic password", Cause: err}
+	resticOpts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
+	if err != nil {
+		return nil, err
 	}
 
 	if task.Kind == "filesystem" {
@@ -280,14 +272,9 @@ func runCheck(ctx context.Context, d Deps, tempDir string, params []byte, secret
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal check task", Cause: err}
 	}
-	opts := restic.Options{
-		Exe:         toolExe(d, "restic"),
-		RepoPath:    task.Repository.RepositoryPath,
-		PasswordFile: filepath.Join(tempDir, "restic_pw"),
-		CacheDir:    task.Repository.CacheDir,
-	}
-	if _, err := backup.WriteSecretFile(tempDir, "restic_pw", secrets.ResticPassword); err != nil {
-		return nil, &PipelineError{Code: "internal", Message: "write restic password", Cause: err}
+	opts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
+	if err != nil {
+		return nil, err
 	}
 	if err := restic.Check(ctx, d.Exec, opts); err != nil {
 		return nil, &PipelineError{Code: "check_failed", Message: "restic check failed", Cause: err}
@@ -302,14 +289,9 @@ func runForget(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	// Try InitTask first
 	var initTask model.InitTask
 	if err := json.Unmarshal(params, &initTask); err == nil && initTask.ResticInit {
-		opts := restic.Options{
-			Exe:         toolExe(d, "restic"),
-			RepoPath:    initTask.Repository.RepositoryPath,
-			PasswordFile: filepath.Join(tempDir, "restic_pw"),
-			CacheDir:    initTask.Repository.CacheDir,
-		}
-		if _, err := backup.WriteSecretFile(tempDir, "restic_pw", secrets.ResticPassword); err != nil {
-			return nil, &PipelineError{Code: "internal", Message: "write restic password", Cause: err}
+		opts, err := newResticOpts(d, initTask.Repository.RepositoryPath, tempDir, secrets)
+		if err != nil {
+			return nil, err
 		}
 		if err := restic.Init(ctx, d.Exec, opts); err != nil {
 			return nil, &PipelineError{Code: "init_failed", Message: "restic init failed", Cause: err}
@@ -323,14 +305,9 @@ func runForget(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal forget task", Cause: err}
 	}
-	opts := restic.Options{
-		Exe:         toolExe(d, "restic"),
-		RepoPath:    task.Repository.RepositoryPath,
-		PasswordFile: filepath.Join(tempDir, "restic_pw"),
-		CacheDir:    task.Repository.CacheDir,
-	}
-	if _, err := backup.WriteSecretFile(tempDir, "restic_pw", secrets.ResticPassword); err != nil {
-		return nil, &PipelineError{Code: "internal", Message: "write restic password", Cause: err}
+	opts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
+	if err != nil {
+		return nil, err
 	}
 	if err := restic.Forget(ctx, d.Exec, opts, task.Retention, nil); err != nil {
 		return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
@@ -344,14 +321,9 @@ func runSnapshots(ctx context.Context, d Deps, tempDir string, params []byte, se
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal snapshots task", Cause: err}
 	}
-	opts := restic.Options{
-		Exe:         toolExe(d, "restic"),
-		RepoPath:    task.Repository.RepositoryPath,
-		PasswordFile: filepath.Join(tempDir, "restic_pw"),
-		CacheDir:    task.Repository.CacheDir,
-	}
-	if _, err := backup.WriteSecretFile(tempDir, "restic_pw", secrets.ResticPassword); err != nil {
-		return nil, &PipelineError{Code: "internal", Message: "write restic password", Cause: err}
+	opts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
+	if err != nil {
+		return nil, err
 	}
 	snaps, err := restic.Snapshots(ctx, d.Exec, opts)
 	if err != nil {
@@ -367,22 +339,63 @@ func runSnapshotLs(ctx context.Context, d Deps, tempDir string, params []byte, s
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal snapshot_ls task", Cause: err}
 	}
-	opts := restic.Options{
-		Exe:         toolExe(d, "restic"),
-		RepoPath:    task.Repository.RepositoryPath,
-		PasswordFile: filepath.Join(tempDir, "restic_pw"),
-		CacheDir:    task.Repository.CacheDir,
+	opts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := backup.WriteSecretFile(tempDir, "restic_pw", secrets.ResticPassword); err != nil {
-		return nil, &PipelineError{Code: "internal", Message: "write restic password", Cause: err}
-	}
-	entries, err := restic.Ls(ctx, d.Exec, opts, task.SnapshotID)
+	entries, roots, err := restic.Ls(ctx, d.Exec, opts, task.SnapshotID)
 	if err != nil {
 		return nil, &PipelineError{Code: "snapshot_ls_failed", Message: "restic ls failed", Cause: err}
 	}
+
+	// Normalize helper: restic node paths look like "/D/tmp/x" on Windows and
+	// "/etc/x" on Linux.
+	norm := func(p string) string {
+		p = strings.ReplaceAll(p, "\\", "/")
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		// Restic renders Windows drive paths as /D/tmp/... while the
+		// snapshot descriptor retains D:/tmp/.... Normalize both forms.
+		if len(p) >= 3 && p[0] == '/' && p[2] == ':' {
+			p = p[:2] + p[3:]
+		}
+		return strings.TrimSuffix(p, "/")
+	}
+
+	dir := norm(task.Path)
+	var parentDirs []string
+	if dir == "" || dir == "/" {
+		// Snapshot root listing: children of the backup source roots.
+		for _, r := range roots {
+			parentDirs = append(parentDirs, norm(r))
+		}
+	} else {
+		parentDirs = []string{dir}
+	}
+
+	filtered := make([]restic.SnapshotEntry, 0, len(entries))
+	seen := map[string]bool{}
+	for _, e := range entries {
+		parent := path.Dir(norm(e.Path))
+		ok := false
+		for _, pd := range parentDirs {
+			if parent == pd {
+				ok = true
+				break
+			}
+		}
+		if !ok || seen[e.Path] {
+			continue
+		}
+		seen[e.Path] = true
+		e.Path = norm(e.Path)
+		filtered = append(filtered, e)
+	}
+
 	resultJSON, _ := json.Marshal(map[string]any{
-		"entries": entries,
-		"path":    "",
+		"entries": filtered,
+		"path":    dir,
 	})
 	return &Result{ResultJSON: resultJSON}, nil
 }
@@ -463,3 +476,25 @@ func unsupportedOpErr() error { return unsupportedError{} }
 
 // ErrUnsupportedOperation is returned for ops without an adapter.
 var ErrUnsupportedOperation = unsupportedOpErr()
+
+// newResticOpts writes the per-run secret files (restic password and, when
+// provided, the rclone config) into tempDir and returns ready-to-use options.
+func newResticOpts(d Deps, repoPath, tempDir string, secrets backup.SecretBundle) (restic.Options, error) {
+	pwPath, err := backup.WriteSecretFile(tempDir, "restic_pw", secrets.ResticPassword)
+	if err != nil {
+		return restic.Options{}, &PipelineError{Code: "internal", Message: "write restic password", Cause: err}
+	}
+	opts := restic.Options{
+		Exe:          toolExe(d, "restic"),
+		RepoPath:     restic.NormalizeRepoPath(repoPath),
+		PasswordFile: pwPath,
+	}
+	if secrets.RcloneConf != "" {
+		confPath, err := rclone.WriteConf(tempDir, secrets.RcloneConf)
+		if err != nil {
+			return restic.Options{}, &PipelineError{Code: "internal", Message: "write rclone conf", Cause: err}
+		}
+		opts.RcloneConfFile = confPath
+	}
+	return opts, nil
+}

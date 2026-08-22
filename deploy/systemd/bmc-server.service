@@ -1,0 +1,31 @@
+[Unit]
+Description=BMC Backup Management Center - Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bmc
+Group=bmc
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bmc
+PrivateTmp=true
+LimitNOFILE=8192
+Restart=on-failure
+RestartSec=3
+WorkingDirectory=/var/lib/bmc
+Environment=BMC_DATA_DIR=/var/lib/bmc
+Environment=BMC_LISTEN_ADDR=:8080
+Environment=BMC_GRPC_ADDR=:9090
+Environment=BMC_METRICS_ADDR=127.0.0.1:9100
+# Required in production — fill in via drop-in (systemctl edit bmc-server):
+# Environment=BMC_MASTER_KEY_FILE=/etc/bmc/master.key
+# Environment=BMC_TLS_CERT_FILE=/etc/bmc/server.crt
+# Environment=BMC_TLS_KEY_FILE=/etc/bmc/server.key
+# Environment=BMC_PUBLIC_URL=https://bmc.example.com
+ExecStart=/usr/local/bin/backup-center-server
+
+[Install]
+WantedBy=multi-user.target

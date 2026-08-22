@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/server/jobs"
@@ -23,7 +24,7 @@ func (s *Server) handleDryRunRestore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation_failed", "repository_id, snapshot_id and target_path are required")
 		return
 	}
-	if len(body.TargetPath) == 0 || body.TargetPath[0] != '/' {
+	if !isAbsPath(body.TargetPath) {
 		writeErr(w, http.StatusBadRequest, "validation_failed", "target_path must be absolute")
 		return
 	}
@@ -38,21 +39,21 @@ func (s *Server) handleDryRunRestore(w http.ResponseWriter, r *http.Request) {
 // POST /restores
 func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		RepositoryID string             `json:"repository_id"`
-		SnapshotID   string             `json:"snapshot_id"`
-		RestoreKind  string             `json:"restore_kind"`
+		RepositoryID string              `json:"repository_id"`
+		SnapshotID   string              `json:"snapshot_id"`
+		RestoreKind  string              `json:"restore_kind"`
 		Target       model.RestoreTarget `json:"target"`
-		Overwrite    bool               `json:"overwrite"`
-		Confirmation string             `json:"confirmation,omitempty"`
+		Overwrite    bool                `json:"overwrite"`
+		Confirmation string              `json:"confirmation,omitempty"`
 		// TargetPassword: database kinds only, entered in the UI.
-		TargetPassword string            `json:"target_password,omitempty"`
+		TargetPassword string `json:"target_password,omitempty"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
 	switch body.RestoreKind {
 	case model.KindFilesystem:
-		if body.Target.TargetPath == "" || body.Target.TargetPath[0] != '/' {
+		if !isAbsPath(body.Target.TargetPath) {
 			writeErr(w, http.StatusBadRequest, "validation_failed", "filesystem restore needs absolute target_path")
 			return
 		}
@@ -111,4 +112,16 @@ func (s *Server) handleListRestores(w http.ResponseWriter, r *http.Request) {
 		out = append(out, rr)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// isAbsPath accepts POSIX absolute paths and Windows drive-letter paths
+// (development hosts run the agent on Windows too).
+func isAbsPath(p string) bool {
+	if strings.HasPrefix(p, "/") {
+		return true
+	}
+	if len(p) >= 2 && p[1] == ':' && ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) {
+		return true
+	}
+	return false
 }

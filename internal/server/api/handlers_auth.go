@@ -85,6 +85,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if body.Username == "" || body.Password == "" {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "username and password are required")
+		return
+	}
 	token, admin, err := auth.Login(
 		r.Context(),
 		s.ST,
@@ -112,20 +119,20 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /auth/me
+// GET /auth/me
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	a, ok := auth.AdminFromContext(r.Context())
 	if !ok {
 		writeErr(w, http.StatusUnauthorized, "unauthorized", "login required")
 		return
 	}
-	admin, err := s.ST.GetAdminByUsername(r.Context(), a.Username)
+	admin, err := s.ST.GetAdminByID(r.Context(), a.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusUnauthorized, "unauthorized", "admin gone")
 		return
 	}
 	if err != nil {
-		// Context only carries ID; fall back to ID-only response.
-		writeJSON(w, http.StatusOK, map[string]string{"id": a.ID})
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": admin.ID, "username": admin.Username})

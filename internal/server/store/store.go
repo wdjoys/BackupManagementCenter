@@ -22,6 +22,7 @@ type Store interface {
 	HasAdmin(ctx context.Context) (bool, error)
 	CreateAdmin(ctx context.Context, a *model.Admin) error
 	GetAdminByUsername(ctx context.Context, username string) (*model.Admin, error)
+	GetAdminByID(ctx context.Context, id string) (*model.Admin, error)
 	UpdateAdminLastLogin(ctx context.Context, adminID string, at time.Time) error
 
 	// Sessions

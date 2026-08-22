@@ -42,8 +42,9 @@ const (
 const (
 	ErrServerRestarted          = "server_restarted"
 	ErrAgentUnavailable         = "agent_unavailable"
-	ErrPartialSourceRead        = "partial_source_read"
 	ErrRepositoryLocked         = "repository_locked"
+	ErrRepositoryMissing        = "repository_missing"
+	ErrPartialSourceRead        = "partial_source_read"
 	ErrWrongRepositoryPassword  = "wrong_repository_password"
 	ErrCancelled                = "cancelled"
 	ErrInsufficientTempSpace    = "insufficient_temp_space"

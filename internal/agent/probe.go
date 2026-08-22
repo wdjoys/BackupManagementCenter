@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -83,18 +84,27 @@ func (p *Prober) GetCached() map[string]model.ToolInfo {
 // defaultProbe finds a tool using exec.LookPath and runs `{tool} --version`.
 func defaultProbe(ctx context.Context, toolName string) (path, version string) {
 	path, err := exec.LookPath(toolName)
+	if err != nil && runtime.GOOS == "windows" && !strings.Contains(toolName, ".") {
+		// PATHEXT may be absent in minimal environments.
+		path, err = exec.LookPath(toolName + ".exe")
+	}
 	if err != nil {
 		return "", ""
 	}
 
-	// Run `{tool} --version` and capture first line
-	cmd := exec.CommandContext(ctx, path, "--version")
+	// Run `{tool} --version` (fall back to `{tool} version` for subcommand-style
+	// CLIs like restic) and capture the first line.
 	var stdout bytes.Buffer
+	cmd := exec.CommandContext(ctx, path, "--version")
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
-		return path, ""
+		stdout.Reset()
+		cmd2 := exec.CommandContext(ctx, path, "version")
+		cmd2.Stdout = &stdout
+		if err := cmd2.Run(); err != nil {
+			return path, ""
+		}
 	}
-
 	version = strings.TrimSpace(stdout.String())
 	// Take only the first line
 	if nl := strings.IndexByte(version, '\n'); nl >= 0 {

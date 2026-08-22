@@ -154,7 +154,7 @@ func (d *Dispatcher) processJob(j *job) {
 
 	// Check if agent is connected
 	if !d.reg.IsConnected(j.agentID) {
-		// Agent offline: re-queue at tail and sleep
+		log.Printf("dispatcher: agent %s not connected; requeue run %s", j.agentID, j.runID)
 		d.requeueJob(j)
 		return
 	}

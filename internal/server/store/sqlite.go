@@ -198,6 +198,14 @@ func (s *sqliteStore) GetAdminByUsername(ctx context.Context, username string) (
 	return scanAdmin(row)
 }
 
+func (s *sqliteStore) GetAdminByID(ctx context.Context, id string) (*model.Admin, error) {
+	row := s.db.QueryRowContext(ctx,
+		"SELECT id, username, password_hash, created_at, last_login_at FROM admins WHERE id = ?",
+		id,
+	)
+	return scanAdmin(row)
+}
+
 func (s *sqliteStore) UpdateAdminLastLogin(ctx context.Context, adminID string, at time.Time) error {
 	_, err := s.db.ExecContext(ctx,
 		"UPDATE admins SET last_login_at = ? WHERE id = ?",
@@ -341,7 +349,7 @@ func (s *sqliteStore) UpsertAgentOnConnect(ctx context.Context, a *model.Agent) 
 		   status=excluded.status, last_seen_at=excluded.last_seen_at,
 		   token_hash=excluded.token_hash`,
 		a.ID, a.Name, a.Hostname, a.OS, a.Arch, a.Version,
-		string(a.Status), a.LastSeenAt.Format(time.RFC3339),
+		string(a.Status), nullTime(a.LastSeenAt),
 		a.EnrolledAt.Format(time.RFC3339), a.TokenHash, a.CapabilitiesJSON,
 	)
 	if err != nil {

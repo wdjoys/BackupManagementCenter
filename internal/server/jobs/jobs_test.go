@@ -203,6 +203,9 @@ func (s *fakeStore) Migrate(ctx context.Context) error { return nil }
 func (s *fakeStore) HasAdmin(ctx context.Context) (bool, error) { return false, nil }
 func (s *fakeStore) CreateAdmin(ctx context.Context, a *model.Admin) error { return nil }
 func (s *fakeStore) GetAdminByUsername(ctx context.Context, u string) (*model.Admin, error) { return nil, store.ErrNotFound }
+func (s *fakeStore) GetAdminByID(ctx context.Context, id string) (*model.Admin, error) {
+	return nil, store.ErrNotFound
+}
 func (s *fakeStore) UpdateAdminLastLogin(ctx context.Context, id string, at time.Time) error { return nil }
 func (s *fakeStore) CreateSession(ctx context.Context, s1 *model.Session) error { return nil }
 func (s *fakeStore) GetSession(ctx context.Context, idHash string) (*model.Session, error) { return nil, store.ErrNotFound }

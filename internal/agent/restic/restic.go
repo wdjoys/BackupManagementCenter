@@ -15,19 +15,20 @@ import (
 
 // Options configures restic wrapper.
 type Options struct {
-	Exe         string // absolute path to restic binary
-	RepoPath    string // repository path (e.g., rclone:gdrive:path)
-	PasswordFile string // path to 0600 password file
-	CacheDir    string // optional cache directory
+	Exe            string // absolute path to restic binary
+	RepoPath       string // repository path (e.g., rclone:gdrive:path)
+	PasswordFile   string // path to 0600 password file
+	CacheDir       string // optional cache directory
+	RcloneConfFile string // 0600 rclone.conf path; required for rclone: repos
 }
 
 // Snapshot represents a restic snapshot from --json output.
 type Snapshot struct {
-	ID        string   `json:"id"`
-	Time      string   `json:"time"`
-	Host      string   `json:"host"`
-	Tags      []string `json:"tags"`
-	Paths     []string `json:"paths"`
+	ID    string   `json:"id"`
+	Time  string   `json:"time"`
+	Host  string   `json:"host"`
+	Tags  []string `json:"tags"`
+	Paths []string `json:"paths"`
 }
 
 // ProgressCallback is called for status updates during backup.
@@ -61,7 +62,7 @@ func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []str
 	args = append(args, "--json")
 	args = append(args, paths...)
 
-	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
+	env := buildEnv(opts)
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
@@ -118,7 +119,7 @@ func CatConfig(ctx context.Context, exec backup.Executor, opts Options) error {
 	}
 	args = append(args, "--json")
 
-	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
+	env := buildEnv(opts)
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
@@ -147,11 +148,9 @@ func Snapshots(ctx context.Context, exec backup.Executor, opts Options) ([]Snaps
 	}
 	args = append(args, "--json")
 
-	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
-	if opts.CacheDir != "" {
-		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
-	}
+	env := buildEnv(opts)
 
+	var stderrTail strings.Builder
 	var snapshots []Snapshot
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
 		func(line string) {
@@ -159,13 +158,27 @@ func Snapshots(ctx context.Context, exec backup.Executor, opts Options) ([]Snaps
 			if err := json.Unmarshal([]byte(line), &snaps); err == nil {
 				snapshots = snaps
 			}
-		}, func(string) {})
-	if err != nil || exitCode != 0 {
-		return nil, mapResticError(exitCode, err)
+		}, func(line string) { stderrTail.WriteString(line + "\n") })
+	if exitCode != 0 {
+		return nil, enriched(mapResticError(exitCode, err), stderrTail.String())
 	}
 	return snapshots, nil
 }
 
+// enriched appends a compact tail of restic output to an error for diagnostics.
+func enriched(err error, output string) error {
+	if err == nil {
+		return nil
+	}
+	out := strings.ReplaceAll(strings.TrimSpace(output), "\n", " | ")
+	if len(out) > 300 {
+		out = out[len(out)-300:]
+	}
+	if out == "" {
+		return err
+	}
+	return fmt.Errorf("%w; output: %s", err, out)
+}
 
 // RestoreDryRun runs `restic restore --dry-run --verbose=2` and parses stats.
 func RestoreDryRun(ctx context.Context, exec backup.Executor, opts Options, snapshotID, target string, includePaths []string) (*model.Progress, error) {
@@ -186,7 +199,7 @@ func RestoreDryRun(ctx context.Context, exec backup.Executor, opts Options, snap
 		args = append(args, "--include", p)
 	}
 
-	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
+	env := buildEnv(opts)
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
@@ -258,7 +271,7 @@ func Restore(ctx context.Context, exec backup.Executor, opts Options, snapshotID
 		args = append(args, "--include", p)
 	}
 
-	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
+	env := buildEnv(opts)
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
@@ -302,7 +315,7 @@ func Forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 	}
 	args = append(args, "--json")
 
-	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
+	env := buildEnv(opts)
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
@@ -329,7 +342,7 @@ func Check(ctx context.Context, exec backup.Executor, opts Options) error {
 	if opts.CacheDir != "" {
 		args = append(args, "--cache-dir", opts.CacheDir)
 	}
-	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
+	env := buildEnv(opts)
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
@@ -344,14 +357,15 @@ func Check(ctx context.Context, exec backup.Executor, opts Options) error {
 type SnapshotEntry struct {
 	Name  string `json:"name"`
 	Type  string `json:"type"`
+	Path  string `json:"path,omitempty"`
 	Size  int64  `json:"size,omitempty"`
 	Mtime string `json:"mtime,omitempty"`
 }
 
 // Ls runs `restic ls <snapshot> --json` and returns structured entries.
-func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID string) ([]SnapshotEntry, error) {
+func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID string) ([]SnapshotEntry, []string, error) {
 	if opts.Exe == "" {
-		return nil, fmt.Errorf("restic exe not set")
+		return nil, nil, fmt.Errorf("restic exe not set")
 	}
 	args := []string{"ls", snapshotID}
 	if opts.RepoPath != "" {
@@ -365,23 +379,53 @@ func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID stri
 	}
 	args = append(args, "--json")
 
-	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
-	if opts.CacheDir != "" {
-		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
-	}
+	env := buildEnv(opts)
 
 	var entries []SnapshotEntry
+	var roots []string
+	first := true
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
 		func(line string) {
-			var es []SnapshotEntry
-			if err := json.Unmarshal([]byte(line), &es); err == nil {
-				entries = es
+			// restic ls --json emits the snapshot descriptor first
+			// (struct_type "snapshot", carrying source "paths"), then one
+			// node object per line: {"name":"a.txt","type":"file",
+			// "path":"/src/a.txt","struct_type":"node",...}.
+			var probe struct {
+				StructType string    `json:"struct_type"`
+				Summary    *struct{} `json:"summary"`
+				Paths      []string  `json:"paths"`
 			}
+			if json.Unmarshal([]byte(line), &probe) == nil && probe.Summary != nil {
+				roots = probe.Paths
+				first = false
+				return
+			}
+			var node struct {
+				Name       string `json:"name"`
+				Type       string `json:"type"`
+				Path       string `json:"path"`
+				Size       int64  `json:"size"`
+				StructType string `json:"struct_type"`
+				Mtime      string `json:"mtime"`
+			}
+			if json.Unmarshal([]byte(line), &node) != nil || node.Name == "" {
+				return
+			}
+			if first || node.Type == "" {
+				return
+			}
+			entries = append(entries, SnapshotEntry{
+				Name:  node.Name,
+				Type:  node.Type,
+				Path:  node.Path,
+				Size:  node.Size,
+				Mtime: node.Mtime,
+			})
 		}, func(string) {})
-	if err != nil || exitCode != 0 {
-		return nil, mapResticError(exitCode, err)
+	if exitCode != 0 {
+		return nil, nil, mapResticError(exitCode, err)
 	}
-	return entries, nil
+	return entries, roots, nil
 }
 
 // Init runs `restic init` to create a new repository. Restic does not
@@ -400,7 +444,7 @@ func Init(ctx context.Context, exec backup.Executor, opts Options) error {
 	if opts.CacheDir != "" {
 		args = append(args, "--cache-dir", opts.CacheDir)
 	}
-	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
+	env := buildEnv(opts)
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
@@ -453,3 +497,37 @@ func (e *ResticError) Error() string {
 }
 
 func (e *ResticError) Unwrap() error { return e.Err }
+
+// buildEnv assembles the restic child environment: password file, optional
+// cache dir and the rclone config for rclone: backends.
+func buildEnv(opts Options) []string {
+	env := []string{"RESTIC_PASSWORD_FILE=" + opts.PasswordFile}
+	if opts.CacheDir != "" {
+		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
+	}
+	if opts.RcloneConfFile != "" {
+		env = append(env, "RCLONE_CONFIG="+opts.RcloneConfFile)
+	}
+	return env
+}
+
+// knownBackends are restic location prefixes that must not be re-wrapped.
+var knownBackends = []string{"local:", "rclone:", "rest:", "s3:", "sftp:", "b2:", "azure:", "gs:", "swift:"}
+
+// NormalizeRepoPath maps "<remote>:<path>" (our storage-target notation) to
+// restic's "rclone:<remote>:<path>"; already-prefixed or plain paths pass
+// through unchanged.
+func NormalizeRepoPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	for _, b := range knownBackends {
+		if strings.HasPrefix(p, b) {
+			return p
+		}
+	}
+	if i := strings.Index(p, ":"); i > 0 {
+		return "rclone:" + p
+	}
+	return p
+}

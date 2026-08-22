@@ -1,17 +1,23 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:22-bookworm-slim AS web-build
+ENV CI=true COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /src/web
-COPY web/package.json web/pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
 COPY web/ ./
-RUN pnpm run build
+RUN corepack enable && \
+    pnpm config set registry https://registry.npmmirror.com && \
+    pnpm config set minimum-release-age 0 && \
+    pnpm install --frozen-lockfile --ignore-scripts && \
+    pnpm rebuild esbuild && \
+    pnpm run build
 
 FROM golang:1.27-bookworm AS go-build
+ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=web-build /src/web/dist /src/web/dist
 RUN rm -rf internal/server/webui/dist && \
     mkdir -p internal/server/webui/dist && \
     cp -a /src/web/dist/. internal/server/webui/dist/ && \

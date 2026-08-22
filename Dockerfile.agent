@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 FROM golang:1.27-bookworm AS go-build
+ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -9,12 +10,17 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags='-s -w' -o /out/backup-center-agent ./cmd/agent
 
 FROM debian:bookworm-slim
+ARG DEBIAN_MIRROR=mirrors.aliyun.com
 ARG RESTIC_VERSION=0.18.0
 ARG RCLONE_VERSION=1.69.0
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip bzip2 sqlite3 mariadb-client postgresql-client && rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" | bunzip2 > /usr/local/bin/restic && \
+ARG RESTIC_BASE_URL=https://gh-proxy.com/https://github.com/restic/restic/releases/download
+ARG RCLONE_BASE_URL=https://gh-proxy.com/https://github.com/rclone/rclone/releases/download
+RUN sed -i "s|deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g; s|security.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|g" /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip bzip2 sqlite3 mariadb-client postgresql-client && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL "${RESTIC_BASE_URL}/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" | bunzip2 > /usr/local/bin/restic && \
     chmod 0755 /usr/local/bin/restic && \
-    curl -fsSL "https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip && \
+    curl -fsSL "${RCLONE_BASE_URL}/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip && \
     unzip -q /tmp/rclone.zip -d /tmp/rclone && \
     install -m 0755 "/tmp/rclone/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone && \
     rm -rf /tmp/rclone /tmp/rclone.zip

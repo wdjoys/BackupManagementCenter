@@ -9,7 +9,6 @@
 3. [通用准备](#通用准备)
 4. [方式一：Docker Compose 部署（推荐）](#方式一docker-compose-部署推荐)
    - [Server Compose](#server-compose)
-   - [TLS 证书（Certbot Docker 自动管理）](#tls-证书certbot-docker-自动管理)
    - [Agent Compose](#agent-compose)
 5. [方式二：systemd 二进制部署](#方式二systemd-二进制部署)
    - [构建产物](#构建产物)
@@ -23,15 +22,6 @@
 11. [升级与回滚](#升级与回滚)
 12. [故障排查](#故障排查)
 
-## 部署方式选择
-
-| 场景 | 推荐方式 | 说明 |
-| --- | --- | --- |
-| 生产服务器 | Docker Compose + Certbot 容器 | 证书自动续期、隔离性好、升级简单 |
-| 80/443 已被 Caddy/Nginx 占用 | Caddy 共存模式 | BMC 全明文，TLS 由边缘代理负责，见 [`deploy/caddy.md`](caddy.md) |
-| 已有 systemd 运维体系 | systemd 二进制部署 | 直接使用发行版 restic/rclone/数据库客户端 |
-| 本地开发 | `BMC_DEV_INSECURE=1` | 仅本机测试，禁止生产使用 |
-
 ## 架构总览
 
 ```text
@@ -41,7 +31,6 @@
 ┌─────────────────────────────────────────────┐
 │ BMC Server（单节点）                          │
 │  :8080 HTTP API + Web UI（TLS）              │
-│  :8081 ACME HTTP-01 challenge（明文，可选）    │
 │  :9090 Agent gRPC（TLS）                     │
 │  127.0.0.1:9100 Prometheus 指标               │
 │  SQLite WAL + 主密钥加密列                    │
@@ -68,11 +57,12 @@
 
 | 场景 | 推荐方式 | 说明 |
 | --- | --- | --- |
-| 生产服务器 | Docker Compose + Certbot 容器 | 证书自动续期、隔离性好、升级简单 |
+| 生产服务器（独占边缘） | Docker Compose，自行提供 TLS 证书 | 支持每次握手动态加载，续期无需重启 |
+| 80/443 已被 Caddy/Nginx 占用 | Caddy 共存模式 | BMC 全明文，TLS 由边缘代理负责，见 [`deploy/caddy.md`](caddy.md) |
 | 已有 systemd 运维体系 | systemd 二进制部署 | 直接使用发行版 restic/rclone/数据库客户端 |
 | 本地开发 | `BMC_DEV_INSECURE=1` | 仅本机测试，禁止生产使用 |
 
-两种方式不要混用同一台主机的数据目录。
+多种方式不要混用同一台主机的数据目录。
 
 ## 通用准备
 
@@ -95,7 +85,6 @@ dig +short backup.example.com
 | 公网端口 | 用途 | 是否必须公网开放 |
 | --- | --- | --- |
 | TCP 443 | Web UI / API（HTTPS） | 是 |
-| TCP 80 | ACME HTTP-01 验证 | 仅申请/续期证书期间需要 |
 | TCP 9090 | Agent gRPC（TLS） | 是，至少对所有 Agent 开放 |
 
 ### 3. 主密钥
@@ -134,7 +123,7 @@ chmod 600 secrets/master.key
 
 ```text
 docker-compose.yml              # 默认入口，包含 Server
-docker-compose.server.yml       # Server + certbot 服务定义
+docker-compose.server.yml       # Server 服务定义（TLS 证书自行提供）
 docker-compose.agent.yml        # Agent 模板（在每台受管主机使用）
 Dockerfile.server
 Dockerfile.agent
@@ -152,93 +141,51 @@ head -c 32 /dev/urandom > secrets/master.key
 chmod 600 secrets/master.key
 ```
 
-#### 第 2 步：申请 TLS 证书（Certbot standalone）
+#### 第 2 步：准备 TLS 证书
 
-首次证书申请时，先不要启动 Server（避免占用公网 80）：
-
-```sh
-export BMC_DOMAIN=backup.example.com
-
-docker compose -f docker-compose.server.yml --profile certbot-init run \
-  --rm --service-ports \
-  certbot-init certonly \
-  --standalone \
-  -d "$BMC_DOMAIN" \
-  --email admin@example.com \
-  --agree-tos \
-  --no-eff-email
-```
-
-证书保存在共享 volume `bmc-certs` 中：
+将证书链与私钥放入 `secrets/`：
 
 ```text
-/etc/letsencrypt/live/backup.example.com/fullchain.pem
-/etc/letsencrypt/live/backup.example.com/privkey.pem
+secrets/server.crt   # fullchain 证书链
+secrets/server.key   # 私钥
+chmod 600 secrets/server.key
 ```
 
-验证：
+证书来源任选其一：
 
-```sh
-docker run --rm -v bmc-certs:/etc/letsencrypt:ro certbot/certbot certificates
-```
+- 企业 CA / 商业证书；
+- Let's Encrypt 等 ACME 证书：80 端口可用时用 HTTP-01，否则用 DNS-01（acme.sh 等 ACME 客户端的 DNS 模式均可），签发后把 `fullchain.pem` / `privkey.pem` 复制到上述路径；
+- 内网环境可用自签证书（Agent 侧需信任 CA 或临时设置 `BMC_DEV_INSECURE=1`），见 [自签证书](#自签证书)。
 
-> 没有公网域名或 80 端口不可用时，改用 DNS 验证或自签证书，见 [TLS 替代方案](#tls-替代方案)。
+要求：证书 SAN 必须覆盖 Agent 与浏览器访问的域名；Server 在每次 TLS 握手时动态重读该文件，**替换证书后无需重启**。
 
 #### 第 3 步：启动 Server
 
 ```sh
-export BMC_DOMAIN=backup.example.com
 export BMC_PUBLIC_URL=https://backup.example.com
 export BMC_MASTER_KEY_FILE=./secrets/master.key
+export BMC_TLS_CERT_FILE=./secrets/server.crt
+export BMC_TLS_KEY_FILE=./secrets/server.key
 
-docker compose -f docker-compose.server.yml up -d bmc-server
+docker compose -f docker-compose.server.yml up -d --build bmc-server
 ```
 
-Compose 端口映射：
+端口映射：
 
 ```text
-公网 80  → 容器 8081（ACME challenge）
 公网 443 → 容器 8080（HTTPS Web/API）
 公网 9090 → 容器 9090（Agent gRPC）
-```
-
-#### 第 4 步：启动自动续期
-
-```sh
-docker compose -f docker-compose.server.yml --profile certbot up -d certbot
-```
-
-Certbot 每 12 小时执行一次 webroot 续期；Server 通过动态 `GetCertificate` 在新握手时加载新证书，**无需重启**。
-
-续期演练：
-
-```sh
-docker compose -f docker-compose.server.yml --profile certbot run --rm certbot renew --dry-run
 ```
 
 #### 数据卷
 
 | Volume | 内容 | 可否删除 |
 | --- | --- | --- |
-| `bmc-data` | SQLite 数据库、实例 ID、ACME webroot | **永不删除** |
-| `bmc-certs` | Let's Encrypt 全部证书状态 | 删除后需重新签发 |
-| `bmc-acme-webroot` | HTTP-01 challenge 临时文件 | 可重建 |
+| `bmc-data` | SQLite 数据库、实例 ID | **永不删除** |
 
-### TLS 证书（Certbot Docker 自动管理）
+### 自签证书
 
-详细说明见 [`deploy/certbot-docker.md`](certbot-docker.md)。
-
-要点回顾：
-
-- 公网 80 必须能到达 Server 的 ACME 监听器（容器内 `:8081`）。
-- 证书域名由 `BMC_DOMAIN` 控制，同时用于：
-  - Web UI HTTPS；
-  - Agent gRPC TLS 验证。
-- 续期完全自动，无需重启任何服务。
-
-#### TLS 替代方案
-
-**无公网 80 / 无公网域名** → 使用自签证书 + 手动分发：
+**内网/无公网域名** → 自签 + 手动分发：
 
 ```sh
 openssl req -x509 -newkey rsa:2048 -nodes \
@@ -249,7 +196,7 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   -addext "subjectAltName=DNS:backup.internal,IP:10.0.0.5"
 ```
 
-然后改用 bind mount 而非 Let's Encrypt volume（修改 `docker-compose.server.yml` 中证书路径），并在每台 Agent 上信任该 CA 或临时设置 `BMC_DEV_INSECURE=1`（仅限隔离内网）。
+然后在每台 Agent 上信任该 CA，或临时设置 `BMC_DEV_INSECURE=1`（仅限隔离内网）。
 
 **已有企业 CA 证书** → 直接放置：
 
@@ -354,7 +301,7 @@ sudo mkdir -p /var/lib/bmc /etc/bmc
 # 主密钥
 sudo sh -c 'head -c 32 /dev/urandom > /etc/bmc/master.key && chmod 600 /etc/bmc/master.key && chown bmc:bmc /etc/bmc/master.key'
 
-# TLS 证书（从 certbot 或企业 CA 获取）
+# TLS 证书（企业 CA 或 Let's Encrypt 等签发）
 sudo cp fullchain.pem /etc/bmc/server.crt
 sudo cp privkey.pem   /etc/bmc/server.key
 sudo chown bmc:bmc /etc/bmc/*
@@ -364,19 +311,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now bmc-server
 ```
 
-证书续期（配合宿主机 certbot）：
-
-```sh
-sudo tee /etc/letsencrypt/renewal-hooks/deploy/bmc-server.sh >/dev/null <<'EOF'
-#!/bin/sh
-set -eu
-cp /etc/letsencrypt/live/backup.example.com/fullchain.pem /etc/bmc/server.crt
-cp /etc/letsencrypt/live/backup.example.com/privkey.pem  /etc/bmc/server.key
-chown bmc:bmc /etc/bmc/server.*
-systemctl kill --signal=SIGUSR1 bmc-server 2>/dev/null || systemctl restart bmc-server
-EOF
-sudo chmod 700 /etc/letsencrypt/renewal-hooks/deploy/bmc-server.sh
-```
+证书更新：Server 在每次 TLS 握手时动态重读 `/etc/bmc/server.crt` / `server.key`，替换文件后无需重启。若使用宿主机 ACME 续期工具，在其续期钩子中复制新文件到 `/etc/bmc/` 即可。
 
 > Server 支持每次 TLS 握手重新读取证书文件；即使不发送信号，新握手也会拿到新证书。
 
@@ -482,8 +417,7 @@ Web UI：**Storage → Repositories → 绑定仓库**
 | `BMC_LISTEN_ADDR` | `:8080` | HTTP/Web UI 监听地址 |
 | `BMC_GRPC_ADDR` | `:9090` | Agent gRPC 监听地址 |
 | `BMC_METRICS_ADDR` | `127.0.0.1:9100` | Prometheus 指标，仅本机 |
-| `BMC_ACME_ADDR` | 空 | ACME challenge 明文监听地址，如 `:8081` |
-| `BMC_ACME_WEBROOT` | `./data/acme-webroot` | HTTP-01 webroot |
+| `BMC_TLS_MODE` | `auto` | `auto`=使用证书文件；`none`=明文运行（置于 TLS 反代之后，如 Caddy 共存模式） |
 | `BMC_DATA_DIR` | `./data` | SQLite 与实例 ID 目录 |
 | `BMC_PUBLIC_URL` | 空 | 外部访问 URL |
 | `BMC_MASTER_KEY_FILE` | 空 | 32 字节主密钥文件，生产必填 |
@@ -643,21 +577,17 @@ Restic 密码不匹配。该密码由系统生成并加密存储，通常意味�
 - 检查反向代理（如有）是否正确转发 WebSocket：`/ws/runs/{id}` 需要 Upgrade 头。
 - 浏览器控制台查看是否有混合内容（HTTPS 页面请求 HTTP 资源）。
 
-### 证书续期失败
+### 证书更新后未生效
+
+Server 在每次新 TLS 握手时动态重读证书文件，正常无需重启。排查顺序：
 
 ```sh
-# 检查 ACME 端点可达性（从外网）
-curl -I http://backup.example.com/.well-known/acme-challenge/test
-
-# 查看 certbot 日志
-docker compose -f docker-compose.server.yml logs certbot
+# 容器内看到的文件是否已更新
+docker compose exec bmc-server cat /run/secrets/bmc_tls_cert | openssl x509 -noout -dates
 ```
 
-常见原因：
-
-- 公网 80 未放行；
-- DNS 尚未生效；
-- 有别的进程占用 80。
+- 文件未更新 → 检查你的续期工具是否真的写入了挂载的源文件；
+- 文件已更新但仍是旧证书 → 确认客户端没有复用旧的长连接（重建连接即可）。
 
 ---
 

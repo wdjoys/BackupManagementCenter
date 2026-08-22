@@ -23,12 +23,11 @@ import (
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/secrets"
-	"backupmanagementcenter/internal/server/acme"
+	"backupmanagementcenter/internal/server/agentreg"
+	"backupmanagementcenter/internal/server/api"
 	servercfg "backupmanagementcenter/internal/server/config"
 	"backupmanagementcenter/internal/server/dispatchgrpc"
 	"backupmanagementcenter/internal/server/events"
-	"backupmanagementcenter/internal/server/agentreg"
-	"backupmanagementcenter/internal/server/api"
 	"backupmanagementcenter/internal/server/jobs"
 	"backupmanagementcenter/internal/server/metrics"
 	"backupmanagementcenter/internal/server/scheduler"
@@ -135,27 +134,12 @@ func main() {
 			log.Printf("[ERROR] grpc serve: %v", err)
 		}
 	}()
-
 	handler := api.New(&api.Server{
 		ST: st, Bus: bus, Met: met, Jobs: orch,
 		Version: version.Version,
 		Ready:   ready.Load,
 	})
 
-	if cfg.AcmeAddr != "" {
-		acmeSrv := acme.Server{Addr: cfg.AcmeAddr, Webroot: cfg.AcmeWebroot}
-		if err := acmeSrv.Validate(); err != nil {
-			log.Fatalf("[FATAL] ACME: %v", err)
-		}
-		if err := acmeSrv.Prepare(); err != nil {
-			log.Fatalf("[FATAL] ACME webroot: %v", err)
-		}
-		go func() {
-			if err := http.ListenAndServe(cfg.AcmeAddr, acmeSrv.Handler()); err != nil {
-				log.Printf("[ERROR] ACME HTTP serve: %v", err)
-			}
-		}()
-	}
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           handler,

@@ -17,15 +17,46 @@
 
 ## Server Compose 部署
 
-在仓库根目录创建密钥与证书目录：
+在仓库根目录创建密钥与证书目录。仓库不会自带证书文件，因此不能直接执行 `cp server.crt ...`。
+
+### 方式一：生成本地或内网测试用自签证书
+
+适用于开发、局域网和临时验证环境。需要安装 `openssl`：
 
 ```sh
 mkdir -p secrets
 head -c 32 /dev/urandom > secrets/master.key
 chmod 600 secrets/master.key
-cp server.crt secrets/server.crt
-cp server.key secrets/server.key
+
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout secrets/server.key \
+  -out secrets/server.crt \
+  -days 825 \
+  -subj "/CN=backup.example.com" \
+  -addext "subjectAltName=DNS:backup.example.com,DNS:localhost,IP:127.0.0.1"
+chmod 600 secrets/server.key
 ```
+
+访问地址必须与证书中的域名或 IP 匹配。例如使用 `backup.example.com`：
+
+```sh
+echo "127.0.0.1 backup.example.com" | sudo tee -a /etc/hosts
+```
+
+### 方式二：使用正式 TLS 证书
+
+如果已经从 CA 获得证书，则执行：
+
+```sh
+mkdir -p secrets
+head -c 32 /dev/urandom > secrets/master.key
+chmod 600 secrets/master.key
+cp /path/to/server.crt secrets/server.crt
+cp /path/to/server.key secrets/server.key
+chmod 600 secrets/server.key
+```
+
+`server.crt` 必须包含访问域名对应的 SAN；`server.key` 必须与证书匹配。
 
 设置外部访问地址并启动：
 

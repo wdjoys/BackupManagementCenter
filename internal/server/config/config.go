@@ -18,7 +18,12 @@ type Server struct {
 	MasterKeyFile string // BMC_MASTER_KEY_FILE
 	TLSCertFile   string // BMC_TLS_CERT_FILE
 	TLSKeyFile    string // BMC_TLS_KEY_FILE
-	DevInsecure   bool   // BMC_DEV_INSECURE=1 allows missing TLS/master key (local dev only)
+	// TLSMode: "auto" (default) serves TLS from TLSCertFile/KeyFile and
+	// requires them in production; "none" serves plain HTTP + plain gRPC for
+	// deployments where a reverse proxy (Caddy/Nginx) terminates all TLS.
+	// The master key stays mandatory in production regardless of mode.
+	TLSMode     string
+	DevInsecure bool // BMC_DEV_INSECURE=1 allows missing TLS/master key (local dev only)
 }
 
 func LoadServer() (Server, error) {
@@ -33,13 +38,20 @@ func LoadServer() (Server, error) {
 		MasterKeyFile: os.Getenv("BMC_MASTER_KEY_FILE"),
 		TLSCertFile:   os.Getenv("BMC_TLS_CERT_FILE"),
 		TLSKeyFile:    os.Getenv("BMC_TLS_KEY_FILE"),
+		TLSMode:       env("BMC_TLS_MODE", "auto"),
 		DevInsecure:   env("BMC_DEV_INSECURE", "") == "1",
 	}
+	switch c.TLSMode {
+	case "auto", "none":
+	default:
+		return c, fmt.Errorf("config: BMC_TLS_MODE must be auto or none, got %q", c.TLSMode)
+	}
+	plaintext := c.TLSMode == "none"
 	if c.DevInsecure {
 		return c, nil
 	}
-	if c.TLSCertFile == "" || c.TLSKeyFile == "" {
-		return c, fmt.Errorf("config: BMC_TLS_CERT_FILE and BMC_TLS_KEY_FILE are required (or BMC_DEV_INSECURE=1 for local development)")
+	if !plaintext && (c.TLSCertFile == "" || c.TLSKeyFile == "") {
+		return c, fmt.Errorf("config: BMC_TLS_CERT_FILE and BMC_TLS_KEY_FILE are required (or BMC_TLS_MODE=none behind a TLS proxy, or BMC_DEV_INSECURE=1 for local development)")
 	}
 	if c.MasterKeyFile == "" {
 		return c, fmt.Errorf("config: BMC_MASTER_KEY_FILE is required (or BMC_DEV_INSECURE=1 for local development)")

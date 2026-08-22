@@ -111,12 +111,19 @@ func main() {
 	defer sched.Stop()
 	defer disp.StopWatchdog()
 
-	// gRPC listener (TLS with dynamic certificate reload).
+	// gRPC listener: TLS with dynamic certificate reload, or plaintext when
+	// BMC_TLS_MODE=none (TLS terminated by a reverse proxy).
 	tlsCfg, err := serverTLS(cfg)
 	if err != nil {
 		log.Fatalf("[FATAL] tls: %v", err)
 	}
-	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
+	var gs *grpc.Server
+	if tlsCfg != nil {
+		gs = grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
+	} else {
+		log.Printf("[WARN] gRPC running WITHOUT TLS - deploy behind a TLS-terminating proxy")
+		gs = grpc.NewServer()
+	}
 	bmcv1.RegisterAgentControlServer(gs, svc)
 
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -209,10 +216,14 @@ func (a schedAdapter) SystemRunCheck(ctx context.Context, repositoryID string) (
 	}
 	return run.ID, nil
 }
+
 func serverTLS(cfg servercfg.Server) (*tls.Config, error) {
+	if cfg.TLSMode == "none" {
+		return nil, nil
+	}
 	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
 		if cfg.DevInsecure {
-			return &tls.Config{MinVersion: tls.VersionTLS12}, nil
+			return nil, nil
 		}
 		return nil, fmt.Errorf("tls cert/key required outside dev mode")
 	}

@@ -1,13 +1,14 @@
 # syntax=docker/dockerfile:1.7
 
 FROM golang:1.27-bookworm AS go-build
+ARG VERSION=0.1.0
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags='-s -w' -o /out/backup-center-agent ./cmd/agent
+    go build -trimpath -ldflags="-s -w -X backupmanagementcenter/internal/version.Version=$VERSION" -o /out/backup-center-agent ./cmd/agent
 
 FROM debian:bookworm-slim
 ARG DEBIAN_MIRROR=mirrors.aliyun.com

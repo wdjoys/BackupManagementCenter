@@ -157,6 +157,26 @@ BMC_SOURCE_APP=/srv/myapp
 - 容器以非 root 用户运行，并启用 `no-new-privileges`。
 - 只读源目录仍可能包含敏感数据，应限制 Docker 主机访问权限并保护宿主机 Docker 权限。
 
+## 故障排查：Agent 报 name resolver error: produced zero addresses
+
+按顺序检查：
+
+1. `BMC_SERVER_GRPC_URL` 必须是纯 `host:port`，不带 `https://` 前缀。
+2. **`${VAR:- 默认值}` 中冒号后不要留空格**——空格会成为值的一部分，导致域名解析失败。正确写法：`${BMC_SERVER_GRPC_URL:-backup.example.com:9090}`。
+3. 域名必须能从 Agent 容器解析：`docker exec bmc-agent-1 getent hosts <域名>`。
+4. 若走 Caddy 443 共存模式：确认 Caddyfile 已为该域名配置 `@grpc protocol grpc` 分流到 BMC 的 9090（h2c），且 Server 以 `BMC_TLS_MODE=none` 运行；否则改用直连 `:9090`。
+
+## 故障排查：Server 报 master key permission denied
+
+文件型 secret 在非 Swarm 模式下按宿主机文件的属主/权限原样挂载。容器以 uid 65532 运行，因此：
+
+```sh
+chown 65532:65532 secrets/master.key   # 或 chmod 644 secrets/master.key
+docker compose -f docker-compose.server.yml up -d --force-recreate bmc-server
+```
+
+每次重新生成 `master.key` 后需重复设置属主。
+
 ## 升级与回滚
 
 升级前备份 Server 数据 volume 和主密钥：

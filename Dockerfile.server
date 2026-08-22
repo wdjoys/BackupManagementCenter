@@ -23,7 +23,7 @@ RUN rm -rf internal/server/webui/dist && \
     mkdir -p internal/server/webui/dist && \
     cp -a /src/web/dist/. internal/server/webui/dist/ && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags='-s -w -X backupmanagementcenter/internal/version.Version=${VERSION}' -o /out/backup-center-server ./cmd/server && \
+    go build -trimpath -ldflags="-s -w -X backupmanagementcenter/internal/version.Version=$VERSION" -o /out/backup-center-server ./cmd/server && \
     mkdir -p /out/data-home && chmod 0750 /out/data-home
 
 FROM gcr.io/distroless/static-debian12:nonroot

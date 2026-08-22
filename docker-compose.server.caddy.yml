@@ -6,7 +6,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
-    image: wdjoys/backup-management-center-server:latest
+      args:
+        VERSION: ${VERSION:-0.1.0}
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"

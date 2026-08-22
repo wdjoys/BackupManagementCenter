@@ -1,12 +1,23 @@
+# Agent 部署模板：在每台被管理的 Linux 主机上单独运行。
+#
+# BMC_SERVER_GRPC_URL 必须是纯 host:port（不带 https:// 前缀），且能从本容器解析：
+#   - Agent 与 Server 同一台主机（Caddy 共存模式，Server 绑定 127.0.0.1）：
+#       取消 network_mode: host 注释，并填 127.0.0.1:9090
+#   - Agent 与 Server 不同主机：
+#       填 Server 的公网/内网域名或 IP，如 backup.example.com:9090
 services:
   bmc-agent:
     build:
       context: .
       dockerfile: Dockerfile.agent
-    image: backup-management-center-agent:latest
+      args:
+        VERSION: ${VERSION:-0.1.0}
+    image: wdjoys/backup-management-center-agent:latest
     restart: unless-stopped
+    # 同机部署时取消下一行注释（直接使用宿主网络，可访问 127.0.0.1:9090）：
+    # network_mode: host
     environment:
-      BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC host:port}
+      BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC as host:port, no scheme}
       BMC_SERVER_TLS: ${BMC_SERVER_TLS:-1}
       BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
       BMC_AGENT_STATE_DIR: /var/lib/bmc-agent

@@ -136,6 +136,12 @@ BMC_SERVER_TLS=1
 
 唯一要求：Agent 使用的域名必须与 Caddy 站点域名一致。
 
+## 故障排查
+
+- **Agent 注册报 produced zero addresses**：`BMC_SERVER_GRPC_URL` 不带协议前缀；同机部署填 `127.0.0.1:9090` 并启用 `network_mode: host`；Compose 默认值 `${VAR:- 值}` 冒号后的空格会被当作值的一部分，务必写成 `${VAR:-值}`。
+- **经 Caddy :443 注册超时**：Caddyfile 必须包含 `@grpc protocol grpc` 分流到 BMC 9090（h2c）；只配 Web 反代时 TLS 握手成功但注册会失败。
+- **master key permission denied**：`chown 65532:65532 secrets/master.key` 后重建容器（文件型 secret 保留宿主机属主）。
+
 ## 安全说明
 
 - 明文端口只绑定 `127.0.0.1`，请勿改成 `0.0.0.0`。

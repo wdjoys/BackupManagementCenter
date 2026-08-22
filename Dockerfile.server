@@ -12,6 +12,7 @@ RUN corepack enable && \
     pnpm run build
 
 FROM golang:1.27-bookworm AS go-build
+ARG VERSION=0.1.0
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -22,10 +23,14 @@ RUN rm -rf internal/server/webui/dist && \
     mkdir -p internal/server/webui/dist && \
     cp -a /src/web/dist/. internal/server/webui/dist/ && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags='-s -w' -o /out/backup-center-server ./cmd/server
+    go build -trimpath -ldflags='-s -w -X backupmanagementcenter/internal/version.Version=${VERSION}' -o /out/backup-center-server ./cmd/server && \
+    mkdir -p /out/data-home && chmod 0750 /out/data-home
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=go-build /out/backup-center-server /usr/local/bin/backup-center-server
+# Pre-create the data dir owned by the runtime user so a fresh named volume
+# (bmc-data) is initialized with writable ownership.
+COPY --from=go-build --chown=65532:65532 /out/data-home /var/lib/bmc
 EXPOSE 8080 9090
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/backup-center-server"]

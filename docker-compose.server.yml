@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
-    image: backup-management-center-server:latest
+    image: wdjoys/backup-management-center-server:latest
     restart: unless-stopped
     ports:
       - "443:8080"

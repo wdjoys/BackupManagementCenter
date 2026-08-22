@@ -23,6 +23,7 @@ import (
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/secrets"
+	"backupmanagementcenter/internal/server/acme"
 	servercfg "backupmanagementcenter/internal/server/config"
 	"backupmanagementcenter/internal/server/dispatchgrpc"
 	"backupmanagementcenter/internal/server/events"
@@ -110,7 +111,7 @@ func main() {
 	defer sched.Stop()
 	defer disp.StopWatchdog()
 
-	// gRPC listener (TLS when configured).
+	// gRPC listener (TLS with dynamic certificate reload).
 	tlsCfg, err := serverTLS(cfg)
 	if err != nil {
 		log.Fatalf("[FATAL] tls: %v", err)
@@ -134,6 +135,20 @@ func main() {
 		Ready:   ready.Load,
 	})
 
+	if cfg.AcmeAddr != "" {
+		acmeSrv := acme.Server{Addr: cfg.AcmeAddr, Webroot: cfg.AcmeWebroot}
+		if err := acmeSrv.Validate(); err != nil {
+			log.Fatalf("[FATAL] ACME: %v", err)
+		}
+		if err := acmeSrv.Prepare(); err != nil {
+			log.Fatalf("[FATAL] ACME webroot: %v", err)
+		}
+		go func() {
+			if err := http.ListenAndServe(cfg.AcmeAddr, acmeSrv.Handler()); err != nil {
+				log.Printf("[ERROR] ACME HTTP serve: %v", err)
+			}
+		}()
+	}
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           handler,
@@ -197,17 +212,22 @@ func (a schedAdapter) SystemRunCheck(ctx context.Context, repositoryID string) (
 func serverTLS(cfg servercfg.Server) (*tls.Config, error) {
 	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
 		if cfg.DevInsecure {
-			return nil, nil
+			return &tls.Config{MinVersion: tls.VersionTLS12}, nil
 		}
 		return nil, fmt.Errorf("tls cert/key required outside dev mode")
 	}
-	cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
-	if err != nil {
+	if _, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil {
 		return nil, err
 	}
 	return &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{cert},
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("reload TLS certificate: %w", err)
+			}
+			return &cert, nil
+		},
 	}, nil
 }
 

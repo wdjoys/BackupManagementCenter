@@ -11,6 +11,8 @@ type Server struct {
 	ListenAddr    string // BMC_LISTEN_ADDR, default :8080
 	GRPCAddr      string // BMC_GRPC_ADDR, default :9090
 	MetricsAddr   string // BMC_METRICS_ADDR, default 127.0.0.1:9100
+	AcmeAddr      string // BMC_ACME_ADDR, optional plain HTTP ACME challenge listener
+	AcmeWebroot   string // BMC_ACME_WEBROOT, default /var/lib/bmc/acme-webroot
 	DataDir       string // BMC_DATA_DIR, default ./data
 	PublicURL     string // BMC_PUBLIC_URL
 	MasterKeyFile string // BMC_MASTER_KEY_FILE
@@ -24,6 +26,8 @@ func LoadServer() (Server, error) {
 		ListenAddr:    env("BMC_LISTEN_ADDR", ":8080"),
 		GRPCAddr:      env("BMC_GRPC_ADDR", ":9090"),
 		MetricsAddr:   env("BMC_METRICS_ADDR", "127.0.0.1:9100"),
+		AcmeAddr:      os.Getenv("BMC_ACME_ADDR"),
+		AcmeWebroot:   env("BMC_ACME_WEBROOT", "./data/acme-webroot"),
 		DataDir:       env("BMC_DATA_DIR", "./data"),
 		PublicURL:     os.Getenv("BMC_PUBLIC_URL"),
 		MasterKeyFile: os.Getenv("BMC_MASTER_KEY_FILE"),

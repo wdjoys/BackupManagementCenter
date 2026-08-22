@@ -6,36 +6,62 @@ services:
     image: backup-management-center-server:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "80:8081"
+      - "443:8080"
       - "9090:9090"
     environment:
       BMC_LISTEN_ADDR: ":8080"
       BMC_GRPC_ADDR: ":9090"
       BMC_METRICS_ADDR: "127.0.0.1:9100"
+      BMC_ACME_ADDR: ":8081"
+      BMC_ACME_WEBROOT: /var/lib/bmc/acme-webroot
       BMC_DATA_DIR: /var/lib/bmc
       BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:-https://backup.example.com}
       BMC_MASTER_KEY_FILE: /run/secrets/bmc_master_key
-      BMC_TLS_CERT_FILE: /run/secrets/bmc_tls_cert
-      BMC_TLS_KEY_FILE: /run/secrets/bmc_tls_key
+      BMC_TLS_CERT_FILE: /etc/letsencrypt/live/${BMC_DOMAIN:-backup.example.com}/fullchain.pem
+      BMC_TLS_KEY_FILE: /etc/letsencrypt/live/${BMC_DOMAIN:-backup.example.com}/privkey.pem
     volumes:
       - bmc-data:/var/lib/bmc
+      - bmc-certs:/etc/letsencrypt:ro
+      - bmc-acme-webroot:/var/lib/bmc/acme-webroot
     secrets:
       - bmc_master_key
-      - bmc_tls_cert
-      - bmc_tls_key
     read_only: true
     tmpfs:
       - /tmp:mode=0700
     security_opt:
       - no-new-privileges:true
 
+  certbot-init:
+    image: ${CERTBOT_IMAGE:-certbot/certbot:latest}
+    profiles: [certbot-init]
+    ports:
+      - "80:80"
+    volumes:
+      - bmc-certs:/etc/letsencrypt
+      - bmc-acme-webroot:/var/lib/letsencrypt
+    entrypoint: ["certbot"]
+
+  certbot:
+    image: ${CERTBOT_IMAGE:-certbot/certbot:latest}
+    restart: unless-stopped
+    profiles: [certbot]
+    volumes:
+      - bmc-certs:/etc/letsencrypt
+      - bmc-acme-webroot:/var/lib/letsencrypt
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      trap exit TERM;
+      while :; do
+        certbot renew --webroot -w /var/lib/letsencrypt --quiet;
+        sleep 12h & wait $${!};
+      done
+
 volumes:
   bmc-data:
+  bmc-certs:
+  bmc-acme-webroot:
 
 secrets:
   bmc_master_key:
     file: ${BMC_MASTER_KEY_FILE:-./secrets/master.key}
-  bmc_tls_cert:
-    file: ${BMC_TLS_CERT_FILE:-./secrets/server.crt}
-  bmc_tls_key:
-    file: ${BMC_TLS_KEY_FILE:-./secrets/server.key}

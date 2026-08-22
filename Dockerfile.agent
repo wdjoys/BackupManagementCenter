@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1.7
+
+FROM golang:1.27-bookworm AS go-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags='-s -w' -o /out/backup-center-agent ./cmd/agent
+
+FROM debian:bookworm-slim
+ARG RESTIC_VERSION=0.18.0
+ARG RCLONE_VERSION=1.69.0
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip bzip2 sqlite3 mariadb-client postgresql-client && rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" | bunzip2 > /usr/local/bin/restic && \
+    chmod 0755 /usr/local/bin/restic && \
+    curl -fsSL "https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip && \
+    unzip -q /tmp/rclone.zip -d /tmp/rclone && \
+    install -m 0755 "/tmp/rclone/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone && \
+    rm -rf /tmp/rclone /tmp/rclone.zip
+COPY --from=go-build /out/backup-center-agent /usr/local/bin/backup-center-agent
+RUN useradd --system --home-dir /var/lib/bmc-agent --create-home --shell /usr/sbin/nologin bmc-agent && \
+    mkdir -p /var/lib/bmc-agent/scratch && chown -R bmc-agent:bmc-agent /var/lib/bmc-agent
+USER bmc-agent:bmc-agent
+VOLUME ["/var/lib/bmc-agent", "/backup-sources"]
+ENTRYPOINT ["/usr/local/bin/backup-center-agent"]

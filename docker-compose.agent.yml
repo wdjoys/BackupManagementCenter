@@ -1,0 +1,27 @@
+services:
+  bmc-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    image: backup-management-center-agent:latest
+    restart: unless-stopped
+    environment:
+      BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC host:port}
+      BMC_SERVER_TLS: ${BMC_SERVER_TLS:-1}
+      BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
+      BMC_AGENT_STATE_DIR: /var/lib/bmc-agent
+      BMC_AGENT_DATA_DIR: /var/lib/bmc-agent/scratch
+    volumes:
+      - bmc-agent-state:/var/lib/bmc-agent
+      # 只挂载明确需要备份的目录；计划中使用容器内路径。
+      - ${BMC_SOURCE_ETC:-/etc}:/backup-sources/etc:ro
+      - ${BMC_SOURCE_SRV:-/srv}:/backup-sources/srv:ro
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700
+      - /var/lib/bmc-agent/scratch:mode=0700,size=${BMC_SCRATCH_SIZE:-10g}
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  bmc-agent-state:

@@ -1,0 +1,12 @@
+.git
+.gitignore
+bin/
+data/
+node_modules/
+web/dist/
+internal/server/webui/dist/*
+!internal/server/webui/dist/index.html
+*.test
+*.out
+.env
+.env.*

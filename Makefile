@@ -14,7 +14,7 @@ WEB_DIST := internal/server/webui/dist
 
 PLATFORMS ?= linux/amd64
 
-.PHONY: generate web-build build test dev-server dev-agent clean lint tidy
+.PHONY: generate web-build build test docker-build docker-build-server docker-build-agent docker-up docker-down dev-server dev-agent clean lint tidy
 
 ## generate: regenerate protobuf code (requires protoc + plugins)
 generate:
@@ -38,6 +38,20 @@ build: web-build
 build-linux: web-build
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags '$(GO_LDFLAGS)' -o bin/backup-center-server ./cmd/server
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags '$(GO_LDFLAGS)' -o bin/backup-center-agent ./cmd/agent
+
+docker-build: docker-build-server docker-build-agent
+
+docker-build-server:
+	docker build -f Dockerfile.server -t backup-management-center-server:latest .
+
+docker-build-agent:
+	docker build -f Dockerfile.agent -t backup-management-center-agent:latest .
+
+docker-up:
+	docker compose up -d --build
+
+docker-down:
+	docker compose down
 
 test:
 	$(GO) test ./... -count=1

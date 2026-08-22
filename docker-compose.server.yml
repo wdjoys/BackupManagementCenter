@@ -1,0 +1,41 @@
+services:
+  bmc-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: backup-management-center-server:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    environment:
+      BMC_LISTEN_ADDR: ":8080"
+      BMC_GRPC_ADDR: ":9090"
+      BMC_METRICS_ADDR: "127.0.0.1:9100"
+      BMC_DATA_DIR: /var/lib/bmc
+      BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:-https://backup.example.com}
+      BMC_MASTER_KEY_FILE: /run/secrets/bmc_master_key
+      BMC_TLS_CERT_FILE: /run/secrets/bmc_tls_cert
+      BMC_TLS_KEY_FILE: /run/secrets/bmc_tls_key
+    volumes:
+      - bmc-data:/var/lib/bmc
+    secrets:
+      - bmc_master_key
+      - bmc_tls_cert
+      - bmc_tls_key
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  bmc-data:
+
+secrets:
+  bmc_master_key:
+    file: ${BMC_MASTER_KEY_FILE:-./secrets/master.key}
+  bmc_tls_cert:
+    file: ${BMC_TLS_CERT_FILE:-./secrets/server.crt}
+  bmc_tls_key:
+    file: ${BMC_TLS_KEY_FILE:-./secrets/server.key}

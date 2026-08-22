@@ -1,0 +1,161 @@
+# Compose 部署说明
+
+本项目支持两种部署方式：
+
+- `docker-compose.server.yml`：部署控制面 Server。
+- `docker-compose.agent.yml`：在每台被管理的 Linux 主机上单独部署一个 Agent。
+
+不要把所有 Agent 与 Server 放在同一个 Compose 服务中。Agent 必须运行在实际需要读取备份源目录的主机上。
+
+## 前置条件
+
+- Docker Engine 24+。
+- Docker Compose v2，命令为 `docker compose`。
+- Server 主机可被 Agent 通过 TCP `9090` 访问。
+- 生产环境准备 TLS 证书、私钥和 32 字节主密钥。
+- Agent 主机根据备份类型准备数据库客户端；Agent 镜像已包含 `restic`、`rclone`、`sqlite3`、PostgreSQL 客户端和 MariaDB 客户端。MongoDB Database Tools 需要按目标环境额外安装或扩展镜像。
+
+## Server Compose 部署
+
+在仓库根目录创建密钥与证书目录：
+
+```sh
+mkdir -p secrets
+head -c 32 /dev/urandom > secrets/master.key
+chmod 600 secrets/master.key
+cp server.crt secrets/server.crt
+cp server.key secrets/server.key
+```
+
+设置外部访问地址并启动：
+
+```sh
+export BMC_PUBLIC_URL=https://backup.example.com
+export BMC_MASTER_KEY_FILE=./secrets/master.key
+export BMC_TLS_CERT_FILE=./secrets/server.crt
+export BMC_TLS_KEY_FILE=./secrets/server.key
+
+docker compose -f docker-compose.server.yml up -d --build
+```
+
+或者使用默认入口：
+
+```sh
+docker compose up -d --build
+```
+
+端口：
+
+- `8080`：HTTP / Web UI。
+- `9090`：Agent gRPC 控制通道。
+
+首次启动后访问 `https://<server>:8080/`，在 `/setup` 创建唯一管理员。`/setup` 成功使用一次后永久关闭。
+
+Server 状态保存在 Docker volume `bmc-data` 中。必须定期备份该 volume，至少包括：
+
+- SQLite 数据库。
+- Server instance ID。
+- 计划、Agent 身份哈希、审计记录和运行记录。
+
+生产环境不要设置 `BMC_DEV_INSECURE=1`，也不要把主密钥、TLS 私钥写进 Compose 文件或提交到 Git。
+
+## Agent Compose 部署
+
+每台目标 Linux 主机单独执行一次。先从 Server Web UI 创建一次性 enrollment token：
+
+```text
+Agents → 生成注册令牌
+```
+
+在目标主机创建 `.env.agent`：
+
+```dotenv
+BMC_SERVER_GRPC_URL=backup.example.com:9090
+BMC_SERVER_TLS=1
+BMC_ENROLLMENT_TOKEN=<一次性注册令牌>
+BMC_SOURCE_ETC=/etc
+BMC_SOURCE_SRV=/srv
+BMC_SCRATCH_SIZE=20g
+```
+
+启动 Agent：
+
+```sh
+docker compose -f docker-compose.agent.yml --env-file .env.agent up -d --build
+```
+
+Agent 首次启动会将身份保存到 `bmc-agent-state` volume。注册完成后可以从 `.env.agent` 删除 `BMC_ENROLLMENT_TOKEN`，避免令牌长期留在环境文件中：
+
+```sh
+sed -i '/^BMC_ENROLLMENT_TOKEN=/d' .env.agent
+docker compose -f docker-compose.agent.yml up -d
+```
+
+Agent Compose 默认挂载：
+
+```text
+主机 /etc → 容器 /backup-sources/etc，只读
+主机 /srv → 容器 /backup-sources/srv，只读
+```
+
+因此，计划中的源路径必须使用容器路径，例如：
+
+```json
+{"paths":["/backup-sources/etc","/backup-sources/srv"]}
+```
+
+不要直接挂载整个主机根目录，也不要挂载 `/var/run/docker.sock`。如果必须备份其他目录，显式增加只读挂载：
+
+```dotenv
+BMC_SOURCE_APP=/srv/myapp
+```
+
+并在 Compose 文件中增加：
+
+```yaml
+- ${BMC_SOURCE_APP}:/backup-sources/app:ro
+```
+
+然后计划使用 `/backup-sources/app`。
+
+## Agent 状态、临时空间与权限
+
+- `bmc-agent-state` 保存 `identity.json`，不能删除或在多台 Agent 间共享。
+- 临时导出和恢复使用 `/var/lib/bmc-agent/scratch`，由 Compose 的 tmpfs 提供。
+- `BMC_SCRATCH_SIZE` 应至少为最大逻辑数据库导出的 1.2 倍；空间不足时任务会失败并返回 `insufficient_temp_space`。
+- 容器以非 root 用户运行，并启用 `no-new-privileges`。
+- 只读源目录仍可能包含敏感数据，应限制 Docker 主机访问权限并保护宿主机 Docker 权限。
+
+## 升级与回滚
+
+升级前备份 Server 数据 volume 和主密钥：
+
+```sh
+docker compose stop
+# 另行备份 bmc-data volume 与 secrets/master.key
+docker compose build --pull
+docker compose up -d
+```
+
+升级顺序：
+
+1. 先升级 Server。
+2. 确认 `/health/ready` 正常。
+3. 再逐台升级 Agent。
+
+Server 与 Agent 使用版本握手：主版本不一致会拒绝连接，次版本不一致会允许连接但产生告警。不要通过复用 Agent 的 `identity.json` 来回滚或克隆 Agent。
+
+## 常用运维命令
+
+```sh
+docker compose ps
+docker compose logs -f bmc-server
+docker compose exec bmc-server /usr/local/bin/backup-center-server --help
+docker compose down
+```
+
+停止 Compose 不会删除 volume。只有确认已完成离线备份后，才使用：
+
+```sh
+docker compose down -v
+```

@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:22-bookworm-slim AS web-build
+WORKDIR /src/web
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY web/ ./
+RUN pnpm run build
+
+FROM golang:1.27-bookworm AS go-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN rm -rf internal/server/webui/dist && \
+    mkdir -p internal/server/webui/dist && \
+    cp -a /src/web/dist/. internal/server/webui/dist/ && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags='-s -w' -o /out/backup-center-server ./cmd/server
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=go-build /out/backup-center-server /usr/local/bin/backup-center-server
+EXPOSE 8080 9090
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/backup-center-server"]

@@ -79,79 +79,50 @@ const router = createRouter({
 })
 
 let appInitialized = false
+let setupInitialized: boolean | null = null
 
 router.beforeEach(async (to, _from, next) => {
-  // First-ever navigation: check setup status and auth
+  const auth = useAuthStore()
   if (!appInitialized) {
     appInitialized = true
-
-    // Try to fetch auth state
-    const auth = useAuthStore()
     await auth.fetchMe()
+  }
 
-    // Check setup status
+  // Cache the first setup result for the redirect into /setup; refresh it
+  // before every non-setup navigation so completing setup takes effect.
+  if (setupInitialized === null || to.path !== '/setup') {
     try {
       const status = await apiGet<SetupStatus>('/setup/status')
-      if (!status.initialized) {
-        if (to.path !== '/setup') {
-          return next('/setup')
-        }
-        return next()
-      }
+      setupInitialized = status.initialized
     } catch {
-      // If we can't reach the server, still allow navigation
-      // The individual pages will handle errors
-    }
-
-    // If already initialized and user is on /setup, redirect to dashboard
-    if (to.path === '/setup') {
-      return next('/dashboard')
-    }
-
-    // If not logged in and going to a protected page, redirect to login
-    if (!auth.isLoggedIn && to.path !== '/login') {
-      return next('/login')
-    }
-
-    // If logged in and going to login, redirect to dashboard
-    if (auth.isLoggedIn && to.path === '/login') {
-      return next('/dashboard')
-    }
-
-    return next()
-  }
-
-  const auth = useAuthStore()
-
-  // Check setup status for non-setup routes
-  if (to.path !== '/setup') {
-    try {
-      const status = await apiGet<SetupStatus>('/setup/status')
-      if (!status.initialized) {
-        return next('/setup')
-      }
-    } catch {
-      // Server unreachable — allow through, pages handle errors
+      // Server unreachable — individual pages surface their own error.
     }
   }
 
-  // Already initialized visiting /setup → redirect
-  if (to.path === '/setup') {
-    return next('/dashboard')
+  if (setupInitialized === false) {
+    if (to.path !== '/setup') {
+      next('/setup')
+      return
+    }
+    next()
+    return
+  }
+  if (setupInitialized === true && to.path === '/setup') {
+    next('/dashboard')
+    return
   }
 
-  // Protected routes: check auth
-  if (to.path !== '/login' && !auth.isLoggedIn) {
-    // Refresh auth in case session expired
+  // Setup itself is public. All other non-login pages require a session.
+  if (to.path !== '/login' && to.path !== '/setup' && !auth.isLoggedIn) {
     await auth.fetchMe()
     if (!auth.isLoggedIn) {
-      return next('/login')
+      next('/login')
+      return
     }
   }
-
-  // Logged in going to login → dashboard
   if (to.path === '/login' && auth.isLoggedIn) {
-    return next('/dashboard')
+    next('/dashboard')
+    return
   }
 
   next()

@@ -24,7 +24,7 @@ generate:
 
 ## web-build: build the Vue app into internal/server/webui/dist
 web-build:
-	cd web && $(PNPM) install --frozen-lockfile && $(PNPM) run build
+	cd web && $(PNPM) --ignore-workspace install --frozen-lockfile && $(PNPM) --ignore-workspace rebuild esbuild && $(PNPM) --ignore-workspace run build
 	rm -rf $(WEB_DIST)
 	mkdir -p $(WEB_DIST)
 	cp -r web/dist/. $(WEB_DIST)/
@@ -60,10 +60,10 @@ tidy:
 	$(GO) mod tidy
 
 dev-server:
-	BMC_DATA_DIR=./data BMC_PUBLIC_URL=http://localhost:5173 $(GO) run ./cmd/server
+	BMC_DATA_DIR=./data BMC_PUBLIC_URL=http://localhost:5173 BMC_GRPC_ADDR=:9091 $(GO) run ./cmd/server
 
 dev-agent:
-	BMC_SERVER_GRPC_URL=127.0.0.1:9090 $(GO) run ./cmd/agent
+	BMC_SERVER_GRPC_URL=127.0.0.1:9091 BMC_SERVER_TLS=0 $(GO) run ./cmd/agent
 
 clean:
 	rm -rf bin web/dist $(WEB_DIST)

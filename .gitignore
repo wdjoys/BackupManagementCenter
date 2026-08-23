@@ -7,5 +7,6 @@
 .env
 *.local
 node_modules/
+/agent-state/
 web/dist/
 .DS_Store

@@ -7,6 +7,7 @@
 #       填 Server 的公网/内网域名或 IP，如 backup.example.com:9090
 services:
   bmc-agent:
+    container_name: bmc-agent
     build:
       context: .
       dockerfile: Dockerfile.agent

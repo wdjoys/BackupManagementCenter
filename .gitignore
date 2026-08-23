@@ -12,3 +12,4 @@ node_modules/
 **/__debug_bin*
 web/dist/
 .DS_Store
+.vscode/settings.json

@@ -43,7 +43,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - name: Frontend typecheck and production build
-        run: pnpm --dir web install --frozen-lockfile && pnpm --dir web run build
+        working-directory: web
+        run: pnpm --ignore-workspace install --frozen-lockfile && pnpm --ignore-workspace run build
 
   build:
     name: Build and push ${{ matrix.image }}

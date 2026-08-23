@@ -46,15 +46,6 @@ func LoadServer() (Server, error) {
 	default:
 		return c, fmt.Errorf("config: BMC_TLS_MODE must be auto or none, got %q", c.TLSMode)
 	}
-	telegramToken := os.Getenv("BMC_TELEGRAM_BOT_TOKEN")
-	telegramChatID := os.Getenv("BMC_TELEGRAM_CHAT_ID")
-	switch {
-	case telegramToken == "" && telegramChatID == "":
-	case telegramToken == "" || telegramChatID == "":
-		return c, fmt.Errorf("config: BMC_TELEGRAM_BOT_TOKEN and BMC_TELEGRAM_CHAT_ID must be set together (both empty disables Telegram notifications)")
-	}
-	c.TelegramBotToken = telegramToken
-	c.TelegramChatID = telegramChatID
 	plaintext := c.TLSMode == "none"
 	if c.DevInsecure {
 		return c, nil

@@ -1073,6 +1073,44 @@ func TestTransitionRunEarlyFailure(t *testing.T) {
 	}
 }
 
+func TestTelegramSettings(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	if _, err := ts.GetTelegramSettings(ctx); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound when unset, got %v", err)
+	}
+
+	first := &model.TelegramSettings{BotToken: "123456:ABC-secret", ChatID: "-1001"}
+	if err := ts.SaveTelegramSettings(ctx, first); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := ts.GetTelegramSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BotToken != "123456:ABC-secret" || got.ChatID != "-1001" {
+		t.Fatalf("roundtrip mismatch: %+v", got)
+	}
+
+	second := &model.TelegramSettings{BotToken: "999:XYZ", ChatID: "-2002"}
+	if err := ts.SaveTelegramSettings(ctx, second); err != nil {
+		t.Fatalf("overwrite save: %v", err)
+	}
+	got, _ = ts.GetTelegramSettings(ctx)
+	if got.BotToken != "999:XYZ" || got.ChatID != "-2002" {
+		t.Fatalf("overwrite mismatch: %+v", got)
+	}
+
+	if err := ts.DeleteTelegramSettings(ctx); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := ts.GetTelegramSettings(ctx); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+}
+
 func TestTransitionRunNotFound(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)

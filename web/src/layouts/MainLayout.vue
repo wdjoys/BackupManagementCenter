@@ -35,6 +35,10 @@
           <el-icon><Files /></el-icon>
           <span>{{ t('nav.snapshots') }}</span>
         </el-menu-item>
+        <el-menu-item index="/settings">
+          <el-icon><Setting /></el-icon>
+          <span>{{ t('nav.settings') }}</span>
+        </el-menu-item>
       </el-menu>
     </aside>
 
@@ -79,6 +83,7 @@ const activeMenu = computed(() => {
     '/plans': '/plans',
     '/runs': '/runs',
     '/snapshots': '/snapshots',
+    '/settings': '/settings',
   }
   return menuMap[path] || '/dashboard'
 })

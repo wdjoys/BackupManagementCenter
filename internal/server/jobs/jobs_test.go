@@ -242,6 +242,13 @@ func (s *fakeStore) GetAgentBySecretHash(ctx context.Context, h string) (*model.
 func (s *fakeStore) ListAgents(ctx context.Context) ([]model.Agent, error)  { return nil, nil }
 func (s *fakeStore) RevokeAgent(ctx context.Context, id string) error       { return nil }
 func (s *fakeStore) RenameAgent(ctx context.Context, id, name string) error { return nil }
+func (s *fakeStore) GetTelegramSettings(ctx context.Context) (*model.TelegramSettings, error) {
+	return nil, store.ErrNotFound
+}
+func (s *fakeStore) SaveTelegramSettings(ctx context.Context, ts *model.TelegramSettings) error {
+	return nil
+}
+func (s *fakeStore) DeleteTelegramSettings(ctx context.Context) error { return nil }
 func (s *fakeStore) UpdateStorageTarget(ctx context.Context, t *model.StorageTarget) error {
 	return nil
 }

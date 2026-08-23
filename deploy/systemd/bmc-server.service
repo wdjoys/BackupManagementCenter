@@ -25,10 +25,6 @@ Environment=BMC_METRICS_ADDR=127.0.0.1:9100
 # Environment=BMC_TLS_CERT_FILE=/etc/bmc/server.crt
 # Environment=BMC_TLS_KEY_FILE=/etc/bmc/server.key
 # Environment=BMC_PUBLIC_URL=https://bmc.example.com
-# Optional Telegram plan-failure notifications — set BOTH together (both
-# empty keeps them disabled):
-# Environment=BMC_TELEGRAM_BOT_TOKEN=123456789:AA...your-bot-token
-# Environment=BMC_TELEGRAM_CHAT_ID=-1001234567890
 ExecStart=/usr/local/bin/backup-center-server
 
 [Install]

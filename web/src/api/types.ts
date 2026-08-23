@@ -198,6 +198,17 @@ export interface AuthUser {
   username: string
 }
 
+export interface TelegramSettings {
+  configured: boolean
+  chat_id?: string
+  updated_at?: string
+}
+
+export interface TelegramSettingsUpdate {
+  bot_token: string
+  chat_id: string
+}
+
 export interface PaginationParams {
   limit?: number
   offset?: number

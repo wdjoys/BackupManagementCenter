@@ -262,6 +262,23 @@ type AuditEvent struct {
 	DetailJSON   string    `json:"detail,omitempty"`
 }
 
+// TelegramSettings is the web-configured Telegram failure-notification
+// target. BotToken is plaintext only in transit/at the edges; at rest it is
+// sealed with AAD TelegramTokenAAD. A missing row means notifications are
+// disabled.
+type TelegramSettings struct {
+	BotToken  string    `json:"bot_token"`
+	ChatID    string    `json:"chat_id"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Sealing coordinates for the stored bot token (secrets.Sealer AAD).
+const (
+	TelegramSettingsTable = "telegram_settings"
+	TelegramSettingsRow   = "1"
+	TelegramTokenColumn   = "encrypted_token"
+)
+
 // Snapshot is a read model assembled from `restic snapshots --json` on the
 // agent; not persisted server-side.
 type Snapshot struct {

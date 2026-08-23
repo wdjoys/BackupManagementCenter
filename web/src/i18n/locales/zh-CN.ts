@@ -28,6 +28,26 @@ export default {
     plans: '计划',
     runs: '运行记录',
     snapshots: '快照',
+    settings: '设置',
+  },
+  settings: {
+    title: '设置',
+    telegram: {
+      title: 'Telegram 失败通知',
+      configured: '已启用 Telegram 失败通知',
+      currentTarget: '当前目标会话：{chatId}',
+      notConfigured: '未配置。配置后将仅推送绑定计划的失败运行。',
+      botToken: 'Bot Token',
+      chatId: 'Chat ID',
+      tokenPlaceholderConfigured: '已保存（输入新值可更换）',
+      save: '保存',
+      clear: '清除配置',
+      pairRequired: 'Bot Token 与 Chat ID 必须同时填写',
+      saved: '已保存，立即生效',
+      cleared: '已清除 Telegram 通知配置',
+      help:
+        '通过 @BotFather 创建 Bot 获取 Token；将 Bot 加入目标群组/频道或先向其发送消息以获取 Chat ID。通知在失败状态落库后发送，Telegram 不可用不影响任务结果。',
+    },
   },
   layout: {
     defaultUser: '用户',

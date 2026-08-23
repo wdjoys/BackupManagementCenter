@@ -97,6 +97,8 @@ func New(s *Server) http.Handler {
 			r.Post("/restores/dry-run", s.handleDryRunRestore)
 			r.Post("/restores", s.handleStartRestore)
 			r.Get("/restores", s.handleListRestores)
+			r.Get("/settings/telegram", s.handleGetTelegramSettings)
+			r.Put("/settings/telegram", s.handlePutTelegramSettings)
 		})
 	})
 

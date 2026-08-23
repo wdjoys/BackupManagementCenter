@@ -165,9 +165,16 @@ func (f *fakeStore) SaveAgentCapabilities(_ context.Context, _ string, _ []model
 func (f *fakeStore) GetAgentBySecretHash(_ context.Context, _ string) (*model.Agent, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListAgents(_ context.Context) ([]model.Agent, error)                 { return nil, nil }
-func (f *fakeStore) RevokeAgent(_ context.Context, _ string) error                       { return nil }
-func (f *fakeStore) RenameAgent(_ context.Context, _, _ string) error                    { return nil }
+func (f *fakeStore) ListAgents(_ context.Context) ([]model.Agent, error) { return nil, nil }
+func (f *fakeStore) RevokeAgent(_ context.Context, _ string) error       { return nil }
+func (f *fakeStore) RenameAgent(_ context.Context, _, _ string) error    { return nil }
+func (f *fakeStore) GetTelegramSettings(_ context.Context) (*model.TelegramSettings, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) SaveTelegramSettings(_ context.Context, _ *model.TelegramSettings) error {
+	return nil
+}
+func (f *fakeStore) DeleteTelegramSettings(_ context.Context) error                      { return nil }
 func (f *fakeStore) CreateStorageTarget(_ context.Context, _ *model.StorageTarget) error { return nil }
 func (f *fakeStore) UpdateStorageTarget(_ context.Context, _ *model.StorageTarget) error { return nil }
 func (f *fakeStore) DeleteStorageTarget(_ context.Context, _ string) error               { return nil }

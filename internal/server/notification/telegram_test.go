@@ -23,8 +23,10 @@ import (
 // actually calls are implemented; anything else panics loudly in tests.
 type fakeStore struct {
 	store.Store
-	run  *model.Run
-	plan *model.Plan
+	run      *model.Run
+	plan     *model.Plan
+	settings *model.TelegramSettings
+	err      error // when set, GetTelegramSettings returns it verbatim
 }
 
 func (f *fakeStore) GetRun(_ context.Context, id string) (*model.Run, error) {
@@ -43,6 +45,17 @@ func (f *fakeStore) GetPlan(_ context.Context, id string) (*model.Plan, error) {
 	return &p, nil
 }
 
+func (f *fakeStore) GetTelegramSettings(context.Context) (*model.TelegramSettings, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.settings == nil {
+		return nil, store.ErrNotFound
+	}
+	s := *f.settings
+	return &s, nil
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
@@ -53,9 +66,22 @@ type capturedRequest struct {
 }
 
 func newTestNotifier(st store.Store, rt roundTripFunc, publicURL string) *TelegramNotifier {
-	t := NewTelegramNotifier(st, "12345:SECRET-TOKEN", "-10099", publicURL)
+	t := NewTelegramNotifier(st, publicURL)
 	t.client = &http.Client{Transport: rt}
 	return t
+}
+
+// configuredStore returns a fake pre-loaded with a failed run, its plan, and
+// valid Telegram settings.
+func configuredStore() *fakeStore {
+	return &fakeStore{
+		run:  failedRun(),
+		plan: failedPlan(),
+		settings: &model.TelegramSettings{
+			BotToken: "12345:SECRET-TOKEN",
+			ChatID:   "-10099",
+		},
+	}
 }
 
 func failedRun() *model.Run {
@@ -84,7 +110,7 @@ func failedPlan() *model.Plan {
 // ---------------------------------------------------------------------------
 
 func TestNotifyPlanFailureSendsSingleEscapedMessage(t *testing.T) {
-	st := &fakeStore{run: failedRun(), plan: failedPlan()}
+	st := configuredStore()
 	var captured []capturedRequest
 	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var body sendMessageRequest
@@ -151,7 +177,9 @@ func TestNotifyPlanFailureManualRunAndDefaults(t *testing.T) {
 	run.ErrorCode = ""
 	run.ErrorMessage = ""
 	run.FinishedAt = nil
-	st := &fakeStore{run: run, plan: failedPlan()}
+	st0 := configuredStore()
+	st0.run = run
+	st := st0
 	var texts []string
 	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var body sendMessageRequest
@@ -193,7 +221,9 @@ func TestNotifyPlanFailureSkipsNonQualifyingRuns(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			st := &fakeStore{run: c.run, plan: failedPlan()}
+			st0 := configuredStore()
+			st0.run = c.run
+			st := st0
 			calls := 0
 			rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
 				calls++
@@ -209,12 +239,49 @@ func TestNotifyPlanFailureSkipsNonQualifyingRuns(t *testing.T) {
 	}
 }
 
+// Unconfigured (row missing) or half-cleared settings disable sending even
+// for a qualifying failed run.
+func TestNotifyPlanFailureSkipsWhenUnconfigured(t *testing.T) {
+	cases := []struct {
+		name     string
+		settings *model.TelegramSettings
+		err      error
+	}{
+		{name: "row-missing", settings: nil},
+		{name: "empty-pair", settings: &model.TelegramSettings{}},
+		{name: "settings-error", err: errors.New("db boom")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := configuredStore()
+			st.settings = c.settings
+			st.err = c.err
+			calls := 0
+			rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
+			})
+			err := newTestNotifier(st, rt, "").NotifyPlanFailure(context.Background(), "run-1")
+			if c.name == "settings-error" {
+				if err == nil {
+					t.Fatal("expected settings load error to surface")
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if calls != 0 {
+				t.Fatalf("expected 0 HTTP requests, got %d", calls)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Fault tolerance: Telegram errors surface but never touch the stored run.
 // ---------------------------------------------------------------------------
 
 func TestNotifyPlanFailureTelegramErrorsDoNotMutateRun(t *testing.T) {
-	st := &fakeStore{run: failedRun(), plan: failedPlan()}
+	st := configuredStore()
 
 	t.Run("network error", func(t *testing.T) {
 		rt := roundTripFunc(func(*http.Request) (*http.Response, error) {

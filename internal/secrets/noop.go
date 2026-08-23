@@ -19,8 +19,9 @@ func (n *NoopSealer) Seal(table, rowID, column, plaintext string) ([]byte, error
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	out := make([]byte, base64.StdEncoding.EncodedLen(len(plaintext)))
-	base64.StdEncoding.Encode(out, []byte("noop:"+plaintext))
+	payload := []byte("noop:" + plaintext)
+	out := make([]byte, base64.StdEncoding.EncodedLen(len(payload)))
+	base64.StdEncoding.Encode(out, payload)
 	return out, nil
 }
 

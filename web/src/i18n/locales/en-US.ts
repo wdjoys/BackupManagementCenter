@@ -28,6 +28,26 @@ export default {
     plans: 'Plans',
     runs: 'Runs',
     snapshots: 'Snapshots',
+    settings: 'Settings',
+  },
+  settings: {
+    title: 'Settings',
+    telegram: {
+      title: 'Telegram Failure Notifications',
+      configured: 'Telegram failure notifications enabled',
+      currentTarget: 'Current target chat: {chatId}',
+      notConfigured: 'Not configured. Once set, only plan-bound failed runs are pushed.',
+      botToken: 'Bot Token',
+      chatId: 'Chat ID',
+      tokenPlaceholderConfigured: 'Saved (enter a new value to replace)',
+      save: 'Save',
+      clear: 'Clear configuration',
+      pairRequired: 'Bot Token and Chat ID must be provided together',
+      saved: 'Saved — takes effect immediately',
+      cleared: 'Telegram notification settings cleared',
+      help:
+        'Create a bot via @BotFather to get the token; add the bot to the target group/channel (or message it first) to obtain the chat ID. Notifications are sent after a failure is persisted; Telegram outages never affect job results.',
+    },
   },
   layout: {
     defaultUser: 'User',

@@ -424,10 +424,8 @@ Web UI：**Storage → Repositories → 绑定仓库**
 | `BMC_TLS_CERT_FILE` | 空 | TLS 证书链，生产必填 |
 | `BMC_TLS_KEY_FILE` | 空 | TLS 私钥，生产必填 |
 | `BMC_DEV_INSECURE` | 空 | 设为 `1` 时跳过证书与主密钥校验，仅本地开发 |
-| `BMC_TELEGRAM_BOT_TOKEN` | 空 | Telegram Bot Token，失败通知；与 Chat ID 必须同时配置（同时为空则禁用） |
-| `BMC_TELEGRAM_CHAT_ID` | 空 | Telegram 目标会话 ID，可为用户 / 群组 / 频道 ID；Bot 必须已加入该会话并具备发消息权限 |
 
-> Telegram 失败通知：两个变量必须同时配置，只配置其中一个会在启动时报错；仅绑定备份计划的运行落为 `failed` 时发送（系统检查/恢复类运行与成功、取消不发送）。配置 `BMC_PUBLIC_URL` 后，通知会附带 `/runs/{id}` 详情链接。
+> Telegram 失败通知不使用环境变量：在 Web 界面「设置」页配置 Bot Token 与 Chat ID（二者必须同时填写，清除即禁用），保存后立即生效，无需重启。配置 `BMC_PUBLIC_URL` 后，通知会附带 `/runs/{id}` 详情链接。
 
 ### Agent
 

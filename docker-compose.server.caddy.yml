@@ -19,8 +19,6 @@ services:
       BMC_METRICS_ADDR: "127.0.0.1:9100"
       BMC_DATA_DIR: /var/lib/bmc
       BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:?set https://your-domain}
-      BMC_TELEGRAM_BOT_TOKEN: ${BMC_TELEGRAM_BOT_TOKEN:-}
-      BMC_TELEGRAM_CHAT_ID: ${BMC_TELEGRAM_CHAT_ID:-}
       BMC_MASTER_KEY_FILE: /run/secrets/bmc_master_key
     volumes:
       - bmc-data:/var/lib/bmc

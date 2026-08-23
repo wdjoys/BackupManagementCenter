@@ -83,13 +83,9 @@ func main() {
 	met := metrics.New()
 	reg := agentreg.NewRegistry()
 
-	// Failure notifications: Telegram when both env vars are set (enforced
-	// by config), no-op otherwise. One shared instance for every producer.
-	var notifier notification.FailureNotifier = notification.NopNotifier{}
-	if cfg.TelegramBotToken != "" && cfg.TelegramChatID != "" {
-		notifier = notification.NewTelegramNotifier(st, cfg.TelegramBotToken, cfg.TelegramChatID, cfg.PublicURL)
-		log.Printf("[INFO] telegram plan-failure notifications enabled")
-	}
+	// Failure notifications: Telegram target is configured from the web UI
+	// and read per call; unconfigured settings disable sending.
+	notifier := notification.NewTelegramNotifier(st, cfg.PublicURL)
 
 	ready := &atomic.Bool{}
 

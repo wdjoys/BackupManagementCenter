@@ -48,6 +48,12 @@ type Store interface {
 	ListAgents(ctx context.Context) ([]model.Agent, error)
 	RevokeAgent(ctx context.Context, id string) error
 	RenameAgent(ctx context.Context, id, name string) error
+	// TelegramSettings: single-row web-configured failure-notification
+	// target. GetTelegramSettings returns ErrNotFound when unset; the token
+	// is stored sealed by the caller.
+	GetTelegramSettings(ctx context.Context) (*model.TelegramSettings, error)
+	SaveTelegramSettings(ctx context.Context, s *model.TelegramSettings) error
+	DeleteTelegramSettings(ctx context.Context) error
 
 	// Storage targets
 	CreateStorageTarget(ctx context.Context, t *model.StorageTarget) error

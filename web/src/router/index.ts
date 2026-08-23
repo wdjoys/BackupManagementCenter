@@ -63,6 +63,12 @@ const router = createRouter({
           component: () => import('@/views/snapshots/SnapshotsView.vue'),
           meta: { title: 'nav.snapshots' },
         },
+        {
+          path: 'settings',
+          name: 'Settings',
+          component: () => import('@/views/settings/SettingsView.vue'),
+          meta: { title: 'nav.settings' },
+        },
       ],
     },
     {

@@ -18,6 +18,7 @@ import (
 
 	"backupmanagementcenter/internal/model"
 
+	"backupmanagementcenter/internal/secrets"
 	_ "modernc.org/sqlite"
 )
 
@@ -25,14 +26,23 @@ import (
 var migrationsFS embed.FS
 
 type sqliteStore struct {
-	db *sql.DB
-	mu sync.Mutex
+	db   *sql.DB
+	mu   sync.Mutex
+	seal secrets.Sealer
 }
 
-// New opens or creates a SQLite database at path and returns a Store.
-// The database is opened with WAL journalling, foreign keys enabled,
-// a 5-second busy timeout, and NORMAL synchronous mode.
+// New opens or creates a SQLite database at path with a no-op sealer (dev).
 func New(path string) (Store, error) {
+	return NewWithSealer(path, secrets.NewNoopSealer())
+}
+
+// NewWithSealer opens or creates a SQLite database at path. The sealer
+// encrypts secret columns (currently the Telegram bot token).
+func NewWithSealer(path string, seal secrets.Sealer) (Store, error) {
+	if seal == nil {
+		return nil, fmt.Errorf("nil sealer")
+	}
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -62,7 +72,7 @@ func New(path string) (Store, error) {
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxIdleTime(30 * time.Second)
 
-	s := &sqliteStore{db: db}
+	s := &sqliteStore{db: db, seal: seal}
 	return s, nil
 }
 
@@ -439,6 +449,60 @@ func (s *sqliteStore) RenameAgent(ctx context.Context, id, name string) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Telegram settings (single row, web-configured)
+// ---------------------------------------------------------------------------
+
+func (s *sqliteStore) GetTelegramSettings(ctx context.Context) (*model.TelegramSettings, error) {
+	var (
+		encToken []byte
+		chatID   string
+		updated  string
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT encrypted_token, chat_id, updated_at FROM telegram_settings WHERE id = 1`,
+	).Scan(&encToken, &chatID, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get telegram settings: %w", err)
+	}
+	token, err := s.seal.Open(model.TelegramSettingsTable, model.TelegramSettingsRow, model.TelegramTokenColumn, encToken)
+	if err != nil {
+		return nil, fmt.Errorf("unseal telegram token: %w", err)
+	}
+	return &model.TelegramSettings{BotToken: token, ChatID: chatID, UpdatedAt: parseTime(updated)}, nil
+}
+
+func (s *sqliteStore) SaveTelegramSettings(ctx context.Context, ts *model.TelegramSettings) error {
+	encToken, err := s.seal.Seal(model.TelegramSettingsTable, model.TelegramSettingsRow, model.TelegramTokenColumn, ts.BotToken)
+	if err != nil {
+		return fmt.Errorf("seal telegram token: %w", err)
+	}
+	now := nowUTC()
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO telegram_settings (id, encrypted_token, chat_id, updated_at)
+		 VALUES (1, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET encrypted_token = excluded.encrypted_token,
+		   chat_id = excluded.chat_id, updated_at = excluded.updated_at`,
+		encToken, ts.ChatID, now.Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("save telegram settings: %w", err)
+	}
+	ts.UpdatedAt = now
+	return nil
+}
+
+func (s *sqliteStore) DeleteTelegramSettings(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM telegram_settings WHERE id = 1`)
+	if err != nil {
+		return fmt.Errorf("delete telegram settings: %w", err)
 	}
 	return nil
 }

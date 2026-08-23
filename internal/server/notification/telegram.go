@@ -41,11 +41,11 @@ func (NopNotifier) NotifyPlanFailure(context.Context, string) error { return nil
 const telegramTimeout = 10 * time.Second
 
 // TelegramNotifier sends failure messages via the official Telegram Bot API.
-// It is safe for concurrent use.
+// Credentials are read from the store on every call, so web-UI changes take
+// effect immediately and an unconfigured (or cleared) target silently
+// disables sending. Safe for concurrent use.
 type TelegramNotifier struct {
 	st        store.Store
-	botToken  string
-	chatID    string
 	publicURL string
 	client    *http.Client
 }
@@ -53,33 +53,43 @@ type TelegramNotifier struct {
 var _ FailureNotifier = (*TelegramNotifier)(nil)
 
 // NewTelegramNotifier returns a notifier posting to api.telegram.org with a
-// fixed 10s HTTP timeout. botToken must be non-empty.
-func NewTelegramNotifier(st store.Store, botToken, chatID, publicURL string) *TelegramNotifier {
+// fixed 10s HTTP timeout. Whether anything is sent is decided per call from
+// the stored Telegram settings.
+func NewTelegramNotifier(st store.Store, publicURL string) *TelegramNotifier {
 	return &TelegramNotifier{
 		st:        st,
-		botToken:  botToken,
-		chatID:    chatID,
 		publicURL: publicURL,
 		client:    &http.Client{Timeout: telegramTimeout},
 	}
 }
 
 // NotifyPlanFailure sends one message when runID refers to a persisted
-// plan-bound failed run. Non-plan (system) runs and runs that are not in the
-// failed state are silently skipped. Errors never mutate the run.
+// plan-bound failed run and Telegram is configured in the store. Non-plan
+// (system) runs and runs that are not in the failed state are silently
+// skipped. Errors never mutate the run.
 func (t *TelegramNotifier) NotifyPlanFailure(ctx context.Context, runID string) error {
 	run, err := t.st.GetRun(ctx, runID)
 	if err != nil {
-		return t.scrub(fmt.Errorf("telegram notify: get run %s: %w", runID, err))
+		return fmt.Errorf("telegram notify: get run %s: %w", runID, err)
 	}
 	if run.Status != model.RunFailed || run.PlanID == "" {
 		return nil
 	}
 	plan, err := t.st.GetPlan(ctx, run.PlanID)
 	if err != nil {
-		return t.scrub(fmt.Errorf("telegram notify: get plan %s for run %s: %w", run.PlanID, runID, err))
+		return fmt.Errorf("telegram notify: get plan %s for run %s: %w", run.PlanID, runID, err)
 	}
-	return t.sendMessage(ctx, renderFailure(*run, *plan, t.publicURL))
+	settings, err := t.st.GetTelegramSettings(ctx)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil // not configured — notifications disabled
+	}
+	if err != nil {
+		return fmt.Errorf("telegram notify: load settings for run %s: %w", runID, err)
+	}
+	if settings.BotToken == "" || settings.ChatID == "" {
+		return nil // defensively treat an empty pair as disabled
+	}
+	return t.sendMessage(ctx, settings.BotToken, settings.ChatID, renderFailure(*run, *plan, t.publicURL))
 }
 
 type sendMessageRequest struct {
@@ -89,9 +99,10 @@ type sendMessageRequest struct {
 	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
 }
 
-func (t *TelegramNotifier) sendMessage(ctx context.Context, text string) error {
+// sendMessage posts the payload with per-call credentials.
+func (t *TelegramNotifier) sendMessage(ctx context.Context, botToken, chatID, text string) error {
 	payload := sendMessageRequest{
-		ChatID:                t.chatID,
+		ChatID:                chatID,
 		Text:                  text,
 		ParseMode:             "HTML",
 		DisableWebPagePreview: true,
@@ -100,34 +111,34 @@ func (t *TelegramNotifier) sendMessage(ctx context.Context, text string) error {
 	if err != nil {
 		return fmt.Errorf("telegram notify: encode request: %w", err)
 	}
-	endpoint := "https://api.telegram.org/bot" + t.botToken + "/sendMessage"
+	endpoint := "https://api.telegram.org/bot" + botToken + "/sendMessage"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return t.scrub(fmt.Errorf("telegram notify: build request: %w", err))
+		return scrub(botToken, fmt.Errorf("telegram notify: build request: %w", err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := t.client.Do(req)
 	if err != nil {
 		// url.Error embeds the full URL including the bot token — scrub it.
-		return t.scrub(fmt.Errorf("telegram notify: send: %w", err))
+		return scrub(botToken, fmt.Errorf("telegram notify: send: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return t.scrub(fmt.Errorf("telegram notify: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet))))
+		return scrub(botToken, fmt.Errorf("telegram notify: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet))))
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return nil
 }
 
-// scrub removes the bot token from any error string so callers may log it.
-func (t *TelegramNotifier) scrub(err error) error {
-	if err == nil || t.botToken == "" {
+// scrub removes the bot token from an error string so callers may log it.
+func scrub(botToken string, err error) error {
+	if err == nil || botToken == "" {
 		return err
 	}
-	msg := strings.ReplaceAll(err.Error(), t.botToken, "[redacted]")
+	msg := strings.ReplaceAll(err.Error(), botToken, "[redacted]")
 	return errors.New(msg)
 }
 

@@ -18,10 +18,10 @@ import (
 type fakeStore struct {
 	mu sync.Mutex
 
-	plans []model.Plan
-	runs  []model.Run
+	plans  []model.Plan
+	runs   []model.Run
 	agents map[string]model.Agent
-	repos []model.Repository
+	repos  []model.Repository
 
 	// record of transitions
 	transitions []transitionCall
@@ -127,10 +127,10 @@ func (f *fakeStore) ListRepositoriesNeedingCheck(_ context.Context, olderThan ti
 
 // ---- Stubs for unused Store methods ----
 
-func (f *fakeStore) Close() error                                              { return nil }
-func (f *fakeStore) Migrate(_ context.Context) error                            { return nil }
-func (f *fakeStore) HasAdmin(_ context.Context) (bool, error)                   { return false, nil }
-func (f *fakeStore) CreateAdmin(_ context.Context, _ *model.Admin) error        { return nil }
+func (f *fakeStore) Close() error                                        { return nil }
+func (f *fakeStore) Migrate(_ context.Context) error                     { return nil }
+func (f *fakeStore) HasAdmin(_ context.Context) (bool, error)            { return false, nil }
+func (f *fakeStore) CreateAdmin(_ context.Context, _ *model.Admin) error { return nil }
 func (f *fakeStore) GetAdminByUsername(_ context.Context, _ string) (*model.Admin, error) {
 	return nil, store.ErrNotFound
 }
@@ -139,69 +139,96 @@ func (f *fakeStore) GetAdminByID(_ context.Context, _ string) (*model.Admin, err
 	return nil, store.ErrNotFound
 }
 func (f *fakeStore) UpdateAdminLastLogin(_ context.Context, _ string, _ time.Time) error { return nil }
-func (f *fakeStore) CreateSession(_ context.Context, _ *model.Session) error               { return nil }
-func (f *fakeStore) GetSession(_ context.Context, _ string) (*model.Session, error)        { return nil, store.ErrNotFound }
-func (f *fakeStore) TouchSession(_ context.Context, _ string, _ time.Time) error           { return nil }
-func (f *fakeStore) DeleteSession(_ context.Context, _ string) error                        { return nil }
-func (f *fakeStore) DeleteExpiredSessions(_ context.Context, _ time.Time) error             { return nil }
-func (f *fakeStore) CreateEnrollmentToken(_ context.Context, _ *model.EnrollmentToken) error { return nil }
-func (f *fakeStore) ListEnrollmentTokens(_ context.Context) ([]model.EnrollmentToken, error) { return nil, nil }
+func (f *fakeStore) CreateSession(_ context.Context, _ *model.Session) error             { return nil }
+func (f *fakeStore) GetSession(_ context.Context, _ string) (*model.Session, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) TouchSession(_ context.Context, _ string, _ time.Time) error { return nil }
+func (f *fakeStore) DeleteSession(_ context.Context, _ string) error             { return nil }
+func (f *fakeStore) DeleteExpiredSessions(_ context.Context, _ time.Time) error  { return nil }
+func (f *fakeStore) CreateEnrollmentToken(_ context.Context, _ *model.EnrollmentToken) error {
+	return nil
+}
+func (f *fakeStore) ListEnrollmentTokens(_ context.Context) ([]model.EnrollmentToken, error) {
+	return nil, nil
+}
 func (f *fakeStore) ConsumeEnrollmentToken(_ context.Context, _ string, _ time.Time) (*model.EnrollmentToken, error) {
 	return nil, store.ErrTokenInvalid
 }
-func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, _ *model.Agent) error                 { return nil }
-func (f *fakeStore) SetAgentStatus(_ context.Context, _ string, _ model.AgentStatus, _ time.Time) error { return nil }
-func (f *fakeStore) SaveAgentCapabilities(_ context.Context, _ string, _ []model.ToolInfo, _ time.Time) error { return nil }
-func (f *fakeStore) GetAgentBySecretHash(_ context.Context, _ string) (*model.Agent, error) { return nil, store.ErrNotFound }
-func (f *fakeStore) ListAgents(_ context.Context) ([]model.Agent, error)                     { return nil, nil }
-func (f *fakeStore) RevokeAgent(_ context.Context, _ string) error                           { return nil }
-func (f *fakeStore) CreateStorageTarget(_ context.Context, _ *model.StorageTarget) error     { return nil }
-func (f *fakeStore) UpdateStorageTarget(_ context.Context, _ *model.StorageTarget) error     { return nil }
-func (f *fakeStore) DeleteStorageTarget(_ context.Context, _ string) error                   { return nil }
+func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, _ *model.Agent) error { return nil }
+func (f *fakeStore) SetAgentStatus(_ context.Context, _ string, _ model.AgentStatus, _ time.Time) error {
+	return nil
+}
+func (f *fakeStore) SaveAgentCapabilities(_ context.Context, _ string, _ []model.ToolInfo, _ time.Time) error {
+	return nil
+}
+func (f *fakeStore) GetAgentBySecretHash(_ context.Context, _ string) (*model.Agent, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) ListAgents(_ context.Context) ([]model.Agent, error)                 { return nil, nil }
+func (f *fakeStore) RevokeAgent(_ context.Context, _ string) error                       { return nil }
+func (f *fakeStore) RenameAgent(_ context.Context, _, _ string) error                    { return nil }
+func (f *fakeStore) CreateStorageTarget(_ context.Context, _ *model.StorageTarget) error { return nil }
+func (f *fakeStore) UpdateStorageTarget(_ context.Context, _ *model.StorageTarget) error { return nil }
+func (f *fakeStore) DeleteStorageTarget(_ context.Context, _ string) error               { return nil }
 func (f *fakeStore) GetStorageTarget(_ context.Context, _ string) (*model.StorageTarget, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListStorageTargets(_ context.Context) ([]model.StorageTarget, error) { return nil, nil }
-func (f *fakeStore) CreateRepository(_ context.Context, _ *model.Repository) error   { return nil }
-func (f *fakeStore) GetRepository(_ context.Context, _ string) (*model.Repository, error) { return nil, store.ErrNotFound }
+func (f *fakeStore) ListStorageTargets(_ context.Context) ([]model.StorageTarget, error) {
+	return nil, nil
+}
+func (f *fakeStore) CreateRepository(_ context.Context, _ *model.Repository) error { return nil }
+func (f *fakeStore) GetRepository(_ context.Context, _ string) (*model.Repository, error) {
+	return nil, store.ErrNotFound
+}
 func (f *fakeStore) GetRepositoryByAgentAndTarget(_ context.Context, _, _ string) (*model.Repository, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListRepositories(_ context.Context) ([]model.Repository, error)  { return nil, nil }
-func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, _, _ string) error      { return nil }
+func (f *fakeStore) ListRepositories(_ context.Context) ([]model.Repository, error)       { return nil, nil }
+func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, _, _ string) error          { return nil }
 func (f *fakeStore) MarkRepositoryChecked(_ context.Context, _ string, _ time.Time) error { return nil }
-func (f *fakeStore) CreatePlan(_ context.Context, _ *model.Plan) error                { return nil }
-func (f *fakeStore) UpdatePlan(_ context.Context, _ *model.Plan) error                { return nil }
-func (f *fakeStore) DeletePlan(_ context.Context, _ string) error                     { return nil }
-func (f *fakeStore) ListPlans(_ context.Context, _ string) ([]model.Plan, error)      { return nil, nil }
-func (f *fakeStore) CreateRun(_ context.Context, _ *model.Run) error                  { return nil }
-func (f *fakeStore) GetRun(_ context.Context, _ string) (*model.Run, error)           { return nil, store.ErrNotFound }
-func (f *fakeStore) ListRuns(_ context.Context, _ store.RunFilter) ([]model.Run, error) { return nil, nil }
-func (f *fakeStore) FailStaleRuns(_ context.Context, _ []string, _ string, _ time.Time) (int64, error) {
-	return 0, nil
+func (f *fakeStore) CreatePlan(_ context.Context, _ *model.Plan) error                    { return nil }
+func (f *fakeStore) UpdatePlan(_ context.Context, _ *model.Plan) error                    { return nil }
+func (f *fakeStore) DeletePlan(_ context.Context, _ string) error                         { return nil }
+func (f *fakeStore) ListPlans(_ context.Context, _ string) ([]model.Plan, error)          { return nil, nil }
+func (f *fakeStore) CreateRun(_ context.Context, _ *model.Run) error                      { return nil }
+func (f *fakeStore) GetRun(_ context.Context, _ string) (*model.Run, error) {
+	return nil, store.ErrNotFound
 }
-func (f *fakeStore) AppendRunLogs(_ context.Context, _ []model.RunLog) error          { return nil }
+func (f *fakeStore) ListRuns(_ context.Context, _ store.RunFilter) ([]model.Run, error) {
+	return nil, nil
+}
+func (f *fakeStore) FailStaleRuns(_ context.Context, _ []string, _ string, _ time.Time) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeStore) AppendRunLogs(_ context.Context, _ []model.RunLog) error { return nil }
 func (f *fakeStore) ListRunLogs(_ context.Context, _ string, _ uint64, _ int) ([]model.RunLog, error) {
 	return nil, nil
 }
 func (f *fakeStore) MaxRunLogSeq(_ context.Context, _ string) (uint64, error) { return 0, nil }
-func (f *fakeStore) CreateRestoreRequest(_ context.Context, _ *model.RestoreRequest) error { return nil }
+func (f *fakeStore) CreateRestoreRequest(_ context.Context, _ *model.RestoreRequest) error {
+	return nil
+}
 func (f *fakeStore) GetRestoreRequest(_ context.Context, _ string) (*model.RestoreRequest, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListRestoreRequests(_ context.Context, _ int) ([]model.RestoreRequest, error) { return nil, nil }
+func (f *fakeStore) ListRestoreRequests(_ context.Context, _ int) ([]model.RestoreRequest, error) {
+	return nil, nil
+}
 func (f *fakeStore) AppendAuditEvent(_ context.Context, _ *model.AuditEvent) error { return nil }
-func (f *fakeStore) ListAuditEvents(_ context.Context, _ int) ([]model.AuditEvent, error) { return nil, nil }
+func (f *fakeStore) ListAuditEvents(_ context.Context, _ int) ([]model.AuditEvent, error) {
+	return nil, nil
+}
 
 // ---------------------------------------------------------------------------
 // fakeStarter records calls to StartPlanRun / SystemRunCheck.
 // ---------------------------------------------------------------------------
 
 type fakeStarter struct {
-	mu                 sync.Mutex
-	startPlanRunCalls  []startPlanRunCall
+	mu                  sync.Mutex
+	startPlanRunCalls   []startPlanRunCall
 	systemRunCheckCalls []string
-	returnErr          error // if set, returned by StartPlanRun
+	returnErr           error // if set, returned by StartPlanRun
 }
 
 type startPlanRunCall struct {
@@ -232,6 +259,29 @@ func (f *fakeStarter) SystemRunCheck(_ context.Context, repositoryID string) (st
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// recordingNotifier records failure-notification calls.
+// ---------------------------------------------------------------------------
+
+type recordingNotifier struct {
+	mu  sync.Mutex
+	ids []string
+	err error
+}
+
+func (r *recordingNotifier) NotifyPlanFailure(_ context.Context, runID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ids = append(r.ids, runID)
+	return r.err
+}
+
+func (r *recordingNotifier) calls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.ids...)
+}
+
 func tickAt(s *Scheduler, now time.Time) {
 	s.runTick(context.Background(), now)
 }
@@ -258,7 +308,7 @@ func TestCronFiresOncePerSlot(t *testing.T) {
 		Timezone: "UTC",
 	})
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil)
 
 	// Tick 1 @ 10:00:00 → cursor initialized to 10:01:00 (nextAfter), no fire.
 	tickAt(s, mustTime("2026-08-22T10:00:00Z"))
@@ -312,7 +362,7 @@ func TestCronToleratesDuplicateRun(t *testing.T) {
 	start := newFakeStarter()
 	start.returnErr = store.ErrDuplicateRun
 
-	s := New(fst, start)
+	s := New(fst, start, nil)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z")) // init cursor
 	tickAt(s, mustTime("2026-08-22T10:01:01Z")) // fire (ErrDuplicateRun returned)
@@ -338,7 +388,7 @@ func TestCronTimezone(t *testing.T) {
 		Timezone: "Asia/Shanghai", // UTC+8
 	})
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil)
 
 	// 09:00 Asia/Shanghai = 01:00 UTC. At this point 08:00 has already
 	// passed, so the next fire is 2026-08-23T00:00:00Z (08:00 Shanghai next day).
@@ -369,7 +419,7 @@ func TestCronDisabledPlanSkipped(t *testing.T) {
 		Timezone: "UTC",
 	})
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z"))
 	tickAt(s, mustTime("2026-08-22T10:01:01Z"))
@@ -402,7 +452,7 @@ func TestCronInvalidScheduleAndTZDoNotCrash(t *testing.T) {
 		Timezone: "UTC",
 	})
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z")) // init cursors
 	tickAt(s, mustTime("2026-08-22T10:05:01Z")) // good plan should fire
@@ -425,19 +475,20 @@ func TestStaleQueuedRunFailsWhenAgentOffline(t *testing.T) {
 		TimeoutSeconds: 60,
 	})
 	fst.runs = append(fst.runs, model.Run{
-		ID:       "run-1",
-		PlanID:   "plan-1",
-		AgentID:  "agent-1",
+		ID:        "run-1",
+		PlanID:    "plan-1",
+		AgentID:   "agent-1",
 		Operation: model.OpBackup,
-		Status:   model.RunQueued,
-		QueuedAt: mustTime("2026-08-22T10:00:00Z"),
+		Status:    model.RunQueued,
+		QueuedAt:  mustTime("2026-08-22T10:00:00Z"),
 	})
 	fst.agents["agent-1"] = model.Agent{
 		ID:     "agent-1",
 		Status: model.AgentOffline,
 	}
 	start := newFakeStarter()
-	s := New(fst, start)
+	notifier := &recordingNotifier{}
+	s := New(fst, start, notifier)
 
 	tickAt(s, mustTime("2026-08-22T10:00:30Z")) // deadline 10:01:00 not yet reached → no fail
 	if len(fst.transitions) != 0 {
@@ -458,6 +509,18 @@ func TestStaleQueuedRunFailsWhenAgentOffline(t *testing.T) {
 	if fst.runs[0].FinishedAt == nil || !fst.runs[0].FinishedAt.Equal(mustTime("2026-08-22T10:01:30Z")) {
 		t.Fatalf("FinishedAt not set correctly: %v", fst.runs[0].FinishedAt)
 	}
+	if got := notifier.calls(); len(got) != 1 || got[0] != "run-1" {
+		t.Fatalf("expected exactly one notification for run-1, got %v", got)
+	}
+
+	// Second tick: run already terminal, transition fails, no re-notification.
+	tickAt(s, mustTime("2026-08-22T10:02:30Z"))
+	if len(fst.transitions) != 1 {
+		t.Fatalf("expected still 1 transition after second tick, got %d", len(fst.transitions))
+	}
+	if got := notifier.calls(); len(got) != 1 {
+		t.Fatalf("expected still 1 notification after second tick, got %v", got)
+	}
 }
 
 // TestStaleQueuedRunUsesDefaultTimeoutWhenNoPlan verifies that a system
@@ -465,17 +528,17 @@ func TestStaleQueuedRunFailsWhenAgentOffline(t *testing.T) {
 func TestStaleQueuedRunUsesDefaultTimeoutWhenNoPlan(t *testing.T) {
 	fst := newFakeStore(t)
 	fst.runs = append(fst.runs, model.Run{
-		ID:       "sys-run",
-		AgentID:  "agent-1",
+		ID:        "sys-run",
+		AgentID:   "agent-1",
 		Operation: model.OpCheck,
-		Status:   model.RunQueued,
-		QueuedAt: mustTime("2026-08-22T10:00:00Z"),
+		Status:    model.RunQueued,
+		QueuedAt:  mustTime("2026-08-22T10:00:00Z"),
 	})
 	fst.agents["agent-1"] = model.Agent{
 		ID:     "agent-1",
 		Status: model.AgentOffline,
 	}
-	s := New(fst, newFakeStarter())
+	s := New(fst, newFakeStarter(), nil)
 
 	// 4 minutes < 300s → no fail.
 	tickAt(s, mustTime("2026-08-22T10:04:00Z"))
@@ -505,7 +568,7 @@ func TestStaleQueuedRunNotFailedWhenAgentOnline(t *testing.T) {
 		ID:     "agent-1",
 		Status: model.AgentOnline,
 	}
-	s := New(fst, newFakeStarter())
+	s := New(fst, newFakeStarter(), nil)
 
 	tickAt(s, mustTime("2026-08-22T10:05:00Z"))
 	if len(fst.transitions) != 0 {
@@ -525,7 +588,7 @@ func TestStaleQueuedRunFailsWhenAgentRowMissing(t *testing.T) {
 		Status:   model.RunQueued,
 		QueuedAt: mustTime("2026-08-22T10:00:00Z"),
 	})
-	s := New(fst, newFakeStarter())
+	s := New(fst, newFakeStarter(), nil)
 
 	tickAt(s, mustTime("2026-08-22T10:01:00Z"))
 	if len(fst.transitions) != 1 || fst.transitions[0].code != model.ErrAgentUnavailable {
@@ -578,7 +641,7 @@ func TestWeeklyRepoCheckOnlyReadyOnline(t *testing.T) {
 	fst.agents["agent-4"] = model.Agent{ID: "agent-4", Status: model.AgentOnline}
 
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil)
 	s.now = func() time.Time { return now }
 
 	s.runTick(context.Background(), now)
@@ -603,7 +666,7 @@ func TestWeeklyRepoCheckFiresMultipleRepos(t *testing.T) {
 	fst.agents["agent-b"] = model.Agent{ID: "agent-b", Status: model.AgentOnline}
 
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil)
 	now := mustTime("2026-08-22T10:00:00Z")
 	s.now = func() time.Time { return now }
 
@@ -619,7 +682,7 @@ func TestWeeklyRepoCheckFiresMultipleRepos(t *testing.T) {
 func TestLoopStartsAndStops(t *testing.T) {
 	fst := newFakeStore(t)
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil)
 
 	called := make(chan time.Time, 1)
 	s.tickFn = func(_ time.Duration) *time.Ticker {

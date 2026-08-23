@@ -47,6 +47,7 @@ type Store interface {
 	GetAgentBySecretHash(ctx context.Context, tokenHash string) (*model.Agent, error)
 	ListAgents(ctx context.Context) ([]model.Agent, error)
 	RevokeAgent(ctx context.Context, id string) error
+	RenameAgent(ctx context.Context, id, name string) error
 
 	// Storage targets
 	CreateStorageTarget(ctx context.Context, t *model.StorageTarget) error
@@ -81,7 +82,9 @@ type Store interface {
 	// returns ErrInvalidTransition otherwise. Terminal states are final.
 	TransitionRun(ctx context.Context, id, from, to string, mutate func(*model.Run)) error
 	ListRunsByStatus(ctx context.Context, statuses []string) ([]model.Run, error)
-	FailStaleRuns(ctx context.Context, statuses []string, errorCode string, at time.Time) (int64, error)
+	// FailStaleRuns force-fails runs in the given non-terminal statuses and
+	// returns the IDs actually moved to failed.
+	FailStaleRuns(ctx context.Context, statuses []string, errorCode string, at time.Time) ([]string, error)
 
 	// Run logs
 	AppendRunLogs(ctx context.Context, logs []model.RunLog) error

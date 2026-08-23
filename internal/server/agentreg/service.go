@@ -15,6 +15,7 @@ import (
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/secrets"
 	"backupmanagementcenter/internal/server/events"
+	"backupmanagementcenter/internal/server/notification"
 	"backupmanagementcenter/internal/server/store"
 	"backupmanagementcenter/internal/version"
 	"google.golang.org/grpc/codes"
@@ -43,10 +44,11 @@ func init() {
 type Service struct {
 	bmcv1.UnimplementedAgentControlServer
 
-	store store.Store
-	reg   *Registry
-	bus   events.Bus
-	cfg   Config
+	store    store.Store
+	reg      *Registry
+	bus      events.Bus
+	cfg      Config
+	notifier notification.FailureNotifier
 
 	// mu protects lastSeenWrite for the heartbeat throttle
 	lastSeenMu     sync.Mutex
@@ -76,13 +78,18 @@ func DefaultConfig() Config {
 	}
 }
 
-// NewService creates a new AgentControl gRPC service.
-func NewService(s store.Store, reg *Registry, bus events.Bus, cfg Config) *Service {
+// NewService creates a new AgentControl gRPC service. notifier receives one
+// call per persisted plan-bound failed run; nil falls back to a no-op.
+func NewService(s store.Store, reg *Registry, bus events.Bus, cfg Config, notifier notification.FailureNotifier) *Service {
+	if notifier == nil {
+		notifier = notification.NopNotifier{}
+	}
 	return &Service{
 		store:          s,
 		reg:            reg,
 		bus:            bus,
 		cfg:            cfg,
+		notifier:       notifier,
 		lastSeenWrites: make(map[string]time.Time),
 		stopCh:         make(chan struct{}),
 	}
@@ -269,21 +276,43 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 	errCh := make(chan error, 1)
 	go s.sendLoop(streamCtx, stream, sendCh, errCh)
 
-	// Main receive loop
-	for {
-		msg, err := stream.Recv()
-		if err != nil {
-			// Stream ended
-			select {
-			case sendErr := <-errCh:
-				return sendErr
-			default:
+	// Main receive loop: Recv runs in its own goroutine so the loop can also
+	// wake on streamCtx cancellation (Registry.Unregister — e.g. agent revoked
+	// or replaced by a newer connection). Cancelling the context alone never
+	// unblocks Recv.
+	type recvResult struct {
+		msg *bmcv1.AgentMessage
+		err error
+	}
+	recvCh := make(chan recvResult, 1)
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			recvCh <- recvResult{msg, err}
+			if err != nil {
+				return
 			}
-			return nil
 		}
+	}()
 
-		if err := s.handleAgentMessage(stream, agentID, msg); err != nil {
-			log.Printf("error handling agent message from %s: %v", agentID, err)
+	for {
+		select {
+		case <-streamCtx.Done():
+			return status.Error(codes.Canceled, "stream cancelled")
+		case r := <-recvCh:
+			if r.err != nil {
+				// Stream ended
+				select {
+				case sendErr := <-errCh:
+					return sendErr
+				default:
+				}
+				return nil
+			}
+
+			if err := s.handleAgentMessage(stream, agentID, r.msg); err != nil {
+				log.Printf("error handling agent message from %s: %v", agentID, err)
+			}
 		}
 	}
 }
@@ -540,6 +569,15 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 			Type: events.State,
 			Run:  updatedRun,
 		})
+	}
+
+	// Notify only after the failed terminal state is durably committed and
+	// the state event published. Duplicate agent results return earlier via
+	// ErrInvalidTransition and never reach this point.
+	if toStatus == model.RunFailed {
+		if err := s.notifier.NotifyPlanFailure(ctx, runID); err != nil {
+			notification.LogFailure(runID, err)
+		}
 	}
 
 	return nil

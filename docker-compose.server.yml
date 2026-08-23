@@ -16,6 +16,8 @@ services:
       BMC_DATA_DIR: /var/lib/bmc
       BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:-https://backup.example.com}
       BMC_MASTER_KEY_FILE: /run/secrets/bmc_master_key
+      BMC_TELEGRAM_BOT_TOKEN: ${BMC_TELEGRAM_BOT_TOKEN:-}
+      BMC_TELEGRAM_CHAT_ID: ${BMC_TELEGRAM_CHAT_ID:-}
       BMC_TLS_CERT_FILE: /run/secrets/bmc_tls_cert
       BMC_TLS_KEY_FILE: /run/secrets/bmc_tls_key
     volumes:

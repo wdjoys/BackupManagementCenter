@@ -30,6 +30,7 @@ import (
 	"backupmanagementcenter/internal/server/events"
 	"backupmanagementcenter/internal/server/jobs"
 	"backupmanagementcenter/internal/server/metrics"
+	"backupmanagementcenter/internal/server/notification"
 	"backupmanagementcenter/internal/server/scheduler"
 	"backupmanagementcenter/internal/server/store"
 	"backupmanagementcenter/internal/version"
@@ -82,12 +83,20 @@ func main() {
 	met := metrics.New()
 	reg := agentreg.NewRegistry()
 
+	// Failure notifications: Telegram when both env vars are set (enforced
+	// by config), no-op otherwise. One shared instance for every producer.
+	var notifier notification.FailureNotifier = notification.NopNotifier{}
+	if cfg.TelegramBotToken != "" && cfg.TelegramChatID != "" {
+		notifier = notification.NewTelegramNotifier(st, cfg.TelegramBotToken, cfg.TelegramChatID, cfg.PublicURL)
+		log.Printf("[INFO] telegram plan-failure notifications enabled")
+	}
+
 	ready := &atomic.Bool{}
 
 	// Orchestrator + dispatcher (Src wired after construction to break the
 	// constructor cycle).
 	orch := jobs.New(st, seal, nil, bus, instanceID)
-	disp := dispatchgrpc.NewDispatcher(st, reg, dispatchgrpc.DefaultConfig())
+	disp := dispatchgrpc.NewDispatcher(st, reg, dispatchgrpc.DefaultConfig(), notifier)
 	disp.Src = orch
 	orch.Disp = disp // break constructor cycle: dispatcher needs orchestrator as CommandSource
 	disp.StartWatchdog()
@@ -95,17 +104,23 @@ func main() {
 		HeartbeatIntervalSeconds: 30,
 		OfflineCheckInterval:     30 * time.Second,
 		OfflineThreshold:         90 * time.Second,
-	})
+	}, notifier)
 
 	// Restart recovery: runs left dispatched/running by a previous process
 	// can no longer be trusted.
-	if n, err := st.FailStaleRuns(ctx, []string{"dispatched", "running"}, "server_restarted", time.Now().UTC()); err != nil {
+	staleIDs, err := st.FailStaleRuns(ctx, []string{"dispatched", "running"}, "server_restarted", time.Now().UTC())
+	if err != nil {
 		log.Printf("[WARN] stale run recovery: %v", err)
-	} else if n > 0 {
-		log.Printf("[INFO] marked %d stale runs failed (server_restarted)", n)
+	} else if len(staleIDs) > 0 {
+		log.Printf("[INFO] marked %d stale runs failed (server_restarted)", len(staleIDs))
+		for _, runID := range staleIDs {
+			if nerr := notifier.NotifyPlanFailure(ctx, runID); nerr != nil {
+				notification.LogFailure(runID, nerr)
+			}
+		}
 	}
 
-	sched := scheduler.New(st, schedAdapter{orch})
+	sched := scheduler.New(st, schedAdapter{orch}, notifier)
 	sched.Start()
 	defer sched.Stop()
 	defer disp.StopWatchdog()
@@ -137,6 +152,7 @@ func main() {
 	handler := api.New(&api.Server{
 		ST: st, Bus: bus, Met: met, Jobs: orch,
 		Version: version.Version,
+		Reg:     reg,
 		Ready:   ready.Load,
 	})
 

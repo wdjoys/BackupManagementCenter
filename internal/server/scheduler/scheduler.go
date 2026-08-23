@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robfig/cron/v3"
-
 	"backupmanagementcenter/internal/model"
+	"backupmanagementcenter/internal/server/notification"
 	"backupmanagementcenter/internal/server/store"
+	"github.com/robfig/cron/v3"
 )
 
 // RunStarter is injected by main (backed by *jobs.Orchestrator) so this
@@ -31,8 +31,9 @@ const (
 )
 
 type Scheduler struct {
-	store   store.Store
-	starter RunStarter
+	store    store.Store
+	starter  RunStarter
+	notifier notification.FailureNotifier
 
 	// test knobs
 	tickFn func(time.Duration) *time.Ticker
@@ -47,16 +48,21 @@ type Scheduler struct {
 	cursors map[string]time.Time
 }
 
-func New(st store.Store, starter RunStarter) *Scheduler {
+// New builds a Scheduler. notifier may be nil; a no-op is used then.
+func New(st store.Store, starter RunStarter, notifier notification.FailureNotifier) *Scheduler {
+	if notifier == nil {
+		notifier = notification.NopNotifier{}
+	}
 	p := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	return &Scheduler{
-		store:   st,
-		starter: starter,
-		parser:  p,
-		tickFn:  time.NewTicker,
-		now:     func() time.Time { return time.Now().UTC() },
-		closeCh: make(chan struct{}),
-		cursors: make(map[string]time.Time),
+		store:    st,
+		starter:  starter,
+		notifier: notifier,
+		parser:   p,
+		tickFn:   time.NewTicker,
+		now:      func() time.Time { return time.Now().UTC() },
+		closeCh:  make(chan struct{}),
+		cursors:  make(map[string]time.Time),
 	}
 }
 
@@ -188,7 +194,14 @@ func (s *Scheduler) tickStaleQueued(ctx context.Context, now time.Time) {
 			run.ErrorMessage = "agent offline past timeout"
 			run.FinishedAt = &finishedAt
 		}); err != nil {
+			// Transition failed (e.g. concurrent terminal result): keep the
+			// existing error log and do not notify.
 			slog.Error("scheduler: TransitionRun", "runID", r.ID, "error", err)
+			continue
+		}
+		// System runs (PlanID == "") are filtered inside the notifier.
+		if err := s.notifier.NotifyPlanFailure(ctx, r.ID); err != nil {
+			slog.Error("plan failure notification", "runID", r.ID, "error", err)
 		}
 	}
 }

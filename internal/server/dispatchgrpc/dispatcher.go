@@ -1,17 +1,18 @@
 package dispatchgrpc
 
 import (
+	"backupmanagementcenter/internal/dispatch"
+	"backupmanagementcenter/internal/model"
 	"context"
 	"fmt"
 	"log"
 	"sync"
 	"time"
-	"backupmanagementcenter/internal/dispatch"
-	"backupmanagementcenter/internal/model"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/server/agentreg"
 	"backupmanagementcenter/internal/server/jobs"
+	"backupmanagementcenter/internal/server/notification"
 	"backupmanagementcenter/internal/server/store"
 )
 
@@ -51,11 +52,13 @@ type repoQueue struct {
 
 // Dispatcher implements dispatch.Dispatcher using the gRPC channel layer.
 type Dispatcher struct {
-	cfg   Config
-	store store.Store
-	reg   *agentreg.Registry
+	cfg      Config
+	store    store.Store
+	reg      *agentreg.Registry
+	notifier notification.FailureNotifier
 	// Src builds the actual ExecuteCommand (params + decrypted secrets).
 	Src jobs.CommandSource
+
 	mu           sync.Mutex
 	repoQueues   map[string]*repoQueue
 	enqueuedRuns map[string]bool // runID -> true (for idempotency)
@@ -65,12 +68,17 @@ type Dispatcher struct {
 	wg           sync.WaitGroup
 }
 
-// NewDispatcher creates a new gRPC-based dispatcher.
-func NewDispatcher(s store.Store, reg *agentreg.Registry, cfg Config) *Dispatcher {
+// NewDispatcher creates a new gRPC-based dispatcher. notifier may be nil; a
+// no-op is used then.
+func NewDispatcher(s store.Store, reg *agentreg.Registry, cfg Config, notifier notification.FailureNotifier) *Dispatcher {
+	if notifier == nil {
+		notifier = notification.NopNotifier{}
+	}
 	return &Dispatcher{
 		store:        s,
 		reg:          reg,
 		cfg:          cfg,
+		notifier:     notifier,
 		repoQueues:   make(map[string]*repoQueue),
 		enqueuedRuns: make(map[string]bool),
 		stopWatchdog: make(chan struct{}),
@@ -168,26 +176,18 @@ func (d *Dispatcher) processJob(j *job) {
 	if err != nil {
 		log.Printf("dispatcher: failed to build command for run %s: %v", j.runID, err)
 		// Permanent build failure: fail the run instead of spinning the queue.
-		_ = d.store.TransitionRun(ctx, j.runID, model.RunQueued, model.RunFailed, func(r *model.Run) {
+		if terr := d.store.TransitionRun(ctx, j.runID, model.RunQueued, model.RunFailed, func(r *model.Run) {
 			now := time.Now().UTC()
-			r.ErrorCode = "invalid_plan"
+			r.ErrorCode = model.ErrInvalidPlan
 			r.ErrorMessage = err.Error()
 			r.FinishedAt = &now
-		})
-		d.removeEnqueued(j.runID)
-		return
-	}
-
-	// Transition to dispatched
-	err = d.store.TransitionRun(ctx, j.runID, model.RunQueued, model.RunDispatched, nil)
-	if err != nil {
-		if err == store.ErrInvalidTransition {
-			// Maybe already dispatched or terminal — drop job
-			d.removeEnqueued(j.runID)
-			return
+		}); terr != nil {
+			// Transition failed: no notification; keep the original build error.
+			log.Printf("dispatcher: failed to transition run %s to failed: %v", j.runID, terr)
+		} else if nerr := d.notifier.NotifyPlanFailure(ctx, j.runID); nerr != nil {
+			notification.LogFailure(j.runID, nerr)
 		}
-		log.Printf("dispatcher: failed to transition run %s to dispatched: %v", j.runID, err)
-		d.requeueJob(j)
+		d.removeEnqueued(j.runID)
 		return
 	}
 
@@ -421,12 +421,16 @@ func (d *Dispatcher) checkTimeouts() {
 			if run.Status == model.RunRunning {
 				// Running but no response for 30s -> force fail
 				if elapsed > d.cfg.NoResponseTimeout {
-					_ = d.store.TransitionRun(ctx, run.ID, model.RunRunning, model.RunFailed, func(r *model.Run) {
+					if err := d.store.TransitionRun(ctx, run.ID, model.RunRunning, model.RunFailed, func(r *model.Run) {
 						now := time.Now().UTC()
 						r.FinishedAt = &now
 						r.ErrorCode = model.ErrTimeout
 						r.ErrorMessage = "agent did not respond within timeout"
-					})
+					}); err != nil {
+						log.Printf("watchdog: failed to fail run %s: %v", run.ID, err)
+					} else if nerr := d.notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
+						notification.LogFailure(run.ID, nerr)
+					}
 				}
 			} else if run.Status == model.RunDispatched {
 				// Send cancel and mark failed
@@ -438,12 +442,16 @@ func (d *Dispatcher) checkTimeouts() {
 					}
 					_ = d.reg.Send(run.AgentID, cancelMsg)
 				}
-				_ = d.store.TransitionRun(ctx, run.ID, model.RunDispatched, model.RunFailed, func(r *model.Run) {
+				if err := d.store.TransitionRun(ctx, run.ID, model.RunDispatched, model.RunFailed, func(r *model.Run) {
 					now := time.Now().UTC()
 					r.FinishedAt = &now
 					r.ErrorCode = model.ErrTimeout
 					r.ErrorMessage = "run timed out in dispatched state"
-				})
+				}); err != nil {
+					log.Printf("watchdog: failed to fail run %s: %v", run.ID, err)
+				} else if nerr := d.notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
+					notification.LogFailure(run.ID, nerr)
+				}
 			}
 		}
 	}

@@ -14,8 +14,12 @@ type Server struct {
 	DataDir       string // BMC_DATA_DIR, default ./data
 	PublicURL     string // BMC_PUBLIC_URL
 	MasterKeyFile string // BMC_MASTER_KEY_FILE
-	TLSCertFile   string // BMC_TLS_CERT_FILE
-	TLSKeyFile    string // BMC_TLS_KEY_FILE
+	// Telegram failure notifications. Both variables must be set together
+	// to enable; both empty disables; exactly one is a config error.
+	TelegramBotToken string // BMC_TELEGRAM_BOT_TOKEN
+	TelegramChatID   string // BMC_TELEGRAM_CHAT_ID
+	TLSCertFile      string // BMC_TLS_CERT_FILE
+	TLSKeyFile       string // BMC_TLS_KEY_FILE
 	// TLSMode: "auto" (default) serves TLS from TLSCertFile/KeyFile and
 	// requires them in production; "none" serves plain HTTP + plain gRPC for
 	// deployments where a reverse proxy (Caddy/Nginx) terminates all TLS.
@@ -42,6 +46,15 @@ func LoadServer() (Server, error) {
 	default:
 		return c, fmt.Errorf("config: BMC_TLS_MODE must be auto or none, got %q", c.TLSMode)
 	}
+	telegramToken := os.Getenv("BMC_TELEGRAM_BOT_TOKEN")
+	telegramChatID := os.Getenv("BMC_TELEGRAM_CHAT_ID")
+	switch {
+	case telegramToken == "" && telegramChatID == "":
+	case telegramToken == "" || telegramChatID == "":
+		return c, fmt.Errorf("config: BMC_TELEGRAM_BOT_TOKEN and BMC_TELEGRAM_CHAT_ID must be set together (both empty disables Telegram notifications)")
+	}
+	c.TelegramBotToken = telegramToken
+	c.TelegramChatID = telegramChatID
 	plaintext := c.TLSMode == "none"
 	if c.DevInsecure {
 		return c, nil

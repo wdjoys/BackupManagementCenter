@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
+	"sort"
 	"testing"
 	"time"
 
@@ -282,19 +284,19 @@ func TestAgentUpsertAndGet(t *testing.T) {
 	ctx := context.Background()
 
 	agent := &model.Agent{
-		ID:             "agent-1",
-		Name:           "my-agent",
-		Hostname:       "server1",
-		OS:             "linux",
-		Arch:           "amd64",
-		Version:        "1.0.0",
-		Status:         model.AgentOffline,
-		LastSeenAt:     &now,
-		EnrolledAt:     now,
-		TokenHash:      "secret-hash",
-		Capabilities:   []model.ToolInfo{{Name: "restic"}},
+		ID:               "agent-1",
+		Name:             "my-agent",
+		Hostname:         "server1",
+		OS:               "linux",
+		Arch:             "amd64",
+		Version:          "1.0.0",
+		Status:           model.AgentOffline,
+		LastSeenAt:       &now,
+		EnrolledAt:       now,
+		TokenHash:        "secret-hash",
+		Capabilities:     []model.ToolInfo{{Name: "restic"}},
 		CapabilitiesJSON: agentTools(),
-		Revoked:        false,
+		Revoked:          false,
 	}
 
 	if err := ts.UpsertAgentOnConnect(ctx, agent); err != nil {
@@ -579,7 +581,7 @@ func TestPlan(t *testing.T) {
 	})
 	_ = ts.CreateRepository(ctx, &model.Repository{
 		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
-		RepositoryPath: "gdrive:backups/srv/agent-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
 		EncryptedPassword: []byte("pw"), Status: "ready",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -661,7 +663,7 @@ func TestDeletePlanInUse(t *testing.T) {
 	})
 	_ = ts.CreateRepository(ctx, &model.Repository{
 		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
-		RepositoryPath: "gdrive:backups/srv/agent-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
 		EncryptedPassword: []byte("pw"), Status: "ready",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -669,7 +671,7 @@ func TestDeletePlanInUse(t *testing.T) {
 		ID: "plan-1", Name: "p1", AgentID: "agent-1",
 		Kind: model.KindFilesystem, Schedule: "0 2 * * *",
 		Timezone: "UTC", Enabled: true,
-		SourceJSON: sourceJSON([]string{"/etc"}),
+		SourceJSON:   sourceJSON([]string{"/etc"}),
 		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
 		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
 	})
@@ -692,7 +694,7 @@ func TestDeletePlanInUse(t *testing.T) {
 		ID: "plan-2", Name: "p2", AgentID: "agent-1",
 		Kind: model.KindFilesystem, Schedule: "0 3 * * *",
 		Timezone: "UTC", Enabled: true,
-		SourceJSON: sourceJSON([]string{"/etc"}),
+		SourceJSON:   sourceJSON([]string{"/etc"}),
 		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
 		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
 	})
@@ -725,7 +727,7 @@ func TestCreateRunDuplicateSlot(t *testing.T) {
 	})
 	_ = ts.CreateRepository(ctx, &model.Repository{
 		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
-		RepositoryPath: "gdrive:backups/srv/agent-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
 		EncryptedPassword: []byte("pw"), Status: "ready",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -733,21 +735,21 @@ func TestCreateRunDuplicateSlot(t *testing.T) {
 		ID: "plan-1", Name: "p1", AgentID: "agent-1",
 		Kind: model.KindFilesystem, Schedule: "0 2 * * *",
 		Timezone: "UTC", Enabled: true,
-		SourceJSON: sourceJSON([]string{"/etc"}),
+		SourceJSON:   sourceJSON([]string{"/etc"}),
 		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
 		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
 	})
 
 	scheduledAt := now.Add(2 * time.Hour)
 	slot := &model.Run{
-		ID:          "run-1",
-		PlanID:      "plan-1",
-		AgentID:     "agent-1",
-		Operation:   model.OpBackup,
-		Status:      model.RunQueued,
-		QueuedAt:    now,
+		ID:           "run-1",
+		PlanID:       "plan-1",
+		AgentID:      "agent-1",
+		Operation:    model.OpBackup,
+		Status:       model.RunQueued,
+		QueuedAt:     now,
 		ProgressJSON: progressJSON(),
-		ScheduledAt: &scheduledAt,
+		ScheduledAt:  &scheduledAt,
 	}
 	if err := ts.CreateRun(ctx, slot); err != nil {
 		t.Fatalf("CreateRun first: %v", err)
@@ -783,7 +785,7 @@ func TestCreateGetRun(t *testing.T) {
 	})
 	_ = ts.CreateRepository(ctx, &model.Repository{
 		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
-		RepositoryPath: "gdrive:backups/srv/agent-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
 		EncryptedPassword: []byte("pw"), Status: "ready",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -791,7 +793,7 @@ func TestCreateGetRun(t *testing.T) {
 		ID: "plan-1", Name: "p1", AgentID: "agent-1",
 		Kind: model.KindFilesystem, Schedule: "0 2 * * *",
 		Timezone: "UTC", Enabled: true,
-		SourceJSON: sourceJSON([]string{"/etc"}),
+		SourceJSON:   sourceJSON([]string{"/etc"}),
 		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
 		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
 	})
@@ -842,7 +844,7 @@ func TestTransitionRunHappyPath(t *testing.T) {
 	})
 	_ = ts.CreateRepository(ctx, &model.Repository{
 		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
-		RepositoryPath: "gdrive:backups/srv/agent-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
 		EncryptedPassword: []byte("pw"), Status: "ready",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -850,7 +852,7 @@ func TestTransitionRunHappyPath(t *testing.T) {
 		ID: "plan-1", Name: "p1", AgentID: "agent-1",
 		Kind: model.KindFilesystem, Schedule: "0 2 * * *",
 		Timezone: "UTC", Enabled: true,
-		SourceJSON: sourceJSON([]string{"/etc"}),
+		SourceJSON:   sourceJSON([]string{"/etc"}),
 		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
 		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
 	})
@@ -912,7 +914,7 @@ func TestTransitionRunInvalidPaths(t *testing.T) {
 	})
 	_ = ts.CreateRepository(ctx, &model.Repository{
 		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
-		RepositoryPath: "gdrive:backups/srv/agent-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
 		EncryptedPassword: []byte("pw"), Status: "ready",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -920,7 +922,7 @@ func TestTransitionRunInvalidPaths(t *testing.T) {
 		ID: "plan-1", Name: "p1", AgentID: "agent-1",
 		Kind: model.KindFilesystem, Schedule: "0 2 * * *",
 		Timezone: "UTC", Enabled: true,
-		SourceJSON: sourceJSON([]string{"/etc"}),
+		SourceJSON:   sourceJSON([]string{"/etc"}),
 		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
 		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
 	})
@@ -942,10 +944,7 @@ func TestTransitionRunInvalidPaths(t *testing.T) {
 		// Invalid skips.
 		{from: model.RunQueued, to: model.RunRunning},
 		{from: model.RunQueued, to: model.RunSucceeded},
-		{from: model.RunDispatched, to: model.RunSucceeded},
-		{from: model.RunDispatched, to: model.RunCancelled},
 		{from: model.RunRunning, to: model.RunQueued},
-		{from: model.RunRunning, to: model.RunDispatched},
 		// Wrong from state.
 		{from: model.RunRunning, to: model.RunSucceeded},
 	}
@@ -985,6 +984,67 @@ func TestTransitionRunInvalidPaths(t *testing.T) {
 	}
 }
 
+// TestTransitionRunEarlyFailure verifies the legal early-exit transitions
+// used by the dispatcher (queued→failed for unbuildable jobs), fast-finished
+// agent results (dispatched→succeeded|cancelled) and both failure watchdogs
+// (dispatched/running→failed); terminal states stay final.
+func TestTransitionRunEarlyFailure(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+		ID: "agent-1", Name: "a", Hostname: "h",
+		OS: "linux", Version: "1.0", Status: model.AgentOffline,
+		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
+		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
+	})
+	_ = ts.CreateRun(ctx, &model.Run{
+		ID: "run-1", AgentID: "agent-1",
+		Operation: model.OpBackup, Status: model.RunQueued,
+		QueuedAt: now, ProgressJSON: "{}",
+	})
+
+	// queued -> failed (dispatcher build failure / scheduler stale queue).
+	if err := ts.TransitionRun(ctx, "run-1", model.RunQueued, model.RunFailed, func(r *model.Run) {
+		r.ErrorCode = model.ErrInvalidPlan
+	}); err != nil {
+		t.Fatalf("queued→failed: %v", err)
+	}
+
+	// Terminal states must not re-enter the machine.
+	if err := ts.TransitionRun(ctx, "run-1", model.RunFailed, model.RunQueued, nil); err != ErrInvalidTransition {
+		t.Fatalf("failed→queued: expected ErrInvalidTransition, got %v", err)
+	}
+
+	for _, to := range []string{model.RunSucceeded, model.RunCancelled} {
+		_ = ts.CreateRun(ctx, &model.Run{
+			ID: "run-" + to, PlanID: "", AgentID: "agent-1",
+			Operation: model.OpBackup, Status: model.RunDispatched,
+			QueuedAt: now, ProgressJSON: "{}",
+		})
+		if err := ts.TransitionRun(ctx, "run-"+to, model.RunDispatched, to, func(r *model.Run) {
+			now2 := now.Add(time.Minute)
+			r.StartedAt = &now2
+			r.FinishedAt = &now2
+		}); err != nil {
+			t.Fatalf("dispatched→%s: %v", to, err)
+		}
+	}
+
+	// dispatched -> failed (watchdog).
+	_ = ts.CreateRun(ctx, &model.Run{
+		ID: "run-wd", AgentID: "agent-1",
+		Operation: model.OpBackup, Status: model.RunDispatched,
+		QueuedAt: now, ProgressJSON: "{}",
+	})
+	if err := ts.TransitionRun(ctx, "run-wd", model.RunDispatched, model.RunFailed, func(r *model.Run) {
+		r.ErrorCode = model.ErrTimeout
+	}); err != nil {
+		t.Fatalf("dispatched→failed: %v", err)
+	}
+}
+
 func TestTransitionRunNotFound(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)
@@ -1014,7 +1074,7 @@ func TestFailStaleRuns(t *testing.T) {
 	})
 	_ = ts.CreateRepository(ctx, &model.Repository{
 		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
-		RepositoryPath: "gdrive:backups/srv/agent-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
 		EncryptedPassword: []byte("pw"), Status: "ready",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -1022,7 +1082,7 @@ func TestFailStaleRuns(t *testing.T) {
 		ID: "plan-1", Name: "p1", AgentID: "agent-1",
 		Kind: model.KindFilesystem, Schedule: "0 2 * * *",
 		Timezone: "UTC", Enabled: true,
-		SourceJSON: sourceJSON([]string{"/etc"}),
+		SourceJSON:   sourceJSON([]string{"/etc"}),
 		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
 		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
 	})
@@ -1044,12 +1104,17 @@ func TestFailStaleRuns(t *testing.T) {
 		QueuedAt: now, ProgressJSON: "{}",
 	})
 
-	n, err := ts.FailStaleRuns(ctx, []string{model.RunRunning, model.RunDispatched}, model.ErrServerRestarted, failedAt)
+	ids, err := ts.FailStaleRuns(ctx, []string{model.RunRunning, model.RunDispatched}, model.ErrServerRestarted, failedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Fatalf("expected 2 rows affected, got %d", n)
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 rows affected, got %d (%v)", len(ids), ids)
+	}
+	sort.Strings(ids)
+	wantIDs := []string{"run-dispatched", "run-running"}
+	if !slices.Equal(ids, wantIDs) {
+		t.Fatalf("expected exactly the dispatched/running IDs %v, got %v", wantIDs, ids)
 	}
 
 	got, _ := ts.GetRun(ctx, "run-running")
@@ -1208,7 +1273,7 @@ func TestListRunsByStatus(t *testing.T) {
 	})
 	_ = ts.CreateRepository(ctx, &model.Repository{
 		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
-		RepositoryPath: "gdrive:backups/srv/agent-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
 		EncryptedPassword: []byte("pw"), Status: "ready",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -1216,7 +1281,7 @@ func TestListRunsByStatus(t *testing.T) {
 		ID: "plan-1", Name: "p1", AgentID: "agent-1",
 		Kind: model.KindFilesystem, Schedule: "0 2 * * *",
 		Timezone: "UTC", Enabled: true,
-		SourceJSON: sourceJSON([]string{"/etc"}),
+		SourceJSON:   sourceJSON([]string{"/etc"}),
 		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
 		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
 	})
@@ -1256,7 +1321,7 @@ func TestListRunsFilter(t *testing.T) {
 	})
 	_ = ts.CreateRepository(ctx, &model.Repository{
 		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
-		RepositoryPath: "gdrive:backups/srv/agent-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
 		EncryptedPassword: []byte("pw"), Status: "ready",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -1264,7 +1329,7 @@ func TestListRunsFilter(t *testing.T) {
 		ID: "plan-1", Name: "p1", AgentID: "agent-1",
 		Kind: model.KindFilesystem, Schedule: "0 2 * * *",
 		Timezone: "UTC", Enabled: true,
-		SourceJSON: sourceJSON([]string{"/etc"}),
+		SourceJSON:   sourceJSON([]string{"/etc"}),
 		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
 		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
 	})

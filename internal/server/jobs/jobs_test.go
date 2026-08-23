@@ -198,58 +198,103 @@ func (s *fakeStore) AppendAuditEvent(ctx context.Context, e *model.AuditEvent) e
 }
 
 // No-op stubs to satisfy Store interface.
-func (s *fakeStore) Close() error { return nil }
-func (s *fakeStore) Migrate(ctx context.Context) error { return nil }
-func (s *fakeStore) HasAdmin(ctx context.Context) (bool, error) { return false, nil }
+func (s *fakeStore) Close() error                                          { return nil }
+func (s *fakeStore) Migrate(ctx context.Context) error                     { return nil }
+func (s *fakeStore) HasAdmin(ctx context.Context) (bool, error)            { return false, nil }
 func (s *fakeStore) CreateAdmin(ctx context.Context, a *model.Admin) error { return nil }
-func (s *fakeStore) GetAdminByUsername(ctx context.Context, u string) (*model.Admin, error) { return nil, store.ErrNotFound }
+func (s *fakeStore) GetAdminByUsername(ctx context.Context, u string) (*model.Admin, error) {
+	return nil, store.ErrNotFound
+}
 func (s *fakeStore) GetAdminByID(ctx context.Context, id string) (*model.Admin, error) {
 	return nil, store.ErrNotFound
 }
-func (s *fakeStore) UpdateAdminLastLogin(ctx context.Context, id string, at time.Time) error { return nil }
+func (s *fakeStore) UpdateAdminLastLogin(ctx context.Context, id string, at time.Time) error {
+	return nil
+}
 func (s *fakeStore) CreateSession(ctx context.Context, s1 *model.Session) error { return nil }
-func (s *fakeStore) GetSession(ctx context.Context, idHash string) (*model.Session, error) { return nil, store.ErrNotFound }
-func (s *fakeStore) TouchSession(ctx context.Context, idHash string, lastSeen time.Time) error { return nil }
-func (s *fakeStore) DeleteSession(ctx context.Context, idHash string) error { return nil }
+func (s *fakeStore) GetSession(ctx context.Context, idHash string) (*model.Session, error) {
+	return nil, store.ErrNotFound
+}
+func (s *fakeStore) TouchSession(ctx context.Context, idHash string, lastSeen time.Time) error {
+	return nil
+}
+func (s *fakeStore) DeleteSession(ctx context.Context, idHash string) error         { return nil }
 func (s *fakeStore) DeleteExpiredSessions(ctx context.Context, now time.Time) error { return nil }
-func (s *fakeStore) CreateEnrollmentToken(ctx context.Context, t *model.EnrollmentToken) error { return nil }
-func (s *fakeStore) ListEnrollmentTokens(ctx context.Context) ([]model.EnrollmentToken, error) { return nil, nil }
-func (s *fakeStore) ConsumeEnrollmentToken(ctx context.Context, h string, now time.Time) (*model.EnrollmentToken, error) { return nil, store.ErrTokenInvalid }
+func (s *fakeStore) CreateEnrollmentToken(ctx context.Context, t *model.EnrollmentToken) error {
+	return nil
+}
+func (s *fakeStore) ListEnrollmentTokens(ctx context.Context) ([]model.EnrollmentToken, error) {
+	return nil, nil
+}
+func (s *fakeStore) ConsumeEnrollmentToken(ctx context.Context, h string, now time.Time) (*model.EnrollmentToken, error) {
+	return nil, store.ErrTokenInvalid
+}
 func (s *fakeStore) UpsertAgentOnConnect(ctx context.Context, a *model.Agent) error { return nil }
-func (s *fakeStore) SetAgentStatus(ctx context.Context, agentID string, st model.AgentStatus, at time.Time) error { return nil }
-func (s *fakeStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, at time.Time) error { return nil }
-func (s *fakeStore) GetAgentBySecretHash(ctx context.Context, h string) (*model.Agent, error) { return nil, store.ErrNotFound }
-func (s *fakeStore) ListAgents(ctx context.Context) ([]model.Agent, error) { return nil, nil }
-func (s *fakeStore) RevokeAgent(ctx context.Context, id string) error { return nil }
-func (s *fakeStore) UpdateStorageTarget(ctx context.Context, t *model.StorageTarget) error { return nil }
+func (s *fakeStore) SetAgentStatus(ctx context.Context, agentID string, st model.AgentStatus, at time.Time) error {
+	return nil
+}
+func (s *fakeStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, at time.Time) error {
+	return nil
+}
+func (s *fakeStore) GetAgentBySecretHash(ctx context.Context, h string) (*model.Agent, error) {
+	return nil, store.ErrNotFound
+}
+func (s *fakeStore) ListAgents(ctx context.Context) ([]model.Agent, error)  { return nil, nil }
+func (s *fakeStore) RevokeAgent(ctx context.Context, id string) error       { return nil }
+func (s *fakeStore) RenameAgent(ctx context.Context, id, name string) error { return nil }
+func (s *fakeStore) UpdateStorageTarget(ctx context.Context, t *model.StorageTarget) error {
+	return nil
+}
 func (s *fakeStore) DeleteStorageTarget(ctx context.Context, id string) error { return nil }
-func (s *fakeStore) ListStorageTargets(ctx context.Context) ([]model.StorageTarget, error) { return nil, nil }
-func (s *fakeStore) ListRepositories(ctx context.Context) ([]model.Repository, error) { return nil, nil }
-func (s *fakeStore) ListRepositoriesNeedingCheck(ctx context.Context, olderThan time.Time) ([]model.Repository, error) { return nil, nil }
-func (s *fakeStore) MarkRepositoryChecked(ctx context.Context, id string, at time.Time) error { return nil }
+func (s *fakeStore) ListStorageTargets(ctx context.Context) ([]model.StorageTarget, error) {
+	return nil, nil
+}
+func (s *fakeStore) ListRepositories(ctx context.Context) ([]model.Repository, error) {
+	return nil, nil
+}
+func (s *fakeStore) ListRepositoriesNeedingCheck(ctx context.Context, olderThan time.Time) ([]model.Repository, error) {
+	return nil, nil
+}
+func (s *fakeStore) MarkRepositoryChecked(ctx context.Context, id string, at time.Time) error {
+	return nil
+}
 func (s *fakeStore) CreatePlan(ctx context.Context, p *model.Plan) error { return nil }
 func (s *fakeStore) UpdatePlan(ctx context.Context, p *model.Plan) error { return nil }
-func (s *fakeStore) DeletePlan(ctx context.Context, id string) error { return nil }
-func (s *fakeStore) ListPlans(ctx context.Context, agentID string) ([]model.Plan, error) { return nil, nil }
+func (s *fakeStore) DeletePlan(ctx context.Context, id string) error     { return nil }
+func (s *fakeStore) ListPlans(ctx context.Context, agentID string) ([]model.Plan, error) {
+	return nil, nil
+}
 func (s *fakeStore) ListEnabledPlans(ctx context.Context) ([]model.Plan, error) { return nil, nil }
-func (s *fakeStore) ListRuns(ctx context.Context, f store.RunFilter) ([]model.Run, error) { return nil, nil }
-func (s *fakeStore) ListRunsByStatus(ctx context.Context, statuses []string) ([]model.Run, error) { return nil, nil }
-func (s *fakeStore) FailStaleRuns(ctx context.Context, statuses []string, code string, at time.Time) (int64, error) { return 0, nil }
+func (s *fakeStore) ListRuns(ctx context.Context, f store.RunFilter) ([]model.Run, error) {
+	return nil, nil
+}
+func (s *fakeStore) ListRunsByStatus(ctx context.Context, statuses []string) ([]model.Run, error) {
+	return nil, nil
+}
+func (s *fakeStore) FailStaleRuns(ctx context.Context, statuses []string, code string, at time.Time) ([]string, error) {
+	return nil, nil
+}
 func (s *fakeStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) error { return nil }
-func (s *fakeStore) ListRunLogs(ctx context.Context, runID string, beforeSeq uint64, limit int) ([]model.RunLog, error) { return nil, nil }
+func (s *fakeStore) ListRunLogs(ctx context.Context, runID string, beforeSeq uint64, limit int) ([]model.RunLog, error) {
+	return nil, nil
+}
 func (s *fakeStore) MaxRunLogSeq(ctx context.Context, runID string) (uint64, error) { return 0, nil }
-func (s *fakeStore) GetRestoreRequest(ctx context.Context, id string) (*model.RestoreRequest, error) { return nil, store.ErrNotFound }
-func (s *fakeStore) ListAuditEvents(ctx context.Context, limit int) ([]model.AuditEvent, error) { return nil, nil }
+func (s *fakeStore) GetRestoreRequest(ctx context.Context, id string) (*model.RestoreRequest, error) {
+	return nil, store.ErrNotFound
+}
+func (s *fakeStore) ListAuditEvents(ctx context.Context, limit int) ([]model.AuditEvent, error) {
+	return nil, nil
+}
 
 // ---------------------------------------------------------------------------
 // fakeDispatcher
 // ---------------------------------------------------------------------------
 
 type fakeDispatcher struct {
-	mu         sync.Mutex
-	enqueued   []string
-	cancelled  []string
-	connected  map[string]bool
+	mu        sync.Mutex
+	enqueued  []string
+	cancelled []string
+	connected map[string]bool
 }
 
 func newFakeDispatcher() *fakeDispatcher {
@@ -305,13 +350,13 @@ func fakeKey() []byte {
 
 func testAgent() *model.Agent {
 	return &model.Agent{
-		ID:        "agent-1",
-		Name:      "srv-1",
-		Hostname:  "srv-1",
-		OS:        "linux",
-		Arch:      "amd64",
-		Version:   "0.1.0",
-		Status:    model.AgentOnline,
+		ID:         "agent-1",
+		Name:       "srv-1",
+		Hostname:   "srv-1",
+		OS:         "linux",
+		Arch:       "amd64",
+		Version:    "0.1.0",
+		Status:     model.AgentOnline,
 		EnrolledAt: time.Now().UTC(),
 		Capabilities: []model.ToolInfo{
 			{Name: "restic", Path: "/usr/bin/restic"},
@@ -442,8 +487,8 @@ func TestStartPlanRunCapabilityGate(t *testing.T) {
 	o := New(st, seal, disp, bus, "inst-1")
 
 	agent := &model.Agent{
-		ID:       "agent-1",
-		Revoked:  false,
+		ID:           "agent-1",
+		Revoked:      false,
 		Capabilities: []model.ToolInfo{{Name: "restic", Path: "/usr/bin/restic"}},
 		// missing pg_dump, psql
 	}
@@ -454,12 +499,12 @@ func TestStartPlanRunCapabilityGate(t *testing.T) {
 
 	now := time.Now().UTC()
 	plan := &model.Plan{
-		ID:           "plan-1",
-		AgentID:      agent.ID,
-		Kind:         model.KindPostgreSQL,
-		RepositoryID: repo.ID,
+		ID:             "plan-1",
+		AgentID:        agent.ID,
+		Kind:           model.KindPostgreSQL,
+		RepositoryID:   repo.ID,
 		TimeoutSeconds: 3600,
-		CreatedAt: now, UpdatedAt: now,
+		CreatedAt:      now, UpdatedAt: now,
 	}
 	st.plans[plan.ID] = plan
 
@@ -686,12 +731,12 @@ func TestStartRestoreConfirmationHash(t *testing.T) {
 
 	// correct confirmation
 	rr, run, err := o.StartRestore(ctx, "admin-1", RestoreInput{
-		RepositoryID:  repo.ID,
-		SnapshotID:    "snap-1",
-		RestoreKind:   model.KindPostgreSQL,
-		Target:        model.RestoreTarget{Host: "localhost", Port: 5432, Username: "pg", Database: dbName},
-		Overwrite:     true,
-		Confirmation:  expectedHash,
+		RepositoryID: repo.ID,
+		SnapshotID:   "snap-1",
+		RestoreKind:  model.KindPostgreSQL,
+		Target:       model.RestoreTarget{Host: "localhost", Port: 5432, Username: "pg", Database: dbName},
+		Overwrite:    true,
+		Confirmation: expectedHash,
 	})
 	if err != nil {
 		t.Fatalf("StartRestore: %v", err)
@@ -705,12 +750,12 @@ func TestStartRestoreConfirmationHash(t *testing.T) {
 
 	// wrong confirmation → forbidden
 	_, _, err = o.StartRestore(ctx, "admin-1", RestoreInput{
-		RepositoryID:  repo.ID,
-		SnapshotID:    "snap-1",
-		RestoreKind:   model.KindPostgreSQL,
-		Target:        model.RestoreTarget{Database: dbName},
-		Overwrite:     true,
-		Confirmation:  "wrong-hash",
+		RepositoryID: repo.ID,
+		SnapshotID:   "snap-1",
+		RestoreKind:  model.KindPostgreSQL,
+		Target:       model.RestoreTarget{Database: dbName},
+		Overwrite:    true,
+		Confirmation: "wrong-hash",
 	})
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected ErrForbidden, got %v", err)
@@ -846,7 +891,7 @@ func TestRedact(t *testing.T) {
 		{"postgres://user:secret@host/db", "postgres://***@host/db"},
 		{"mysql://root:hunter2@localhost/mydb", "mysql://***@localhost/mydb"},
 		{"?password=supersecret&host=localhost", "?password=***&host=localhost"},
-		{"?password=***&host=localhost",         "?password=***&host=localhost"},
+		{"?password=***&host=localhost", "?password=***&host=localhost"},
 		{"/tmp/foo.bmc-secret.txt", "***"},
 		{"normal text", "normal text"},
 		{"https://admin:pass123@example.com/api", "https://***@example.com/api"},

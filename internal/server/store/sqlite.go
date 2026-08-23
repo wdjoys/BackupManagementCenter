@@ -432,6 +432,17 @@ func (s *sqliteStore) RevokeAgent(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *sqliteStore) RenameAgent(ctx context.Context, id, name string) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE agents SET name = ? WHERE id = ?", name, id)
+	if err != nil {
+		return fmt.Errorf("rename agent: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Storage targets
 // ---------------------------------------------------------------------------
@@ -846,9 +857,13 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 	return out, rows.Err()
 }
 
+// Early failure exits are legal: the dispatcher fails permanently
+// un-buildable jobs straight from queued, fast-finished runs may report a
+// terminal state while still dispatched, and both watchdogs force-fail from
+// dispatched/running. Terminal states remain final.
 var validTransitions = map[string]map[string]bool{
-	model.RunQueued:     {model.RunDispatched: true},
-	model.RunDispatched: {model.RunRunning: true},
+	model.RunQueued:     {model.RunDispatched: true, model.RunFailed: true},
+	model.RunDispatched: {model.RunRunning: true, model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
 	model.RunRunning:    {model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
 }
 
@@ -955,9 +970,12 @@ func (s *sqliteStore) ListRunsByStatus(ctx context.Context, statuses []string) (
 	return out, rows.Err()
 }
 
-func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, errorCode string, at time.Time) (int64, error) {
+// FailStaleRuns force-fails runs stuck in the given non-terminal statuses
+// and returns the IDs actually moved to failed, enabling per-run failure
+// notifications without a read-then-write race.
+func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, errorCode string, at time.Time) ([]string, error) {
 	if len(statuses) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	placeholders := make([]string, 0, len(statuses))
 	for range statuses {
@@ -966,7 +984,7 @@ func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, erro
 
 	query := fmt.Sprintf(
 		`UPDATE runs SET status='failed', error_code=?, finished_at=?
-		 WHERE status IN (%s)`,
+		 WHERE status IN (%s) RETURNING id`,
 		strings.Join(placeholders, ","),
 	)
 
@@ -976,12 +994,21 @@ func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, erro
 		args = append(args, st)
 	}
 
-	res, err := s.db.ExecContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return 0, fmt.Errorf("fail stale runs: %w", err)
+		return nil, fmt.Errorf("fail stale runs: %w", err)
 	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("fail stale runs: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // ---------------------------------------------------------------------------
@@ -1172,7 +1199,7 @@ func (s *sqliteStore) ListAuditEvents(ctx context.Context, limit int) ([]model.A
 func scanAdmin(row interface{ Scan(dest ...any) error }) (*model.Admin, error) {
 	var (
 		id, username, passwordHash, createdAt string
-		lastLoginAt                          sql.NullString
+		lastLoginAt                           sql.NullString
 	)
 	if err := row.Scan(&id, &username, &passwordHash, &createdAt, &lastLoginAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

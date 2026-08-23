@@ -1,0 +1,55 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "BMC Server (Go 调试)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/cmd/server",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "BMC_DEV_INSECURE": "1",
+        "BMC_GRPC_ADDR": ":9091",
+        "BMC_DATA_DIR": "${workspaceFolder}/data",
+        "BMC_PUBLIC_URL": "http://localhost:5173"
+      }
+    },
+    {
+      "name": "BMC Agent (Go 调试)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/cmd/agent",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PATH": "C:\\Program Files\\Go\\bin;C:\\Users\\wdjoy\\go\\bin;${env:Path}",
+        "BMC_SERVER_GRPC_URL": "127.0.0.1:9091",
+        "BMC_SERVER_TLS": "0",
+        "BMC_DEV_INSECURE": "1",
+        "BMC_AGENT_STATE_DIR": "${workspaceFolder}/agent-state",
+        "BMC_ENROLLMENT_TOKEN": "${input:enrollToken}"
+      }
+    },
+    {
+      "name": "Web 前端 (Chrome)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/web/src"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "全栈 (Server + Chrome)",
+      "configurations": ["BMC Server (Go 调试)", "Web 前端 (Chrome)"]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "enrollToken",
+      "type": "promptString",
+      "description": "首次启动 Agent：填 Web 界面「Agent 管理」生成的一次性注册令牌；已注册过的 Agent 留空即可"
+    }
+  ]
+}

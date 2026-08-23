@@ -1,0 +1,48 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "前端: 安装依赖并重建 esbuild",
+      "type": "shell",
+      "windows": {
+        "command": "C:\\tools\\git\\bin\\bash.exe",
+        "args": [
+          "-c",
+          "cd web && pnpm --ignore-workspace install --frozen-lockfile && pnpm --ignore-workspace rebuild esbuild"
+        ]
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "前端: 启动 Vite 开发服务器",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--ignore-workspace", "run", "dev"],
+      "options": { "cwd": "${workspaceFolder}/web" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "前端: 构建并复制到嵌入目录",
+      "type": "shell",
+      "windows": {
+        "command": "C:\\tools\\git\\bin\\bash.exe",
+        "args": [
+          "-c",
+          "cd web && pnpm --ignore-workspace run build && rm -rf ../internal/server/webui/dist && mkdir -p ../internal/server/webui/dist && cp -r dist/. ../internal/server/webui/dist/"
+        ]
+      },
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "Go: 运行全部测试",
+      "type": "shell",
+      "command": "go",
+      "args": ["test", "./...", "-count=1"],
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

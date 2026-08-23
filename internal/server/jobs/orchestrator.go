@@ -589,6 +589,15 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 
 	existing, err := o.Store.GetRepositoryByAgentAndTarget(ctx, agentID, storageTargetID)
 	if err == nil && existing != nil {
+		// A previous bind attempt may have left the row non-ready (agent
+		// offline, failed init). Retry adoption/init instead of returning
+		// the stale row, otherwise it stays pending forever.
+		if existing.Status != "ready" {
+			if err := o.EnsureRepository(ctx, existing, agentID); err != nil {
+				return nil, err
+			}
+			existing.Status = "ready"
+		}
 		o.Audit(ctx, "admin", actorID, "repository.bind", "repository", existing.ID,
 			map[string]string{"agent_id": agentID, "target_id": storageTargetID})
 		return existing, nil
@@ -622,10 +631,12 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 	if err := o.Store.CreateRepository(ctx, repo); err != nil {
 		return nil, err
 	}
-
 	if err := o.EnsureRepository(ctx, repo, agentID); err != nil {
 		return nil, err
 	}
+	// EnsureRepository updated the DB row; mirror it into the struct so the
+	// API response does not report the stale "pending" status.
+	repo.Status = "ready"
 
 	return repo, nil
 }

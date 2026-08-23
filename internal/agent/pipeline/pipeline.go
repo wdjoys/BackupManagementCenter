@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/agent/backup"
@@ -400,8 +401,21 @@ func runSnapshotLs(ctx context.Context, d Deps, tempDir string, params []byte, s
 	return &Result{ResultJSON: resultJSON}, nil
 }
 
+// verifyDeadline bounds one verify-remote run (listremotes + lsd). It must
+// stay below the server's verifyRemoteWait so the rclone stderr tail reaches
+// the user as a storage_remote_unreachable failure rather than a wait timeout.
+const verifyDeadline = 100 * time.Second
+
 // runVerifyRemote validates rclone remote.
+//
+// The whole verify is bounded by verifyDeadline: a remote that black-holes
+// (unreachable endpoint, DNS hang) would otherwise keep rclone running until
+// the server watchdog force-fails the run with a generic timeout. Killing at
+// verifyDeadline — slightly below the server's verifyRemoteWait — lets the
+// captured rclone stderr surface as storage_remote_unreachable instead.
 func runVerifyRemote(ctx context.Context, d Deps, tempDir string, params []byte, secrets backup.SecretBundle) (*Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, verifyDeadline)
+	defer cancel()
 	var task model.VerifyRemoteTask
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal verify remote task", Cause: err}

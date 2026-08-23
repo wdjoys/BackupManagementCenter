@@ -208,6 +208,11 @@ func (s *Server) jobsErr(w http.ResponseWriter, err error) {
 		})
 		return
 	}
+	if errors.Is(err, jobs.ErrWaitTimeout) {
+		writeErr(w, http.StatusGatewayTimeout, "wait_timeout",
+			"agent did not finish the operation in time; it may still complete - retry or check run logs")
+		return
+	}
 	if mapStoreErr(w, err) {
 		return
 	}

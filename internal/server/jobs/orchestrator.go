@@ -467,6 +467,13 @@ func (o *Orchestrator) ValidatePlanSource(ctx context.Context, kind string, src 
 	return nil
 }
 
+// verifyRemoteWait bounds how long the synchronous validate request waits for
+// an agent-side rclone listing. Cold remotes (OAuth token refresh, retries
+// against slow endpoints) routinely exceed 30s; rclone's own connection
+// timeout alone is 60s. The agent enforces a slightly shorter deadline so the
+// real rclone failure surfaces before this wait expires.
+const verifyRemoteWait = 120 * time.Second
+
 // ValidateStorageRemote runs a verify remote check on the given agent.
 func (o *Orchestrator) ValidateStorageRemote(ctx context.Context, confContent, remoteName, agentID string) (*VerifyResult, error) {
 	params := model.VerifyRemoteTask{ConfigProvided: true, RemoteName: remoteName}
@@ -475,7 +482,7 @@ func (o *Orchestrator) ValidateStorageRemote(ctx context.Context, confContent, r
 		return nil, err
 	}
 
-	term, err := o.WaitRun(ctx, run.ID, 30*time.Second)
+	term, err := o.WaitRun(ctx, run.ID, verifyRemoteWait)
 	if err != nil {
 		return nil, err
 	}

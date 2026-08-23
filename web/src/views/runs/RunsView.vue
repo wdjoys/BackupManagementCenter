@@ -1,24 +1,24 @@
 <template>
   <div>
     <div class="page-head">
-      <h2 class="page-title">Runs</h2>
+      <h2 class="page-title">{{ t('runs.title') }}</h2>
     </div>
 
     <el-card class="filter-card" shadow="never">
       <el-form :model="filters" inline>
-        <el-form-item label="Plan">
+        <el-form-item :label="t('runs.filters.plan')">
           <el-input
             v-model="filters.plan_id"
-            placeholder="Plan ID"
+            :placeholder="t('runs.filters.planIdPlaceholder')"
             clearable
             style="width: 220px"
             @input="debounceReset"
           />
         </el-form-item>
-        <el-form-item label="Agent">
+        <el-form-item :label="t('runs.filters.agent')">
           <el-select
             v-model="filters.agent_id"
-            placeholder="Agent"
+            :placeholder="t('runs.filters.agent')"
             clearable
             filterable
             style="width: 220px"
@@ -32,10 +32,10 @@
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="Status">
+        <el-form-item :label="t('runs.filters.status')">
           <el-select
             v-model="filters.status"
-            placeholder="Status"
+            :placeholder="t('runs.filters.status')"
             clearable
             style="width: 160px"
             @change="onFilterChange"
@@ -48,10 +48,10 @@
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="Operation">
+        <el-form-item :label="t('runs.filters.operation')">
           <el-select
             v-model="filters.operation"
-            placeholder="Operation"
+            :placeholder="t('runs.filters.operation')"
             clearable
             style="width: 160px"
             @change="onFilterChange"
@@ -65,8 +65,8 @@
           </el-select>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="loadRuns">Search</el-button>
-          <el-button @click="resetFilters">Reset</el-button>
+          <el-button type="primary" @click="loadRuns">{{ t('common.search') }}</el-button>
+          <el-button @click="resetFilters">{{ t('common.reset') }}</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -74,7 +74,7 @@
     <div v-if="error" class="error-state">
       <el-icon><Warning /></el-icon>
       <p>{{ error }}</p>
-      <el-button type="primary" @click="loadRuns" style="margin-top: 12px">Retry</el-button>
+      <el-button type="primary" @click="loadRuns" style="margin-top: 12px">{{ t('common.retry') }}</el-button>
     </div>
 
     <div v-else-if="loading" style="text-align: center; padding: 40px">
@@ -89,35 +89,35 @@
       style="width: 100%"
       @row-click="onRowClick"
     >
-      <el-table-column label="Queued At" width="200" sortable>
+      <el-table-column :label="t('runs.columns.queuedAt')" width="200" sortable>
         <template #default="{ row }">
           {{ formatTime(row.queued_at) }}
         </template>
       </el-table-column>
-      <el-table-column label="Plan" width="180">
+      <el-table-column :label="t('dashboard.plan')" width="180">
         <template #default="{ row }">
           {{ planName(row.plan_id) || row.plan_id }}
         </template>
       </el-table-column>
-      <el-table-column label="Operation" width="100">
+      <el-table-column :label="t('runs.filters.operation')" width="100">
         <template #default="{ row }">
           <el-tag :type="operationTagType(row.operation)" size="small">
-            {{ row.operation }}
+            {{ operationText(row.operation) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Status" width="120">
+      <el-table-column :label="t('common.status')" width="120">
         <template #default="{ row }">
           <el-tag
             :type="statusTagType(row.status)"
             size="small"
             :effect="isRunning(row.status) ? 'dark' : 'plain'"
           >
-            {{ row.status }}
+            {{ statusText(row.status) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Snapshot" width="120">
+      <el-table-column :label="t('runs.columns.snapshot')" width="120">
         <template #default="{ row }">
           <template v-if="row.snapshot_id">
             <el-tooltip :content="row.snapshot_id" placement="top">
@@ -133,7 +133,7 @@
           <span v-else class="dim-text">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="Duration" width="110">
+      <el-table-column :label="t('runs.columns.duration')" width="110">
         <template #default="{ row }">
           <template v-if="row.started_at && row.finished_at">
             {{ formatDuration(row.started_at, row.finished_at) }}
@@ -144,7 +144,7 @@
           <span v-else class="dim-text">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="Error" width="140">
+      <el-table-column :label="t('runs.columns.error')" width="140">
         <template #default="{ row }">
           <el-tooltip
             v-if="row.error_code"
@@ -158,7 +158,7 @@
           <span v-else class="dim-text">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="Actions" width="80" fixed="right">
+      <el-table-column :label="t('common.actions')" width="80" fixed="right">
         <template #default="{ row }">
           <el-button
             v-if="row.status === 'running'"
@@ -167,7 +167,7 @@
             link
             @click.stop="cancelRun(row.id)"
           >
-            Cancel
+            {{ t('runs.cancel') }}
           </el-button>
           <span v-else>&nbsp;</span>
         </template>
@@ -188,14 +188,42 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { apiGet, apiPost } from '@/api/client'
 import type { Run, Plan, Agent, RunQueryParams } from '@/api/types'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading, Warning, CopyDocument } from '@element-plus/icons-vue'
+import { formatDateTime } from '@/i18n'
 
 const router = useRouter()
+const { t } = useI18n()
+
+// API values map to translation keys; query params stay untouched.
+const STATUS_VALUE_KEYS: Record<string, string> = {
+  queued: 'runs.status.queued',
+  dispatched: 'runs.status.dispatched',
+  running: 'runs.status.running',
+  succeeded: 'runs.status.succeeded',
+  failed: 'runs.status.failed',
+  cancelled: 'runs.status.cancelled',
+}
+
+const OPERATION_VALUE_KEYS: Record<string, string> = {
+  backup: 'runs.operations.backup',
+  restore: 'runs.operations.restore',
+  check: 'runs.operations.check',
+  forget: 'runs.operations.forget',
+}
+
+function statusText(status: string): string {
+  return t(STATUS_VALUE_KEYS[status] ?? 'common.status')
+}
+
+function operationText(op: string): string {
+  return t(OPERATION_VALUE_KEYS[op] ?? op)
+}
 
 const runs = ref<Run[]>([])
 const plans = ref<Plan[]>([])
@@ -214,21 +242,13 @@ const filters = ref<RunQueryParams>({
   offset: undefined,
 })
 
-const statusOptions: Array<{ value: string; label: string }> = [
-  { value: 'queued', label: 'Queued' },
-  { value: 'dispatched', label: 'Dispatched' },
-  { value: 'running', label: 'Running' },
-  { value: 'succeeded', label: 'Succeeded' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'cancelled', label: 'Cancelled' },
-]
+const statusOptions = computed(() =>
+  Object.entries(STATUS_VALUE_KEYS).map(([value, key]) => ({ value, label: t(key) })),
+)
 
-const operationOptions: Array<{ value: string; label: string }> = [
-  { value: 'backup', label: 'Backup' },
-  { value: 'restore', label: 'Restore' },
-  { value: 'check', label: 'Check' },
-  { value: 'forget', label: 'Forget' },
-]
+const operationOptions = computed(() =>
+  Object.entries(OPERATION_VALUE_KEYS).map(([value, key]) => ({ value, label: t(key) })),
+)
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -275,7 +295,7 @@ async function loadRuns(): Promise<void> {
     })
     runs.value = await apiGet<Run[]>('/runs', params)
   } catch (err: any) {
-    error.value = err.message || 'Failed to load runs'
+    error.value = err.message || t('runs.loadFailed')
     runs.value = []
   } finally {
     loading.value = false
@@ -352,20 +372,7 @@ function shortCode(snapshotId: string): string {
 
 function formatTime(iso: string | null): string {
   if (!iso) return '—'
-  try {
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return iso
-    return d.toLocaleString(undefined, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-  } catch {
-    return iso
-  }
+  return formatDateTime(iso, { second: '2-digit' })
 }
 
 function formatDuration(started: string, finished: string): string {
@@ -374,28 +381,28 @@ function formatDuration(started: string, finished: string): string {
   if (isNaN(start) || isNaN(finish)) return '—'
   const diff = Math.max(0, finish - start)
   const totalSec = Math.floor(diff / 1000)
-  if (totalSec < 60) return `${totalSec}s`
   const h = Math.floor(totalSec / 3600)
   const m = Math.floor((totalSec % 3600) / 60)
   const s = totalSec % 60
-  if (h > 0) return `${h}h ${m}m ${s}s`
-  if (m > 0) return `${m}m ${s}s`
-  return `${s}s`
+  if (totalSec < 60) return `${s}${t('time.secShort')}`
+  if (h > 0) return `${h}${t('time.hourShort')} ${m}${t('time.minShort')} ${s}${t('time.secShort')}`
+  if (m > 0) return `${m}${t('time.minShort')} ${s}${t('time.secShort')}`
+  return `${s}${t('time.secShort')}`
 }
 
 async function cancelRun(runId: string): Promise<void> {
   try {
-    await ElMessageBox.confirm('Are you sure you want to cancel this run?', 'Cancel Run', {
+    await ElMessageBox.confirm(t('runs.cancelDialog.confirm'), t('runs.cancelDialog.title'), {
       type: 'warning',
-      confirmButtonText: 'Cancel Run',
-      cancelButtonText: 'Keep Running',
+      confirmButtonText: t('runs.cancelDialog.confirmButton'),
+      cancelButtonText: t('runs.cancelDialog.keepRunning'),
     })
     await apiPost(`/runs/${runId}/cancel`)
-    ElMessage.success('Run cancellation requested')
+    ElMessage.success(t('runs.cancellationRequested'))
     await loadRuns()
   } catch (err: any) {
     if (err === 'cancel' || err === 'closed') return
-    ElMessage.error(err.message || 'Failed to cancel run')
+    ElMessage.error(err.message || t('runs.cancelFailed'))
   }
 }
 
@@ -406,9 +413,9 @@ function onRowClick(row: Run): void {
 async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage.success('Copied to clipboard')
+    ElMessage.success(t('common.copied'))
   } catch {
-    ElMessage.error('Failed to copy')
+    ElMessage.error(t('common.copyFailed'))
   }
 }
 

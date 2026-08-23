@@ -1,15 +1,15 @@
 <template>
   <div>
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px">
-      <div class="section-title" style="margin-bottom: 0">Agents</div>
+      <div class="section-title" style="margin-bottom: 0">{{ t('agents.title') }}</div>
       <div>
         <el-button type="primary" @click="handleGenerateToken">
           <el-icon><Key /></el-icon>
-          <span>Generate Enrollment Token</span>
+          <span>{{ t('agents.generateToken') }}</span>
         </el-button>
         <el-button @click="loadAgents">
           <el-icon><Refresh /></el-icon>
-          <span>Refresh</span>
+          <span>{{ t('common.refresh') }}</span>
         </el-button>
       </div>
     </div>
@@ -18,7 +18,7 @@
       <el-icon><Warning /></el-icon>
       <p>{{ error }}</p>
       <el-button type="primary" @click="loadAgents" style="margin-top: 12px">
-        Retry
+        {{ t('common.retry') }}
       </el-button>
     </div>
 
@@ -44,17 +44,17 @@
               size="small"
               class="capabilities-table"
             >
-              <el-table-column label="Tool" width="160">
+              <el-table-column :label="t('agents.capabilities.tool')" width="160">
                 <template #default="{ row: cap }">
                   <strong>{{ cap.name }}</strong>
                 </template>
               </el-table-column>
-              <el-table-column label="Version">
+              <el-table-column :label="t('agents.columns.version')">
                 <template #default="{ row: cap }">
                   {{ cap.version }}
                 </template>
               </el-table-column>
-              <el-table-column label="Path">
+              <el-table-column :label="t('agents.capabilities.path')">
                 <template #default="{ row: cap }">
                   <el-tag size="small" type="info" effect="plain">
                     {{ cap.path }}
@@ -62,53 +62,53 @@
                 </template>
               </el-table-column>
             </el-table>
-            <el-empty v-else description="No capabilities detected" :image-size="40" />
+            <el-empty v-else :description="t('agents.capabilities.empty')" :image-size="40" />
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="Name" width="180">
+      <el-table-column :label="t('common.name')" width="180">
         <template #default="{ row }">
           {{ row.name }}
         </template>
       </el-table-column>
-      <el-table-column label="Hostname">
+      <el-table-column :label="t('agents.columns.hostname')">
         <template #default="{ row }">
           {{ row.hostname }}
         </template>
       </el-table-column>
-      <el-table-column label="OS" width="120">
+      <el-table-column :label="t('agents.columns.os')" width="120">
         <template #default="{ row }">
           {{ row.os }}
         </template>
       </el-table-column>
-      <el-table-column label="Arch" width="80">
+      <el-table-column :label="t('agents.columns.arch')" width="80">
         <template #default="{ row }">
           {{ row.arch }}
         </template>
       </el-table-column>
-      <el-table-column label="Version" width="100">
+      <el-table-column :label="t('agents.columns.version')" width="100">
         <template #default="{ row }">
           <el-tag size="small">{{ row.version }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Status" width="100">
+      <el-table-column :label="t('common.status')" width="100">
         <template #default="{ row }">
           <el-tag :type="row.status === 'online' ? 'success' : 'danger'">
-            {{ row.status }}
+            {{ statusText(row.status) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Last Seen" width="200">
+      <el-table-column :label="t('agents.columns.lastSeen')" width="200">
         <template #default="{ row }">
           {{ formatTime(row.last_seen_at) }}
         </template>
       </el-table-column>
-      <el-table-column label="Enrolled At" width="200">
+      <el-table-column :label="t('agents.columns.enrolledAt')" width="200">
         <template #default="{ row }">
           {{ formatTime(row.enrolled_at) }}
         </template>
       </el-table-column>
-      <el-table-column label="Actions" width="100" fixed="right">
+      <el-table-column :label="t('common.actions')" width="100" fixed="right">
         <template #default="{ row }">
           <el-button
             type="danger"
@@ -116,7 +116,7 @@
             size="small"
             @click="handleRevoke(row)"
           >
-            Revoke
+            {{ t('agents.revoke') }}
           </el-button>
         </template>
       </el-table-column>
@@ -125,7 +125,7 @@
     <!-- Enrollment Token Dialog -->
     <el-dialog
       v-model="tokenDialogVisible"
-      title="New Enrollment Token"
+      :title="t('agents.tokenDialog.title')"
       width="480"
       destroy-on-close
     >
@@ -134,28 +134,28 @@
       </div>
       <div v-else-if="tokenData">
         <el-alert
-          title="This token is shown only once. Copy it immediately."
+          :title="t('agents.tokenDialog.onceWarning')"
           type="warning"
           :closable="false"
           style="margin-bottom: 12px"
         />
         <el-form label-position="top">
-          <el-form-item label="Token">
+          <el-form-item :label="t('agents.tokenDialog.token')">
             <div
               class="token-display"
               @click="copyToken"
-              title="Click to copy"
+              :title="t('agents.tokenDialog.clickToCopy')"
             >
               {{ tokenData.token }}
             </div>
           </el-form-item>
-          <el-form-item label="Expires At">
+          <el-form-item :label="t('agents.tokenDialog.expiresAt')">
             {{ formatTime(tokenData.expires_at) }}
           </el-form-item>
         </el-form>
         <el-button type="primary" @click="copyToken" :loading="copying">
           <el-icon><CopyDocument /></el-icon>
-          <span>Copy Token</span>
+          <span>{{ t('agents.tokenDialog.copyButton') }}</span>
         </el-button>
       </div>
     </el-dialog>
@@ -164,13 +164,21 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { apiGet, apiPost, apiDelete } from '@/api/client'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { translateEnum, formatDateTime } from '@/i18n'
 import type { Agent, EnrollmentTokenResponse } from '@/api/types'
+
+const { t } = useI18n()
 
 const loading = ref(false)
 const error = ref('')
 const agents = ref<Agent[]>([])
+
+function statusText(status: string): string {
+  return translateEnum('status', status)
+}
 
 const expandedRows = ref<string[]>([])
 
@@ -185,20 +193,7 @@ const tokenData = ref<EnrollmentTokenResponse | null>(null)
 const copying = ref(false)
 
 function formatTime(iso: string): string {
-  if (!iso) return ''
-  try {
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return iso
-    return d.toLocaleString(undefined, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  } catch {
-    return iso
-  }
+  return formatDateTime(iso)
 }
 
 async function loadAgents(): Promise<void> {
@@ -207,7 +202,7 @@ async function loadAgents(): Promise<void> {
   try {
     agents.value = await apiGet<Agent[]>('/agents')
   } catch (err: any) {
-    error.value = err.message || 'Failed to load agents. Is the server running?'
+    error.value = err.message || t('agents.loadFailed')
   } finally {
     loading.value = false
   }
@@ -220,7 +215,7 @@ async function handleGenerateToken(): Promise<void> {
   try {
     tokenData.value = await apiPost<EnrollmentTokenResponse>('/enrollment-tokens', {})
   } catch (err: any) {
-    ElMessage.error(err.message || 'Failed to generate token')
+    ElMessage.error(err.message || t('agents.tokenDialog.generateFailed'))
     tokenDialogVisible.value = false
   } finally {
     tokenLoading.value = false
@@ -232,9 +227,9 @@ async function copyToken(): Promise<void> {
   copying.value = true
   try {
     await navigator.clipboard.writeText(tokenData.value.token)
-    ElMessage.success('Token copied to clipboard')
+    ElMessage.success(t('common.copied'))
   } catch {
-    ElMessage.error('Failed to copy to clipboard')
+    ElMessage.error(t('common.copyFailed'))
   } finally {
     copying.value = false
   }
@@ -243,16 +238,16 @@ async function copyToken(): Promise<void> {
 async function handleRevoke(agent: any): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `Are you sure you want to revoke agent "${agent.name}" (${agent.hostname})?`,
-      'Revoke Agent',
-      { type: 'warning', confirmButtonText: 'Revoke' },
+      t('agents.revokeDialog.confirm', { name: agent.name, hostname: agent.hostname }),
+      t('agents.revokeDialog.title'),
+      { type: 'warning', confirmButtonText: t('agents.revoke') },
     )
     await apiDelete(`/agents/${agent.id}`)
-    ElMessage.success('Agent revoked')
+    ElMessage.success(t('agents.revoked'))
     await loadAgents()
   } catch (err: any) {
     if (err !== 'cancel') {
-      ElMessage.error(err.message || 'Revoke failed')
+      ElMessage.error(err.message || t('agents.revokeFailed'))
     }
   }
 }

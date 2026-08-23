@@ -1,11 +1,11 @@
 import type { PlanKind, PlanFormSource } from './Types'
 
 export const KIND_LABELS: Record<PlanKind, string> = {
-  filesystem: 'Filesystem',
-  postgresql: 'PostgreSQL',
-  mysql: 'MySQL',
-  mongodb: 'MongoDB',
-  sqlite: 'SQLite',
+  filesystem: 'plans.kinds.filesystem',
+  postgresql: 'plans.kinds.postgresql',
+  mysql: 'plans.kinds.mysql',
+  mongodb: 'plans.kinds.mongodb',
+  sqlite: 'plans.kinds.sqlite',
 }
 
 export const KIND_TAG_TYPE: Record<PlanKind, 'primary' | 'success' | 'warning' | 'danger' | 'info'> = {
@@ -16,11 +16,11 @@ export const KIND_TAG_TYPE: Record<PlanKind, 'primary' | 'success' | 'warning' |
   sqlite: 'primary',
 }
 
-export const CRON_PRESETS: readonly { label: string; value: string }[] = [
-  { label: 'Every 15 minutes', value: '*/15 * * * *' },
-  { label: 'Every hour', value: '0 * * * *' },
-  { label: 'Daily at 03:00', value: '0 3 * * *' },
-  { label: 'Every day at 12:00', value: '0 12 * * *' },
+export const CRON_PRESETS: readonly { key: string; value: string }[] = [
+  { key: 'plans.cronPresets.every15Minutes', value: '*/15 * * * *' },
+  { key: 'plans.cronPresets.hourly', value: '0 * * * *' },
+  { key: 'plans.cronPresets.daily3am', value: '0 3 * * *' },
+  { key: 'plans.cronPresets.daily12pm', value: '0 12 * * *' },
 ]
 
 export const IANA_TIMEZONES: readonly string[] = [

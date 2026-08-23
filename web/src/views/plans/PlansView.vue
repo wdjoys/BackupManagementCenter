@@ -1,15 +1,15 @@
 <template>
   <div>
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px">
-      <div class="section-title" style="margin-bottom: 0">Plans</div>
+      <div class="section-title" style="margin-bottom: 0">{{ t('nav.plans') }}</div>
       <div>
         <el-button type="primary" @click="openCreate">
           <el-icon><Plus /></el-icon>
-          <span>New Plan</span>
+          <span>{{ t('plans.newPlan') }}</span>
         </el-button>
         <el-button @click="refresh">
           <el-icon><Refresh /></el-icon>
-          <span>Refresh</span>
+          <span>{{ t('common.refresh') }}</span>
         </el-button>
       </div>
     </div>
@@ -17,20 +17,20 @@
     <div style="margin-bottom: 12px">
       <el-select
         v-model="filterAgentId"
-        placeholder="Filter by agent"
+        :placeholder="t('plans.filterByAgent')"
         clearable
         filterable
         style="width: 240px"
         @change="loadPlans"
       >
-        <el-option v-for="a in agents" :key="a.id" :label="`${a.name} (${a.status})`" :value="a.id" />
+        <el-option v-for="a in agents" :key="a.id" :label="`${a.name} (${statusText(a.status)})`" :value="a.id" />
       </el-select>
     </div>
 
     <div v-if="error" class="error-state">
       <el-icon><Warning /></el-icon>
       <p>{{ error }}</p>
-      <el-button type="primary" @click="refresh" style="margin-top: 12px">Retry</el-button>
+      <el-button type="primary" @click="refresh" style="margin-top: 12px">{{ t('common.retry') }}</el-button>
     </div>
 
     <div v-else-if="loading" style="text-align: center; padding: 40px">
@@ -38,62 +38,62 @@
     </div>
 
     <el-table v-else :data="plans" stripe row-key="id" style="width: 100%">
-      <el-table-column label="Name">
+      <el-table-column :label="t('common.name')">
         <template #default="{ row: p }">
           {{ p.name }}
         </template>
       </el-table-column>
-      <el-table-column label="Kind" width="110">
+      <el-table-column :label="t('plans.columns.kind')" width="110">
         <template #default="{ row: p }">
-          <el-tag :type="KIND_TAG_TYPE[(p as Plan).kind]">{{ KIND_LABELS[(p as Plan).kind] }}</el-tag>
+          <el-tag :type="KIND_TAG_TYPE[(p as Plan).kind]">{{ t(KIND_LABELS[(p as Plan).kind]) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Schedule" width="130">
+      <el-table-column :label="t('plans.columns.schedule')" width="130">
         <template #default="{ row: p }">
           <code style="font-size: 12px">{{ p.schedule }}</code>
         </template>
       </el-table-column>
-      <el-table-column label="Timezone" width="140">
+      <el-table-column :label="t('plans.columns.timezone')" width="140">
         <template #default="{ row: p }">
           {{ p.timezone }}
         </template>
       </el-table-column>
-      <el-table-column label="Enabled" width="80">
+      <el-table-column :label="t('plans.columns.enabled')" width="80">
         <template #default="{ row: p }">
           <el-switch
             :model-value="p.enabled"
             :before-change="() => toggleEnabled(p as Plan)"
             inline-prompt
-            active-text="On"
-            inactive-text="Off"
+            :active-text="t('common.on')"
+            :inactive-text="t('common.off')"
           />
         </template>
       </el-table-column>
-      <el-table-column label="Repository" min-width="150">
+      <el-table-column :label="t('plans.columns.repository')" min-width="150">
         <template #default="{ row: p }">
           <el-tooltip :content="repositoryFor(p as Plan)?.repository_path || ''" placement="top">
             <span>{{ repositoryFor(p as Plan)?.storage_target_name || p.repository_id }}</span>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="Timeout" width="100">
+      <el-table-column :label="t('plans.columns.timeout')" width="100">
         <template #default="{ row: p }">
           {{ p.timeout_seconds }}s
         </template>
       </el-table-column>
-      <el-table-column label="Actions" width="150" fixed="right">
+      <el-table-column :label="t('common.actions')" width="150" fixed="right">
         <template #default="{ row: p }">
           <el-button text size="small" :disabled="runningId === p.id" @click="runPlan(p as Plan)">
             <el-icon style="margin-right: 2px"><VideoPlay /></el-icon>
-            Run
+            {{ t('common.run') }}
           </el-button>
           <el-button text size="small" @click="startEdit(p as Plan)">
             <el-icon style="margin-right: 2px"><Edit /></el-icon>
-            Edit
+            {{ t('common.edit') }}
           </el-button>
           <el-button text size="small" type="danger" @click="deletePlan(p as Plan)">
             <el-icon style="margin-right: 2px"><Delete /></el-icon>
-            Delete
+            {{ t('common.delete') }}
           </el-button>
         </template>
       </el-table-column>
@@ -101,7 +101,7 @@
 
     <el-dialog
       v-model="dialogVisible"
-      :title="editing ? 'Edit Plan' : 'New Plan'"
+      :title="editing ? t('plans.editPlan') : t('plans.newPlan')"
       width="720px"
       destroy-on-close
       @closed="dialogClosed"
@@ -121,15 +121,22 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Warning, Loading, VideoPlay, Edit, Delete } from '@element-plus/icons-vue'
 import { apiDelete, apiGet, apiPost, apiPut } from '@/api/client'
 import type { Agent, Plan, Repository, Run } from '@/api/types'
+import { translateEnum } from '@/i18n'
 import PlanForm from './PlanForm.vue'
 import { KIND_LABELS, KIND_TAG_TYPE, defaultSource } from './Constants'
 import { buildPayload, buildValidatePayload, type PlanFormModel, type ValidateResult } from './Types'
 
 const router = useRouter()
+const { t } = useI18n()
+
+function statusText(status: string): string {
+  return translateEnum('status', status)
+}
 
 const plans = ref<Plan[]>([])
 const agents = ref<Agent[]>([])
@@ -268,16 +275,16 @@ async function runPlan(row: Plan): Promise<void> {
 async function deletePlan(row: Plan): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `Delete plan "${row.name}"? This cannot be undone.`,
-      'Delete plan',
-      { type: 'warning', confirmButtonText: 'Delete', cancelButtonText: 'Cancel' },
+      t('plans.deleteDialog.confirm', { name: row.name }),
+      t('plans.deleteDialog.title'),
+      { type: 'warning', confirmButtonText: t('common.delete'), cancelButtonText: t('common.cancel') },
     )
   } catch {
     return
   }
   try {
     await apiDelete(`/plans/${row.id}`)
-    ElMessage.success('Plan deleted')
+    ElMessage.success(t('plans.deleted'))
     await loadPlans()
   } catch (err: unknown) {
     ElMessage.error(errorMessage(err))
@@ -290,16 +297,16 @@ async function savePlan(model: PlanFormModel): Promise<void> {
     const result = await apiPost<ValidateResult>('/plans/validate', buildValidatePayload(model))
     if (!result.ok) {
       const code = result.code || 'validation_failed'
-      const msg = result.message || 'Plan validation failed'
+      const msg = result.message || t('plans.validationFailed')
       ElMessage.error(`${code}: ${msg}`)
       return
     }
     if (editing.value && model.id) {
       await apiPut(`/plans/${model.id}`, buildPayload(model))
-      ElMessage.success('Plan updated')
+      ElMessage.success(t('plans.updated'))
     } else {
       await apiPost('/plans', buildPayload(model))
-      ElMessage.success('Plan created')
+      ElMessage.success(t('plans.created'))
     }
     dialogVisible.value = false
     await loadPlans()

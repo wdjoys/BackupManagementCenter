@@ -1,7 +1,10 @@
 <template>
   <div class="auth-page">
+    <div class="auth-locale-bar">
+      <LocaleSwitcher />
+    </div>
     <div class="auth-card">
-      <h1>Create Admin Account</h1>
+      <h1>{{ t('auth.setupTitle') }}</h1>
       <el-form
         ref="formRef"
         :model="form"
@@ -9,14 +12,14 @@
         label-position="top"
         @submit.prevent="handleSubmit"
       >
-        <el-form-item label="Username" prop="username">
-          <el-input v-model="form.username" placeholder="Enter admin username" autocomplete="username" />
+        <el-form-item :label="t('auth.username')" prop="username">
+          <el-input v-model="form.username" :placeholder="t('auth.adminUsernamePlaceholder')" autocomplete="username" />
         </el-form-item>
-        <el-form-item label="Password" prop="password">
+        <el-form-item :label="t('auth.password')" prop="password">
           <el-input
             v-model="form.password"
             type="password"
-            placeholder="Enter password"
+            :placeholder="t('auth.passwordPlaceholder')"
             autocomplete="new-password"
             show-password
           />
@@ -26,11 +29,11 @@
             :class="strengthClass"
           ></div>
         </el-form-item>
-        <el-form-item label="Confirm Password" prop="confirm">
+        <el-form-item :label="t('auth.confirmPassword')" prop="confirm">
           <el-input
             v-model="form.confirm"
             type="password"
-            placeholder="Confirm password"
+            :placeholder="t('auth.confirmPlaceholder')"
             autocomplete="new-password"
             show-password
           />
@@ -42,7 +45,7 @@
             :loading="loading"
             style="width: 100%"
           >
-            Create Admin
+            {{ t('auth.setupButton') }}
           </el-button>
         </el-form-item>
       </el-form>
@@ -51,13 +54,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import LocaleSwitcher from '@/components/LocaleSwitcher.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const { t } = useI18n()
 
 const formRef = ref<FormInstance>()
 const loading = ref(false)
@@ -70,25 +76,30 @@ const form = ref({
 
 const validateConfirm = (_rule: unknown, value: string, callback: (err?: Error) => void): void => {
   if (!value) {
-    callback(new Error('Please confirm your password'))
+    callback(new Error(t('auth.confirmationRequired')))
   } else if (value !== form.value.password) {
-    callback(new Error('Passwords do not match'))
+    callback(new Error(t('auth.passwordMismatch')))
   } else {
     callback()
   }
 }
 
-const rules: FormRules = {
-  username: [{ required: true, message: 'Username is required', trigger: 'blur' }],
+const rules = computed<FormRules>(() => ({
+  username: [{ required: true, message: t('auth.usernameRequired'), trigger: 'blur' }],
   password: [
-    { required: true, message: 'Password is required', trigger: 'blur' },
-    { min: 8, message: 'Password must be at least 8 characters', trigger: 'blur' },
+    { required: true, message: t('auth.passwordRequired'), trigger: 'blur' },
+    { min: 8, message: t('auth.passwordTooShort'), trigger: 'blur' },
   ],
   confirm: [
-    { required: true, message: 'Password confirmation is required', trigger: 'blur' },
+    { required: true, message: t('auth.confirmationRequired'), trigger: 'blur' },
     { validator: validateConfirm, trigger: 'blur' },
   ],
-}
+}))
+
+// Re-validate against the current language after a switch.
+watch(() => t('auth.setupTitle'), () => {
+  formRef.value?.clearValidate()
+})
 
 const strengthClass = computed(() => {
   const pw = form.value.password
@@ -110,12 +121,24 @@ async function handleSubmit(): Promise<void> {
   loading.value = true
   try {
     await authStore.setup(form.value.username, form.value.password)
-    ElMessage.success('Admin account created')
+    ElMessage.success(t('auth.setupSuccess'))
     router.push('/login')
   } catch (err: any) {
-    ElMessage.error(err.message || 'Setup failed')
+    ElMessage.error(err.message || t('auth.setupFailed'))
   } finally {
     loading.value = false
   }
 }
 </script>
+
+<style scoped>
+.auth-page {
+  flex-direction: column;
+}
+.auth-locale-bar {
+  width: 400px;
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+</style>

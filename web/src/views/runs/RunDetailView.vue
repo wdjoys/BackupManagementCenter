@@ -1,13 +1,13 @@
 <template>
   <div class="detail-page">
     <div class="page-head">
-      <h2 class="page-title">Run Detail</h2>
+      <h2 class="page-title">{{ t('runDetail.title') }}</h2>
     </div>
 
     <div v-if="error" class="error-state">
       <el-icon><Warning /></el-icon>
       <p>{{ error }}</p>
-      <el-button type="primary" @click="loadRun" style="margin-top: 12px">Retry</el-button>
+      <el-button type="primary" @click="loadRun" style="margin-top: 12px">{{ t('common.retry') }}</el-button>
     </div>
 
     <template v-else-if="run">
@@ -15,37 +15,37 @@
       <el-card shadow="never" class="status-card">
         <div class="status-grid">
           <div class="status-item">
-            <span class="status-label">Status</span>
+            <span class="status-label">{{ t('runDetail.labels.status') }}</span>
             <el-tag
               :type="statusTagType(run.status)"
               :effect="isRunning(run.status) ? 'dark' : 'plain'"
             >
-              {{ run.status }}
+              {{ runStatusText(run.status) }}
             </el-tag>
           </div>
           <div class="status-item">
-            <span class="status-label">Operation</span>
+            <span class="status-label">{{ t('runDetail.labels.operation') }}</span>
             <el-tag :type="operationTagType(run.operation)" size="default">
-              {{ run.operation }}
+              {{ operationText(run.operation) }}
             </el-tag>
           </div>
           <div class="status-item">
-            <span class="status-label">Plan</span>
+            <span class="status-label">{{ t('runDetail.labels.plan') }}</span>
             <span>{{ planName(run.plan_id) || run.plan_id }}</span>
           </div>
           <div class="status-item">
-            <span class="status-label">Agent</span>
+            <span class="status-label">{{ t('runDetail.labels.agent') }}</span>
             <span>{{ agentName(run.agent_id) || run.agent_id }}</span>
           </div>
           <div class="status-item" v-if="run.snapshot_id">
-            <span class="status-label">Snapshot</span>
+            <span class="status-label">{{ t('runDetail.labels.snapshot') }}</span>
             <span class="copyable" @click="copyText(run.snapshot_id!)">
               <el-icon><CopyDocument /></el-icon>
               {{ run.snapshot_id }}
             </span>
           </div>
           <div class="status-item" v-if="run.error_code">
-            <span class="status-label">Error</span>
+            <span class="status-label">{{ t('runDetail.labels.error') }}</span>
             <el-tooltip :content="run.error_message || run.error_code" placement="top">
               <el-tag type="danger" size="default" effect="plain">
                 {{ run.error_code }}
@@ -53,7 +53,7 @@
             </el-tooltip>
           </div>
           <div class="status-item" v-if="run.error_message && run.error_code === null">
-            <span class="status-label">Message</span>
+            <span class="status-label">{{ t('runDetail.labels.message') }}</span>
             <span>{{ run.error_message }}</span>
           </div>
         </div>
@@ -66,15 +66,15 @@
             align-center
           >
             <el-step
-              title="Queued"
+              :title="t('runDetail.timeline.queued')"
               :description="formatTime(run.queued_at)"
             />
             <el-step
-              title="Started"
+              :title="t('runDetail.timeline.started')"
               :description="formatTime(run.started_at || '')"
             />
             <el-step
-              title="Finished"
+              :title="t('runDetail.timeline.finished')"
               :description="formatTime(run.finished_at || '')"
             />
           </el-steps>
@@ -84,7 +84,7 @@
       <!-- Progress section -->
       <el-card v-if="run.progress" shadow="never" class="progress-card">
         <template #header>
-          <span>Progress</span>
+          <span>{{ t('runDetail.progress.title') }}</span>
         </template>
         <div class="progress-body">
           <el-progress
@@ -94,15 +94,15 @@
             style="margin-bottom: 12px"
           />
           <div class="progress-meta">
-            <span class="phase-text"><strong>Phase:</strong> {{ run.progress.phase }}</span>
+            <span class="phase-text"><strong>{{ t('runDetail.progress.phase') }}</strong> {{ phaseText(run.progress.phase) }}</span>
             <span v-if="hasBytes(run.progress)" class="bytes-text">
-              <strong>Bytes:</strong> {{ formatBytes(run.progress.bytes_done) }} / {{ formatBytes(run.progress.bytes_total) }}
+              <strong>{{ t('runDetail.progress.bytes') }}</strong> {{ formatBytes(run.progress.bytes_done) }} / {{ formatBytes(run.progress.bytes_total) }}
             </span>
             <span v-if="hasFiles(run.progress)" class="files-text">
-              <strong>Files:</strong> {{ run.progress.files_done }} / {{ run.progress.files_total }}
+              <strong>{{ t('runDetail.progress.files') }}</strong> {{ run.progress.files_done }} / {{ run.progress.files_total }}
             </span>
             <span v-if="run.started_at && !run.finished_at" class="duration-text">
-              <strong>Elapsed:</strong> {{ formatDuration(run.started_at, new Date().toISOString()) }}<el-icon class="is-loading" style="margin-left:4px"><Loading /></el-icon>
+              <strong>{{ t('runDetail.progress.elapsed') }}</strong> {{ formatDuration(run.started_at, new Date().toISOString()) }}<el-icon class="is-loading" style="margin-left:4px"><Loading /></el-icon>
             </span>
           </div>
         </div>
@@ -112,21 +112,21 @@
       <el-card shadow="never" class="logs-card">
         <template #header>
           <div class="logs-header">
-            <span>Logs ({{ logs.length }})</span>
+            <span>{{ t('runDetail.logs.title', { count: logs.length }) }}</span>
             <div class="logs-controls">
-              <el-checkbox v-model="autoScroll" label="Auto-scroll" />
+              <el-checkbox v-model="autoScroll" :label="t('runDetail.logs.autoScroll')" />
               <el-button
                 type="primary"
                 size="small"
                 :disabled="loadingLogs || !hasMoreLogs"
                 @click="loadMoreLogs"
               >
-                {{ loadingLogs ? 'Loading...' : 'Load more' }}
+                {{ loadingLogs ? t('runDetail.logs.loading') : t('runDetail.logs.loadMore') }}
               </el-button>
               <el-tag size="small" :type="wsConnected ? 'success' : 'info'" class="ws-tag">
                 <el-icon v-if="wsConnected" class="is-loading"><Loading /></el-icon>
                 <el-icon v-else-if="wsClosed"><Connection /></el-icon>
-                {{ wsConnected ? 'Streaming' : wsClosed ? 'Connected' : 'Offline' }}
+                {{ wsConnected ? t('runDetail.logs.streaming') : wsClosed ? t('runDetail.logs.connected') : t('runDetail.logs.offline') }}
               </el-tag>
             </div>
           </div>
@@ -139,18 +139,18 @@
             stripe
             size="small"
           >
-            <el-table-column label="#" width="70">
+            <el-table-column :label="t('runDetail.logs.seq')" width="70">
               <template #default="{ row }">{{ row.seq }}</template>
             </el-table-column>
-            <el-table-column label="Time" width="180">
+            <el-table-column :label="t('runDetail.logs.time')" width="180">
               <template #default="{ row }">{{ formatTime(row.timestamp) }}</template>
             </el-table-column>
-            <el-table-column label="Level" width="80">
+            <el-table-column :label="t('runDetail.logs.level')" width="80">
               <template #default="{ row }">
                 <span :class="`log-level level-${row.level}`">{{ row.level }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="Message">
+            <el-table-column :label="t('runDetail.logs.message')">
               <template #default="{ row }">
                 <span class="log-message">{{ row.message }}</span>
               </template>
@@ -165,9 +165,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, nextTick, computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { apiGet } from '@/api/client'
 import type { Run, RunLog, RunProgress, Plan, Agent } from '@/api/types'
 import { Loading, Warning, CopyDocument, Connection } from '@element-plus/icons-vue'
+import { formatDateTime, translateEnum } from '@/i18n'
 
 interface WsStateMessage {
   type: 'state'
@@ -187,7 +189,36 @@ interface WsLogMessage {
 type WsMessage = WsStateMessage | WsProgressMessage | WsLogMessage
 
 const route = useRoute()
+const { t } = useI18n()
 const runId = computed(() => route.params.id as string)
+
+const STATUS_VALUE_KEYS: Record<string, string> = {
+  queued: 'runs.status.queued',
+  dispatched: 'runs.status.dispatched',
+  running: 'runs.status.running',
+  succeeded: 'runs.status.succeeded',
+  failed: 'runs.status.failed',
+  cancelled: 'runs.status.cancelled',
+}
+
+const OPERATION_VALUE_KEYS: Record<string, string> = {
+  backup: 'runs.operations.backup',
+  restore: 'runs.operations.restore',
+  check: 'runs.operations.check',
+  forget: 'runs.operations.forget',
+}
+
+function runStatusText(status: string): string {
+  return t(STATUS_VALUE_KEYS[status] ?? 'common.status')
+}
+
+function operationText(op: string): string {
+  return t(OPERATION_VALUE_KEYS[op] ?? op)
+}
+
+function phaseText(phase: string): string {
+  return translateEnum('runDetail.phases', phase)
+}
 
 const run = ref<Run | null>(null)
 const plans = ref<Plan[]>([])
@@ -230,7 +261,7 @@ async function loadRun(): Promise<void> {
       wsClosed.value = true
     }
   } catch (err: any) {
-    error.value = err.message || 'Failed to load run'
+    error.value = err.message || t('runDetail.loadFailed')
   }
 }
 
@@ -436,20 +467,7 @@ function agentName(agentId: string): string | undefined {
 
 function formatTime(iso: string | null | undefined): string {
   if (!iso) return '—'
-  try {
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return iso
-    return d.toLocaleString(undefined, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-  } catch {
-    return iso
-  }
+  return formatDateTime(iso, { second: '2-digit' })
 }
 
 function formatBytes(bytes: number): string {
@@ -466,13 +484,13 @@ function formatDuration(started: string, finished: string): string {
   if (isNaN(start) || isNaN(finish)) return '—'
   const diff = Math.max(0, finish - start)
   const totalSec = Math.floor(diff / 1000)
-  if (totalSec < 60) return `${totalSec}s`
   const h = Math.floor(totalSec / 3600)
   const m = Math.floor((totalSec % 3600) / 60)
   const s = totalSec % 60
-  if (h > 0) return `${h}h ${m}m ${s}s`
-  if (m > 0) return `${m}m ${s}s`
-  return `${s}s`
+  if (totalSec < 60) return `${s}${t('time.secShort')}`
+  if (h > 0) return `${h}${t('time.hourShort')} ${m}${t('time.minShort')} ${s}${t('time.secShort')}`
+  if (m > 0) return `${m}${t('time.minShort')} ${s}${t('time.secShort')}`
+  return `${s}${t('time.secShort')}`
 }
 
 function statusTagType(status: Run['status']): 'success' | 'danger' | 'primary' | 'warning' | 'info' {

@@ -1,6 +1,6 @@
 <template>
   <div class="tag-input">
-    <div v-if="props.modelValue.length > 0" class="tag-list">
+    <div v-if="(props.modelValue?.length ?? 0) > 0" class="tag-list">
       <el-tag v-for="(item, index) in props.modelValue" :key="`${index}-${item}`" closable size="small" @close="removeAt(index)">
         {{ item }}
       </el-tag>
@@ -8,7 +8,7 @@
     <el-input
       v-model="draft"
       size="small"
-      :placeholder="props.placeholder"
+      :placeholder="placeholderText"
       @keydown.enter.prevent="add"
       @blur="add"
     />
@@ -16,15 +16,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
-const props = withDefaults(
-  defineProps<{
-    modelValue?: string[]
-    placeholder?: string
-  }>(),
-  { modelValue: () => [], placeholder: 'Type a value and press Enter to add' },
-)
+const props = defineProps<{
+  modelValue?: string[]
+  placeholder?: string
+}>()
+
+const { t } = useI18n()
+
+const placeholderText = computed(() => props.placeholder ?? t('common.tagInputPlaceholder'))
+
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string[]): void
 }>()
@@ -35,12 +38,12 @@ function add(): void {
   const value = draft.value.trim()
   draft.value = ''
   if (!value) return
-  if (props.modelValue.includes(value)) return
-  emit('update:modelValue', [...props.modelValue, value])
+  if (props.modelValue?.includes(value)) return
+  emit('update:modelValue', [...(props.modelValue ?? []), value])
 }
 
 function removeAt(index: number): void {
-  const next = [...props.modelValue]
+  const next = [...(props.modelValue ?? [])]
   next.splice(index, 1)
   emit('update:modelValue', next)
 }

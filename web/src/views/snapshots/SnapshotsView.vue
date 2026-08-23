@@ -1,20 +1,20 @@
 <template>
   <div>
-    <div class="section-title">Snapshots</div>
+    <div class="section-title">{{ t('snapshots.title') }}</div>
 
     <div v-if="mainError" class="error-state">
       <el-icon><Warning /></el-icon>
       <p>{{ mainError }}</p>
-      <el-button type="primary" @click="loadRepos" style="margin-top: 12px">Retry</el-button>
+      <el-button type="primary" @click="loadRepos" style="margin-top: 12px">{{ t('common.retry') }}</el-button>
     </div>
 
     <el-card v-else shadow="never" style="margin-bottom: 16px">
       <template #header>
-        <span style="font-weight: 600">Select Repository</span>
+        <span style="font-weight: 600">{{ t('snapshots.selectRepository') }}</span>
       </template>
       <el-select
         v-model="selectedRepoId"
-        placeholder="Choose a repository to browse snapshots"
+        :placeholder="t('snapshots.repositoryPlaceholder')"
         style="width: 100%"
         :loading="reposLoading"
         :disabled="reposLoading"
@@ -34,7 +34,7 @@
         <el-card shadow="never">
           <template #header>
             <div style="display: flex; justify-content: space-between; align-items: center">
-              <span style="font-weight: 600">Snapshots</span>
+              <span style="font-weight: 600">{{ t('snapshots.snapshotsCard') }}</span>
               <el-button size="small" @click="loadSnapshots">
                 <el-icon><Refresh /></el-icon>
               </el-button>
@@ -55,22 +55,22 @@
             style="width: 100%; cursor: pointer"
             height="520"
           >
-            <el-table-column label="ID" width="80">
+            <el-table-column :label="t('snapshots.browseTable.id')" width="80">
               <template #default="{ row }">
                 <code style="font-size: 12px">{{ shortId(row.id) }}</code>
               </template>
             </el-table-column>
-            <el-table-column label="Time" width="150">
+            <el-table-column :label="t('snapshots.browseTable.time')" width="150">
               <template #default="{ row }">
                 <span style="font-size: 12px">{{ formatTime(row.time) }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="Host" width="100">
+            <el-table-column :label="t('snapshots.browseTable.host')" width="100">
               <template #default="{ row }">
                 <span style="font-size: 12px">{{ row.host }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="Tags">
+            <el-table-column :label="t('snapshots.browseTable.tags')">
               <template #default="{ row }">
                 <el-tag
                   v-for="tag in row.tags.slice(0, 3)"
@@ -86,7 +86,7 @@
                 </el-text>
               </template>
             </el-table-column>
-            <el-table-column label="Paths">
+            <el-table-column :label="t('snapshots.browseTable.paths')">
               <template #default="{ row }">
                 <el-tag
                   v-for="p in row.paths.slice(0, 3)"
@@ -105,7 +105,7 @@
             </el-table-column>
           </el-table>
 
-          <el-empty v-if="!snapshotsLoading && snapshots.length === 0" description="No snapshots" :image-size="40" />
+          <el-empty v-if="!snapshotsLoading && snapshots.length === 0" :description="t('snapshots.noSnapshots')" :image-size="40" />
         </el-card>
       </el-col>
 
@@ -114,9 +114,9 @@
           <template #header>
             <div style="display: flex; justify-content: space-between; align-items: center">
               <div>
-                <span style="font-weight: 600">File Browser</span>
+                <span style="font-weight: 600">{{ t('snapshots.fileBrowser') }}</span>
                 <span v-if="selectedSnapshot" style="font-size: 12px; color: #909399; margin-left: 8px">
-                  snapshot {{ shortId(selectedSnapshot.id) }}
+                  {{ t('snapshots.snapshotPrefix', { id: shortId(selectedSnapshot.id) }) }}
                 </span>
               </div>
               <div>
@@ -128,14 +128,14 @@
                   :disabled="treeLoading || !treePath"
                 >
                   <el-icon><Download /></el-icon>
-                  <span>Restore this Snapshot</span>
+                  <span>{{ t('snapshots.restoreThisSnapshot') }}</span>
                 </el-button>
               </div>
             </div>
           </template>
 
           <div v-if="!selectedSnapshot" style="flex: 1; display: flex; align-items: center; justify-content: center">
-            <el-empty description="Select a snapshot to browse its contents" />
+            <el-empty :description="t('snapshots.selectSnapshotHint')" />
           </div>
 
           <div v-else style="flex: 1; display: flex; flex-direction: column">
@@ -165,7 +165,7 @@
               @selection-change="handleTreeSelection"
             >
               <el-table-column type="selection" width="40" />
-              <el-table-column label="Name">
+              <el-table-column :label="t('common.name')">
                 <template #default="{ row }">
                   <span style="cursor: pointer" :style="{ color: row.type === 'dir' ? '#e6a23c' : 'inherit' }" @click="handleRowClick(row as TreeEntry)">
                     <el-icon v-if="row.type === 'dir'" style="color: #e6a23c"><Folder /></el-icon>
@@ -174,17 +174,17 @@
                   </span>
                 </template>
               </el-table-column>
-              <el-table-column label="Type" width="60">
+              <el-table-column :label="t('snapshots.browseTable.type')" width="60">
                 <template #default="{ row }">
-                  <el-tag :type="row.type === 'dir' ? 'warning' : 'info'" size="small">{{ row.type }}</el-tag>
+                  <el-tag :type="row.type === 'dir' ? 'warning' : 'info'" size="small">{{ entryTypeText(row.type) }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="Size" width="120">
+              <el-table-column :label="t('snapshots.browseTable.size')" width="120">
                 <template #default="{ row }">
                   {{ formatSize(row.size) }}
                 </template>
               </el-table-column>
-              <el-table-column label="Modified">
+              <el-table-column :label="t('snapshots.browseTable.modified')">
                 <template #default="{ row }">
                   {{ formatTime(row.mtime) }}
                 </template>
@@ -198,13 +198,13 @@
     <!-- Restore wizard dialog -->
     <el-dialog
       v-model="restoreDialogVisible"
-      title="Restore Snapshot (Filesystem)"
+      :title="t('snapshots.restoreDialog.title')"
       width="680"
       destroy-on-close
       :close-on-click-modal="false"
     >
       <el-form :model="restoreForm" label-position="top" label-width="130px">
-        <el-form-item label="Snapshot" required>
+        <el-form-item :label="t('snapshots.restoreDialog.snapshot')" required>
           <el-text>
             <code>{{ selectedSnapshot?.id }}</code>
             &nbsp;
@@ -212,23 +212,23 @@
           </el-text>
         </el-form-item>
 
-        <el-form-item label="Target Path" required>
+        <el-form-item :label="t('snapshots.restoreDialog.targetPath')" required>
           <el-input
             v-model="restoreForm.target_path"
             placeholder="/absolute/path/on/agent"
           />
-          <el-text size="small" color="info">Absolute path on the target agent's filesystem.</el-text>
+          <el-text size="small" color="info">{{ t('snapshots.restoreDialog.targetPathHint') }}</el-text>
         </el-form-item>
 
-        <el-form-item label="Overwrite Mode" required>
+        <el-form-item :label="t('snapshots.restoreDialog.overwriteMode')" required>
           <el-radio-group v-model="restoreForm.overwrite_mode">
-            <el-radio value="never">Never</el-radio>
-            <el-radio value="if-changed">If Changed</el-radio>
-            <el-radio value="always">Always</el-radio>
+            <el-radio value="never">{{ t('snapshots.restoreDialog.never') }}</el-radio>
+            <el-radio value="if-changed">{{ t('snapshots.restoreDialog.ifChanged') }}</el-radio>
+            <el-radio value="always">{{ t('snapshots.restoreDialog.always') }}</el-radio>
           </el-radio-group>
         </el-form-item>
 
-        <el-form-item label="Include Paths">
+        <el-form-item :label="t('snapshots.restoreDialog.includePaths')">
           <el-checkbox-group v-model="restoreForm.include_paths">
             <div style="display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto">
               <el-checkbox
@@ -244,12 +244,12 @@
                 :value="'/ (all entries in current directory)'"
                 style="margin-left: 0"
               >
-                / (all entries in current directory)
+                {{ t('snapshots.restoreDialog.allEntries') }}
               </el-checkbox>
             </div>
           </el-checkbox-group>
           <el-text size="small" color="info">
-            Select items to restore. Leave empty to restore everything under the snapshot.
+            {{ t('snapshots.restoreDialog.includePathsHint') }}
           </el-text>
         </el-form-item>
       </el-form>
@@ -257,15 +257,15 @@
       <el-divider />
 
       <div v-if="dryRunResult" style="margin-top: 12px">
-        <el-alert title="Dry-run Result" type="success" :closable="false">
+        <el-alert :title="t('snapshots.restoreDialog.dryRunResult')" type="success" :closable="false">
           <template #default>
             <div style="display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap">
-              <el-statistic title="Add" :value="dryRunResult.add" />
-              <el-statistic title="Changed" :value="dryRunResult.changed" />
-              <el-statistic title="Delete" :value="dryRunResult.delete" />
+              <el-statistic :title="t('snapshots.restoreDialog.add')" :value="dryRunResult.add" />
+              <el-statistic :title="t('snapshots.restoreDialog.changed')" :value="dryRunResult.changed" />
+              <el-statistic :title="t('snapshots.restoreDialog.deleteStat')" :value="dryRunResult.delete" />
             </div>
             <div v-if="dryRunResult.sample && dryRunResult.sample.length > 0" style="margin-top: 8px">
-              <el-text size="small" style="font-weight: 600">Sample changes:</el-text>
+              <el-text size="small" style="font-weight: 600">{{ t('snapshots.restoreDialog.sampleChanges') }}</el-text>
               <el-tag
                 v-for="s in dryRunResult.sample.slice(0, 10)"
                 :key="s"
@@ -277,7 +277,7 @@
                 {{ s }}
               </el-tag>
               <el-text v-if="dryRunResult.sample.length > 10" size="small" color="info">
-                ... and {{ dryRunResult.sample.length - 10 }} more
+                {{ t('snapshots.restoreDialog.moreChanges', { count: dryRunResult.sample.length - 10 }) }}
               </el-text>
             </div>
           </template>
@@ -285,7 +285,7 @@
       </div>
 
       <template #footer>
-        <el-button @click="restoreDialogVisible = false">Cancel</el-button>
+        <el-button @click="restoreDialogVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button
           type="info"
           @click="handleDryRun"
@@ -293,7 +293,7 @@
           :disabled="!restoreForm.target_path"
         >
           <el-icon><Search /></el-icon>
-          <span>Dry-run</span>
+          <span>{{ t('snapshots.restoreDialog.dryRunButton') }}</span>
         </el-button>
         <el-button
           type="primary"
@@ -301,7 +301,7 @@
           :loading="restoreLoading"
           :disabled="!restoreForm.target_path || !dryRunResult"
         >
-          <span>Confirm Execute</span>
+          <span>{{ t('snapshots.restoreDialog.confirmExecute') }}</span>
         </el-button>
       </template>
     </el-dialog>
@@ -311,9 +311,17 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { apiGet, apiPost } from '@/api/client'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { formatDateTime } from '@/i18n'
 import type { Repository, Snapshot, TreeEntry, TreeResponse } from '@/api/types'
+
+const { t } = useI18n()
+
+function entryTypeText(type: string): string {
+  return t(`snapshots.fileTypes.${type}`)
+}
 
 // Local types
 interface DryRunResult {
@@ -383,20 +391,7 @@ function shortId(id: string | undefined): string {
 }
 
 function formatTime(iso: string): string {
-  if (!iso) return ''
-  try {
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return iso
-    return d.toLocaleString(undefined, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  } catch {
-    return iso
-  }
+  return formatDateTime(iso)
 }
 
 function formatSize(bytes: number): string {
@@ -418,7 +413,7 @@ async function loadRepos(): Promise<void> {
     }
   } catch (err: unknown) {
     const e = err as { message?: string }
-    mainError.value = e.message || 'Failed to load repositories.'
+    mainError.value = e.message || t('snapshots.messages.reposLoadFailed')
   } finally {
     reposLoading.value = false
   }
@@ -435,7 +430,7 @@ async function loadSnapshots(): Promise<void> {
     snapshots.value = await apiGet<Snapshot[]>(`/repositories/${selectedRepoId.value}/snapshots`)
   } catch (err: unknown) {
     const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || `Failed to load snapshots (code: ${e.code || 'unknown'})`)
+    ElMessage.error(e.message || t('snapshots.messages.loadSnapshotsFailedCode', { code: e.code || 'unknown' }))
     snapshots.value = []
   } finally {
     snapshotsLoading.value = false
@@ -461,7 +456,7 @@ async function loadTree(): Promise<void> {
     treePath.value = resp.path || treePath.value
   } catch (err: unknown) {
     const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || `Failed to load tree (code: ${e.code || 'unknown'})`)
+    ElMessage.error(e.message || t('snapshots.messages.loadTreeFailedCode', { code: e.code || 'unknown' }))
   } finally {
     treeLoading.value = false
   }
@@ -510,10 +505,10 @@ async function handleDryRun(): Promise<void> {
       include_paths: restoreForm.value.include_paths,
       target_path: restoreForm.value.target_path,
     })
-    ElMessage.success('Dry-run completed')
+    ElMessage.success(t('snapshots.messages.dryRunCompleted'))
   } catch (err: unknown) {
     const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || `Dry-run failed (code: ${e.code || 'unknown'})`)
+    ElMessage.error(e.message || t('snapshots.messages.dryRunFailedCode', { code: e.code || 'unknown' }))
   } finally {
     dryRunLoading.value = false
   }
@@ -522,15 +517,15 @@ async function handleDryRun(): Promise<void> {
 async function handleConfirmRestore(): Promise<void> {
   if (!selectedSnapshot.value || !selectedRepoId.value || !dryRunResult.value) return
   try {
-const { value } = await ElMessageBox.prompt(
-      'Confirm restore by typing the snapshot ID or a plan name:',
-      'Confirm Restore',
+    const { value } = await ElMessageBox.prompt(
+      t('snapshots.prompt.message'),
+      t('snapshots.prompt.title'),
       {
-        confirmButtonText: 'Execute',
-        cancelButtonText: 'Cancel',
-        inputPlaceholder: `e.g. ${shortId(selectedSnapshot.value.id)}`,
+        confirmButtonText: t('snapshots.prompt.execute'),
+        cancelButtonText: t('common.cancel'),
+        inputPlaceholder: t('snapshots.prompt.inputPlaceholder', { example: shortId(selectedSnapshot.value.id) }),
         inputPattern: /.+/,
-        inputErrorMessage: 'Please enter a confirmation string',
+        inputErrorMessage: t('snapshots.prompt.inputRequired'),
       },
     )
     if (!value) return
@@ -549,13 +544,13 @@ const { value } = await ElMessageBox.prompt(
       confirmation: value,
     })
 
-    ElMessage.success('Restore initiated, redirecting to run detail...')
+    ElMessage.success(t('snapshots.messages.restoreInitiated'))
     restoreDialogVisible.value = false
     router.push(`/runs/${resp.run_id}`)
   } catch (err: unknown) {
     if (err === 'cancel') return
     const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || `Restore failed (code: ${e.code || 'unknown'})`)
+    ElMessage.error(e.message || t('snapshots.messages.restoreFailedCode', { code: e.code || 'unknown' }))
   } finally {
     restoreLoading.value = false
   }

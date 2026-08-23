@@ -1,11 +1,11 @@
 <template>
   <div>
     <el-tabs v-model="activeTab" stretch type="border-card">
-      <el-tab-pane label="Storage Targets" name="targets">
+      <el-tab-pane :label="t('storage.tabs.targets')" name="targets">
         <template #label>
           <span>
             <el-icon><Folder /></el-icon>
-            <span>Storage Targets</span>
+            <span>{{ t('storage.tabs.targets') }}</span>
           </span>
         </template>
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px">
@@ -13,11 +13,11 @@
           <div>
             <el-button type="primary" @click="openImportDialog">
               <el-icon><Upload /></el-icon>
-              <span>Import rclone Config</span>
+              <span>{{ t('storage.importRcloneConfig') }}</span>
             </el-button>
             <el-button @click="loadTargets">
               <el-icon><Refresh /></el-icon>
-              <span>Refresh</span>
+              <span>{{ t('common.refresh') }}</span>
             </el-button>
           </div>
         </div>
@@ -25,7 +25,7 @@
         <div v-if="targetsError" class="error-state">
           <el-icon><Warning /></el-icon>
           <p>{{ targetsError }}</p>
-          <el-button type="primary" @click="loadTargets" style="margin-top: 12px">Retry</el-button>
+          <el-button type="primary" @click="loadTargets" style="margin-top: 12px">{{ t('common.retry') }}</el-button>
         </div>
 
         <div v-else-if="targetsLoading" style="text-align: center; padding: 40px">
@@ -39,54 +39,54 @@
           row-key="id"
           style="width: 100%"
         >
-          <el-table-column label="Name" width="200">
+          <el-table-column :label="t('common.name')" width="200">
             <template #default="{ row }">
               <strong>{{ row.name }}</strong>
             </template>
           </el-table-column>
-          <el-table-column label="Type" width="100">
+          <el-table-column :label="t('storage.columns.type')" width="100">
             <template #default="{ row }">
               <el-tag size="small" type="info">{{ row.type }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="Remote Name" width="180">
+          <el-table-column :label="t('storage.columns.remoteName')" width="180">
             <template #default="{ row }">
               <el-tag size="small" effect="plain">{{ row.remote_name }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="Remote Path">
+          <el-table-column :label="t('storage.columns.remotePath')">
             <template #default="{ row }">
               {{ row.remote_path || '/' }}
             </template>
           </el-table-column>
-          <el-table-column label="Created At" width="220">
+          <el-table-column :label="t('storage.columns.createdAt')" width="220">
             <template #default="{ row }">
               {{ formatTime(row.created_at) }}
             </template>
           </el-table-column>
-          <el-table-column label="Updated At" width="220">
+          <el-table-column :label="t('storage.columns.updatedAt')" width="220">
             <template #default="{ row }">
               {{ formatTime(row.updated_at) }}
             </template>
           </el-table-column>
-          <el-table-column label="Actions" width="100" fixed="right">
+          <el-table-column :label="t('common.actions')" width="100" fixed="right">
             <template #default="{ row }">
               <el-button type="danger" text size="small" @click="handleDeleteTarget(row as StorageTarget)">
-                Delete
+                {{ t('common.delete') }}
               </el-button>
             </template>
           </el-table-column>
         </el-table>
 
         <el-empty v-if="!targetsLoading && !targetsError && targets.length === 0"
-          description="No storage targets. Import an rclone config to start." />
+          :description="t('storage.emptyTargets')" />
       </el-tab-pane>
 
-      <el-tab-pane label="Repositories" name="repos">
+      <el-tab-pane :label="t('storage.tabs.repositories')" name="repos">
         <template #label>
           <span>
             <el-icon><Collection /></el-icon>
-            <span>Repositories</span>
+            <span>{{ t('storage.tabs.repositories') }}</span>
           </span>
         </template>
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px">
@@ -94,11 +94,11 @@
           <div>
             <el-button type="primary" @click="openBindRepoDialog" :disabled="targets.length === 0 || agents.length === 0">
               <el-icon><Link /></el-icon>
-              <span>Bind Repository</span>
+              <span>{{ t('storage.bindRepository') }}</span>
             </el-button>
             <el-button @click="loadRepos">
               <el-icon><Refresh /></el-icon>
-              <span>Refresh</span>
+              <span>{{ t('common.refresh') }}</span>
             </el-button>
           </div>
         </div>
@@ -106,7 +106,7 @@
         <div v-if="reposError" class="error-state">
           <el-icon><Warning /></el-icon>
           <p>{{ reposError }}</p>
-          <el-button type="primary" @click="loadRepos" style="margin-top: 12px">Retry</el-button>
+          <el-button type="primary" @click="loadRepos" style="margin-top: 12px">{{ t('common.retry') }}</el-button>
         </div>
 
         <div v-else-if="reposLoading" style="text-align: center; padding: 40px">
@@ -120,54 +120,54 @@
           row-key="id"
           style="width: 100%"
         >
-          <el-table-column label="Agent" width="200">
+          <el-table-column :label="t('storage.columns.agent')" width="200">
             <template #default="{ row }">
               {{ row.agent_name || row.agent_id }}
             </template>
           </el-table-column>
-          <el-table-column label="Storage Target" width="200">
+          <el-table-column :label="t('storage.columns.storageTarget')" width="200">
             <template #default="{ row }">
               {{ row.storage_target_name || row.storage_target_id }}
             </template>
           </el-table-column>
-          <el-table-column label="Repository Path">
+          <el-table-column :label="t('storage.columns.repositoryPath')">
             <template #default="{ row }">
               <code style="font-size: 12px">{{ row.repository_path }}</code>
             </template>
           </el-table-column>
-          <el-table-column label="Status" width="100">
+          <el-table-column :label="t('common.status')" width="100">
             <template #default="{ row }">
               <el-tag
                 :type="row.status === 'ready' ? 'success' : 'warning'"
                 size="small"
               >
-                {{ row.status }}
+                {{ statusText(row.status) }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="Last Check" width="220">
+          <el-table-column :label="t('storage.columns.lastCheck')" width="220">
             <template #default="{ row }">
-              {{ row.last_check_at ? formatTime(row.last_check_at) : 'Never' }}
+              {{ row.last_check_at ? formatTime(row.last_check_at) : t('common.never') }}
             </template>
           </el-table-column>
         </el-table>
 
         <el-empty v-if="!reposLoading && !reposError && repos.length === 0"
-          description="No repositories. Bind one by selecting an Agent and a Storage Target." />
+          :description="t('storage.emptyRepositories')" />
       </el-tab-pane>
     </el-tabs>
 
     <!-- Import rclone Config Dialog -->
     <el-dialog
       v-model="importDialogVisible"
-      title="Import rclone Config"
+      :title="t('storage.importRcloneConfig')"
       width="620"
       destroy-on-close
       :close-on-click-modal="false"
     >
       <el-form :model="importForm" label-position="top" label-width="120px">
-        <el-form-item label="Name" required>
-          <el-input v-model="importForm.name" placeholder="e.g. My Google Drive" />
+        <el-form-item :label="t('storage.importDialog.name')" required>
+          <el-input v-model="importForm.name" :placeholder="t('storage.importDialog.namePlaceholder')" />
         </el-form-item>
 
         <el-form-item label="rclone.conf" required>
@@ -175,14 +175,16 @@
             v-model="importForm.rclone_conf"
             type="textarea"
             :rows="8"
-            placeholder="[remote]\ntype = drive\ntoken = ..."
+            placeholder="[remote]
+type = drive
+token = ..."
           />
         </el-form-item>
 
-        <el-form-item label="Validation Agent" required>
+        <el-form-item :label="t('storage.importDialog.validationAgent')" required>
           <el-select
             v-model="importForm.validate_agent_id"
-            placeholder="Select an online agent to validate config"
+            :placeholder="t('storage.importDialog.validationAgentPlaceholder')"
             style="width: 100%"
             :disabled="onlineAgents.length === 0"
           >
@@ -195,22 +197,22 @@
             <el-option
               v-for="a in offlineAgents"
               :key="a.id"
-              :label="`${a.name} (${a.hostname}) — offline`"
+              :label="t('storage.importDialog.offlineSuffix', { name: a.name, hostname: a.hostname })"
               :value="a.id"
               disabled
             />
           </el-select>
           <el-text size="small" v-if="agents.length === 0" color="warning">
-            No agents available. Ensure at least one agent is enrolled and online.
+            {{ t('storage.importDialog.noAgents') }}
           </el-text>
         </el-form-item>
 
-        <el-form-item label="Remote Name" required>
-          <el-input v-model="importForm.remote_name" placeholder="e.g. mydrive" />
+        <el-form-item :label="t('storage.importDialog.remoteName')" required>
+          <el-input v-model="importForm.remote_name" :placeholder="t('storage.importDialog.remoteNamePlaceholder')" />
         </el-form-item>
 
-        <el-form-item label="Remote Path">
-          <el-input v-model="importForm.remote_path" placeholder="Root path inside the remote (optional)" />
+        <el-form-item :label="t('storage.importDialog.remotePath')">
+          <el-input v-model="importForm.remote_path" :placeholder="t('storage.importDialog.remotePathPlaceholder')" />
         </el-form-item>
       </el-form>
 
@@ -222,30 +224,30 @@
         >
           <template #default>
             <div style="margin-top: 8px">
-              <span>lsd entries: <strong>{{ validateResult.lsd_entries.length }}</strong></span>
+              <span>{{ t('storage.importDialog.lsdEntries') }} <strong>{{ validateResult.lsd_entries.length }}</strong></span>
               <el-table
                 v-if="validateResult.lsd_entries.length > 0"
                 :data="validateResult.lsd_entries.slice(0, 20)"
                 size="small"
                 style="margin-top: 8px; max-height: 160px; overflow: auto"
               >
-                <el-table-column label="Name">
+                <el-table-column :label="t('common.name')">
                   <template #default="{ row }">
                     <el-icon v-if="row.is_dir" style="color: #e6a23c"><Folder /></el-icon>
                     <el-icon v-else><Document /></el-icon>
                     {{ row.name }}
                   </template>
                 </el-table-column>
-                <el-table-column label="Is Dir" width="60">
+                <el-table-column :label="t('storage.importDialog.isDir')" width="60">
                   <template #default="{ row }">
                     <el-tag size="small" :type="row.is_dir ? 'warning' : 'info'">
-                      {{ row.is_dir ? 'dir' : 'file' }}
+                      {{ row.is_dir ? t('storage.importDialog.dir') : t('storage.importDialog.file') }}
                     </el-tag>
                   </template>
                 </el-table-column>
               </el-table>
               <el-text v-if="validateResult.lsd_entries.length > 20" size="small" color="info">
-                ... and {{ validateResult.lsd_entries.length - 20 }} more
+                {{ t('storage.importDialog.moreEntries', { count: validateResult.lsd_entries.length - 20 }) }}
               </el-text>
             </div>
           </template>
@@ -262,7 +264,7 @@
           :disabled="!importForm.rclone_conf || !importForm.remote_name || !importForm.validate_agent_id"
         >
           <el-icon><Search /></el-icon>
-          <span>Validate First</span>
+          <span>{{ t('storage.importDialog.validateFirst') }}</span>
         </el-button>
         <el-button
           type="primary"
@@ -270,7 +272,7 @@
           :loading="importLoading"
           :disabled="!importForm.name || !importForm.rclone_conf || !importForm.remote_name || !importForm.validate_agent_id"
         >
-          <span>Confirm Import</span>
+          <span>{{ t('storage.importDialog.confirmImport') }}</span>
         </el-button>
       </div>
     </el-dialog>
@@ -278,16 +280,16 @@
     <!-- Bind Repository Dialog -->
     <el-dialog
       v-model="bindDialogVisible"
-      title="Bind Repository"
+      :title="t('storage.bindRepository')"
       width="480"
       destroy-on-close
       :close-on-click-modal="false"
     >
       <el-form :model="bindForm" label-position="top" label-width="120px">
-        <el-form-item label="Agent" required>
+        <el-form-item :label="t('storage.bindDialog.agent')" required>
           <el-select
             v-model="bindForm.agent_id"
-            placeholder="Select an agent"
+            :placeholder="t('storage.bindDialog.selectAgent')"
             style="width: 100%"
           >
             <el-option
@@ -299,39 +301,39 @@
             <el-option
               v-for="a in offlineAgents"
               :key="a.id"
-              :label="`${a.name} (${a.hostname}) — offline`"
+              :label="t('storage.importDialog.offlineSuffix', { name: a.name, hostname: a.hostname })"
               :value="a.id"
               disabled
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="Storage Target" required>
+        <el-form-item :label="t('storage.bindDialog.storageTarget')" required>
           <el-select
             v-model="bindForm.storage_target_id"
-            placeholder="Select a storage target"
+            :placeholder="t('storage.bindDialog.selectTarget')"
             style="width: 100%"
           >
             <el-option
-              v-for="t in targets"
-              :key="t.id"
-              :label="`${t.name} (${t.remote_name}:${t.remote_path || '/'})`"
-              :value="t.id"
+              v-for="tgt in targets"
+              :key="tgt.id"
+              :label="`${tgt.name} (${tgt.remote_name}:${tgt.remote_path || '/'})`"
+              :value="tgt.id"
             />
           </el-select>
         </el-form-item>
       </el-form>
 
       <div v-if="bindResult" style="margin-top: 12px">
-        <el-alert title="Repository bound successfully" type="success" :closable="false">
+        <el-alert :title="t('storage.bindDialog.boundSuccessfully')" type="success" :closable="false">
           <template #default>
             <div style="margin-top: 8px">
               <el-form label-position="top" size="small">
-                <el-form-item label="Repository Path">
+                <el-form-item :label="t('storage.columns.repositoryPath')">
                   <code>{{ bindResult.repository_path }}</code>
                 </el-form-item>
-                <el-form-item label="Status">
+                <el-form-item :label="t('common.status')">
                   <el-tag :type="bindResult.status === 'ready' ? 'success' : 'warning'">
-                    {{ bindResult.status }}
+                    {{ statusText(bindResult.status) }}
                   </el-tag>
                 </el-form-item>
               </el-form>
@@ -341,7 +343,7 @@
       </div>
 
       <template #footer>
-        <el-button @click="bindDialogVisible = false">Close</el-button>
+        <el-button @click="bindDialogVisible = false">{{ t('common.close') }}</el-button>
         <el-button
           v-if="!bindResult"
           type="primary"
@@ -349,7 +351,7 @@
           :loading="bindLoading"
           :disabled="!bindForm.agent_id || !bindForm.storage_target_id"
         >
-          Bind Repository
+          {{ t('storage.bindRepository') }}
         </el-button>
       </template>
     </el-dialog>
@@ -358,9 +360,17 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { apiGet, apiPost, apiDelete } from '@/api/client'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { translateEnum, formatDateTime } from '@/i18n'
 import type { Agent, StorageTarget, Repository } from '@/api/types'
+
+const { t } = useI18n()
+
+function statusText(status: string): string {
+  return translateEnum('status', status)
+}
 
 // Local types
 interface StorageTargetValidateResponse {
@@ -405,20 +415,7 @@ const bindLoading = ref(false)
 const bindResult = ref<Repository | null>(null)
 
 function formatTime(iso: string): string {
-  if (!iso) return ''
-  try {
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return iso
-    return d.toLocaleString(undefined, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  } catch {
-    return iso
-  }
+  return formatDateTime(iso)
 }
 
 async function loadAgents(): Promise<void> {
@@ -435,8 +432,8 @@ async function loadTargets(): Promise<void> {
   try {
     targets.value = await apiGet<StorageTarget[]>('/storage-targets')
   } catch (err: unknown) {
-    const e = err as { message?: string; code?: string }
-    targetsError.value = e.message || 'Failed to load storage targets.'
+    const e = err as { message?: string }
+    targetsError.value = e.message || t('storage.targetsLoadFailed')
   } finally {
     targetsLoading.value = false
   }
@@ -449,7 +446,7 @@ async function loadRepos(): Promise<void> {
     repos.value = await apiGet<Repository[]>('/repositories')
   } catch (err: unknown) {
     const e = err as { message?: string }
-    reposError.value = e.message || 'Failed to load repositories.'
+    reposError.value = e.message || t('storage.reposLoadFailed')
   } finally {
     reposLoading.value = false
   }
@@ -470,10 +467,10 @@ async function handleValidate(): Promise<void> {
       remote_name: importForm.value.remote_name,
       validate_agent_id: importForm.value.validate_agent_id,
     })
-    ElMessage.success('Validation succeeded')
+    ElMessage.success(t('storage.importDialog.validateSucceeded'))
   } catch (err: unknown) {
     const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || `Validation failed (code: ${e.code || 'unknown'})`)
+    ElMessage.error(e.message || t('storage.importDialog.validateFailedCode', { code: e.code || 'unknown' }))
   } finally {
     validateLoading.value = false
   }
@@ -490,12 +487,12 @@ async function handleImport(): Promise<void> {
       validate_agent_id: importForm.value.validate_agent_id,
       validate: true,
     })
-    ElMessage.success('Storage target imported')
+    ElMessage.success(t('storage.importDialog.imported'))
     importDialogVisible.value = false
     await loadTargets()
   } catch (err: unknown) {
     const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || `Import failed (code: ${e.code || 'unknown'})`)
+    ElMessage.error(e.message || t('storage.importDialog.importFailedCode', { code: e.code || 'unknown' }))
   } finally {
     importLoading.value = false
   }
@@ -504,20 +501,20 @@ async function handleImport(): Promise<void> {
 async function handleDeleteTarget(target: StorageTarget): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `Delete storage target "${target.name}"?`,
-      'Delete Storage Target',
-      { type: 'warning', confirmButtonText: 'Delete' },
+      t('storage.deleteDialog.confirm', { name: target.name }),
+      t('storage.deleteDialog.title'),
+      { type: 'warning', confirmButtonText: t('common.delete') },
     )
     await apiDelete(`/storage-targets/${target.id}`)
-    ElMessage.success('Storage target deleted')
+    ElMessage.success(t('storage.deleteDialog.deleted'))
     await loadTargets()
   } catch (err: unknown) {
     if (err === 'cancel') return
     const e = err as { message?: string; code?: string }
     if (e.code === 'conflict') {
-      ElMessage.warning('Cannot delete: this storage target is still referenced by one or more repositories')
+      ElMessage.warning(t('storage.deleteDialog.conflict'))
     } else {
-      ElMessage.error(e.message || 'Delete failed')
+      ElMessage.error(e.message || t('storage.deleteDialog.failedCode', { code: e.code || 'unknown' }))
     }
   }
 }
@@ -536,11 +533,11 @@ async function handleBindRepo(): Promise<void> {
       agent_id: bindForm.value.agent_id,
       storage_target_id: bindForm.value.storage_target_id,
     })
-    ElMessage.success('Repository bound')
+    ElMessage.success(t('storage.bindDialog.bound'))
     await loadRepos()
   } catch (err: unknown) {
     const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || `Bind failed (code: ${e.code || 'unknown'})`)
+    ElMessage.error(e.message || t('storage.bindDialog.bindFailedCode', { code: e.code || 'unknown' }))
   } finally {
     bindLoading.value = false
   }

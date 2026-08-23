@@ -13,27 +13,27 @@
       >
         <el-menu-item index="/dashboard">
           <el-icon><Odometer /></el-icon>
-          <span>Dashboard</span>
+          <span>{{ t('nav.dashboard') }}</span>
         </el-menu-item>
         <el-menu-item index="/agents">
           <el-icon><Monitor /></el-icon>
-          <span>Agents</span>
+          <span>{{ t('nav.agents') }}</span>
         </el-menu-item>
         <el-menu-item index="/storage">
           <el-icon><Folder /></el-icon>
-          <span>Storage</span>
+          <span>{{ t('nav.storage') }}</span>
         </el-menu-item>
         <el-menu-item index="/plans">
           <el-icon><Calendar /></el-icon>
-          <span>Plans</span>
+          <span>{{ t('nav.plans') }}</span>
         </el-menu-item>
         <el-menu-item index="/runs">
           <el-icon><List /></el-icon>
-          <span>Runs</span>
+          <span>{{ t('nav.runs') }}</span>
         </el-menu-item>
         <el-menu-item index="/snapshots">
           <el-icon><Files /></el-icon>
-          <span>Snapshots</span>
+          <span>{{ t('nav.snapshots') }}</span>
         </el-menu-item>
       </el-menu>
     </aside>
@@ -41,11 +41,12 @@
     <main class="layout-main">
       <header class="layout-header">
         <div class="user-info">
+          <LocaleSwitcher />
           <el-icon><User /></el-icon>
-          <span>{{ authStore.me?.username || 'User' }}</span>
+          <span>{{ authStore.me?.username || t('layout.defaultUser') }}</span>
           <el-button text @click="handleLogout">
             <el-icon><SwitchButton /></el-icon>
-            <span>Logout</span>
+            <span>{{ t('layout.logout') }}</span>
           </el-button>
         </div>
       </header>
@@ -59,12 +60,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { ElMessage } from 'element-plus'
+import LocaleSwitcher from '@/components/LocaleSwitcher.vue'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const { t } = useI18n()
 
 const activeMenu = computed(() => {
   const path = route.path
@@ -82,10 +86,10 @@ const activeMenu = computed(() => {
 async function handleLogout(): Promise<void> {
   try {
     await authStore.logout()
-    ElMessage.success('Logout successful')
+    ElMessage.success(t('layout.logoutSuccess'))
     router.push('/login')
   } catch (err: any) {
-    ElMessage.error(err.message || 'Logout failed')
+    ElMessage.error(err.message || t('layout.logoutFailed'))
   }
 }
 </script>

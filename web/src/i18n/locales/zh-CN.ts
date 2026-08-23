@@ -258,7 +258,7 @@ export default {
     emptyRepositories: '暂无仓库，请选择一个 Agent 和一个存储目标进行绑定。',
     repositoryHelp: {
       title: '仓库绑定说明',
-      description: '绑定会让 Agent 在所选网盘路径创建或接管一个独立的 Restic 仓库。首次绑定会先检查仓库，再执行初始化，可能需要几十秒；失败后可点击重试。解绑只隐藏 Server 记录，不删除网盘数据，后续可再次绑定接管。',
+      description: '绑定会让 Agent 在所选网盘路径创建或接管一个独立的 Restic 仓库。首次绑定会先检查仓库，再执行初始化，可能需要几十秒；绑定成功不等于完整性检查，“上次完整性检查”会在完整 restic check 成功后记录。失败后可点击重试。解绑只隐藏 Server 记录，不删除网盘数据，后续可再次绑定接管。',
     },
     repositoryStatus: {
       pending: '初始化中',
@@ -274,7 +274,7 @@ export default {
       agent: 'Agent',
       storageTarget: '存储目标',
       repositoryPath: '仓库路径',
-      lastCheck: '上次检查',
+      lastCheck: '上次完整性检查',
     },
     importDialog: {
       name: '名称',

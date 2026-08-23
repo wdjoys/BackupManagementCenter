@@ -203,8 +203,27 @@ func (f *fakeStore) CreateRun(_ context.Context, _ *model.Run) error            
 func (f *fakeStore) GetRun(_ context.Context, _ string) (*model.Run, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListRuns(_ context.Context, _ store.RunFilter) ([]model.Run, error) {
-	return nil, nil
+func (f *fakeStore) ListRuns(_ context.Context, filter store.RunFilter) ([]model.Run, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	statusSet := make(map[string]bool, len(filter.Statuses))
+	for _, status := range filter.Statuses {
+		statusSet[status] = true
+	}
+	out := make([]model.Run, 0)
+	for _, run := range f.runs {
+		if filter.RepositoryID != "" && run.RepositoryID != filter.RepositoryID {
+			continue
+		}
+		if filter.Operation != "" && run.Operation != filter.Operation {
+			continue
+		}
+		if len(statusSet) > 0 && !statusSet[run.Status] {
+			continue
+		}
+		out = append(out, run)
+	}
+	return out, nil
 }
 func (f *fakeStore) FailStaleRuns(_ context.Context, _ []string, _ string, _ time.Time) ([]string, error) {
 	return nil, nil
@@ -681,6 +700,29 @@ func TestWeeklyRepoCheckFiresMultipleRepos(t *testing.T) {
 	s.runTick(context.Background(), now)
 	if len(start.systemRunCheckCalls) != 2 {
 		t.Fatalf("expected 2 calls, got %d: %v", len(start.systemRunCheckCalls), start.systemRunCheckCalls)
+	}
+}
+
+func TestWeeklyRepoCheckDoesNotStormAfterFailure(t *testing.T) {
+	fst := newFakeStore(t)
+	lastCheck := mustTime("2026-08-10T10:00:00Z")
+	finished := mustTime("2026-08-22T09:59:00Z")
+	fst.repos = append(fst.repos, model.Repository{
+		ID: "failed-check", AgentID: "agent-1", Status: "ready", LastCheckAt: &lastCheck,
+	})
+	fst.agents["agent-1"] = model.Agent{ID: "agent-1", Status: model.AgentOnline}
+	fst.runs = append(fst.runs, model.Run{
+		ID: "check-1", RepositoryID: "failed-check", Operation: model.OpCheck,
+		Status: model.RunFailed, FinishedAt: &finished,
+	})
+
+	start := newFakeStarter()
+	s := New(fst, start, nil)
+	now := mustTime("2026-08-22T10:00:00Z")
+	s.now = func() time.Time { return now }
+	s.runTick(context.Background(), now)
+	if len(start.systemRunCheckCalls) != 0 {
+		t.Fatalf("failed check should be cooled down, got %v", start.systemRunCheckCalls)
 	}
 }
 

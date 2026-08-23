@@ -266,6 +266,22 @@ Agent 容器内的路径 ≠ 主机路径。当前模板挂载：
       - /var/lib/myapp:/backup-sources/var-lib-myapp:ro
 ```
 
+例如备份宿主机 `/root/nginx` 时，必须增加精确挂载（`BMC_SOURCE_ROOTS`
+只是容器内 allowlist，不会自动创建或映射宿主目录）：
+
+```yaml
+    volumes:
+      - /root/nginx:/backup-sources/root/nginx:ro
+```
+
+计划使用 `/backup-sources/root/nginx`。Agent 以 UID 65532 非 root 用户运行；
+如果宿主机 `/root` 或该目录是 `0700`，请只对需要的路径授权：
+
+```sh
+sudo setfacl -m u:65532:--x /root
+sudo setfacl -R -m u:65532:rX /root/nginx
+```
+
 安全红线：
 
 - 不要挂载 `/` 或 `/var/run/docker.sock`。

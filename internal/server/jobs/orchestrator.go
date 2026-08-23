@@ -480,6 +480,9 @@ func (o *Orchestrator) ValidatePlanSource(ctx context.Context, kind string, src 
 			return err
 		}
 		if term.Status == model.RunFailed {
+			if term.ErrorMessage != "" {
+				return fmt.Errorf("%w: %s", ErrPathInvalid, term.ErrorMessage)
+			}
 			return ErrPathInvalid
 		}
 	}

@@ -626,12 +626,18 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	// Mark repository checked for backup/check operations on success
 	if toStatus == model.RunSucceeded && run.Operation != "" {
 		if run.Operation == model.OpBackup || run.Operation == model.OpCheck {
-			// Find the plan to get the repository (plan_id may be empty for system operations)
-			if run.PlanID != "" {
+			// Scheduled repository checks are system runs with no plan ID, so
+			// prefer the repository carried directly on the run. Backups keep
+			// the plan lookup as a compatibility fallback for older rows.
+			repositoryID := run.RepositoryID
+			if repositoryID == "" && run.PlanID != "" {
 				plan, planErr := s.store.GetPlan(ctx, run.PlanID)
-				if planErr == nil && plan.RepositoryID != "" {
-					_ = s.store.MarkRepositoryChecked(ctx, plan.RepositoryID, time.Now().UTC())
+				if planErr == nil {
+					repositoryID = plan.RepositoryID
 				}
+			}
+			if repositoryID != "" {
+				_ = s.store.MarkRepositoryChecked(ctx, repositoryID, time.Now().UTC())
 			}
 		}
 	}

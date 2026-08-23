@@ -386,9 +386,18 @@ func Check(ctx context.Context, exec backup.Executor, opts Options) error {
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
-	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(string) {})
+	var stdoutTail, stderrTail strings.Builder
+	appendStdout := func(line string) {
+		stdoutTail.WriteString(line)
+		stdoutTail.WriteByte('\n')
+	}
+	appendStderr := func(line string) {
+		stderrTail.WriteString(line)
+		stderrTail.WriteByte('\n')
+	}
+	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, appendStdout, appendStderr)
 	if err != nil || exitCode != 0 {
-		return mapResticError(exitCode, err)
+		return enriched(mapResticError(exitCode, err), stdoutTail.String()+stderrTail.String())
 	}
 	return nil
 }

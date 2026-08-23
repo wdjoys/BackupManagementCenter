@@ -23,12 +23,14 @@ type fakeStore struct {
 	mu           sync.Mutex
 	runs         map[string]*model.Run
 	repoStatuses map[string]string
+	repoChecks   map[string]time.Time
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		runs:         make(map[string]*model.Run),
 		repoStatuses: make(map[string]string),
+		repoChecks:   make(map[string]time.Time),
 	}
 }
 
@@ -79,6 +81,13 @@ func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, id, status string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.repoStatuses[id] = status
+	return nil
+}
+
+func (f *fakeStore) MarkRepositoryChecked(_ context.Context, id string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.repoChecks[id] = at
 	return nil
 }
 
@@ -172,6 +181,33 @@ func TestHandleInitRunReconcilesRepositoryStatus(t *testing.T) {
 				t.Fatalf("repository status = %q, want %q", got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestHandleRunResultCheckMarksSystemRepository(t *testing.T) {
+	st := newFakeStore()
+	run := model.Run{
+		ID:           "check-run-1",
+		AgentID:      "agent-1",
+		Operation:    model.OpCheck,
+		RepositoryID: "repo-1",
+		Status:       model.RunRunning,
+		QueuedAt:     time.Now().UTC(),
+		ProgressJSON: `{"repository":{"repository_path":"rclone:remote:/bmc"}}`,
+	}
+	st.addRun(run)
+	svc, _ := newTestService(st)
+	if err := svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId: run.ID,
+		Status: bmcv1.RunResult_SUCCEEDED,
+	}); err != nil {
+		t.Fatalf("handleRunResult: %v", err)
+	}
+	st.mu.Lock()
+	_, ok := st.repoChecks[run.RepositoryID]
+	st.mu.Unlock()
+	if !ok {
+		t.Fatalf("successful system check did not update repository %s", run.RepositoryID)
 	}
 }
 

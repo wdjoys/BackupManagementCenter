@@ -31,6 +31,10 @@ type maintenanceStarter interface {
 const (
 	tickInterval    = 15 * time.Second
 	repoCheckWindow = 7 * 24 * time.Hour
+	// A failed integrity check should be visible and retryable, but must not
+	// enqueue a new restic process every scheduler tick while the failure is
+	// unresolved.
+	repoCheckRetryCooldown = time.Hour
 	defaultTimeout  = 300 * time.Second
 )
 
@@ -321,6 +325,32 @@ func (s *Scheduler) tickWeeklyRepoCheck(ctx context.Context, now time.Time) {
 		agent, err := getAgent(r.AgentID)
 		if err != nil || agent.Status != model.AgentOnline {
 			continue
+		}
+		checkRuns, err := s.store.ListRuns(ctx, store.RunFilter{
+			RepositoryID: r.ID,
+			Operation:    model.OpCheck,
+			Statuses:     []string{model.RunQueued, model.RunDispatched, model.RunRunning, model.RunSucceeded, model.RunFailed},
+			Limit:        1,
+		})
+		if err != nil {
+			slog.Error("scheduler: ListRuns for repository check", "repositoryID", r.ID, "error", err)
+			continue
+		}
+		if len(checkRuns) > 0 {
+			latest := checkRuns[0]
+			if latest.Status == model.RunQueued || latest.Status == model.RunDispatched || latest.Status == model.RunRunning {
+				// Do not enqueue a duplicate check while one is active or while
+				// the in-flight operation is still being persisted.
+				continue
+			}
+			if latest.Status == model.RunSucceeded && latest.FinishedAt != nil && now.Sub(*latest.FinishedAt) < repoCheckWindow {
+				// Compatibility with runs created before system checks updated
+				// last_check_at; do not immediately duplicate a recent success.
+				continue
+			}
+			if latest.Status == model.RunFailed && latest.FinishedAt != nil && now.Sub(*latest.FinishedAt) < repoCheckRetryCooldown {
+				continue
+			}
 		}
 		if _, err := s.starter.SystemRunCheck(ctx, r.ID); err != nil {
 			slog.Error("scheduler: SystemRunCheck", "repositoryID", r.ID, "error", err)

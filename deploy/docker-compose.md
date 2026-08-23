@@ -151,6 +151,30 @@ BMC_SOURCE_APP=/srv/myapp
 
 然后计划使用 `/backup-sources/app`。
 
+例如要备份宿主机 `/root/nginx`，不能只把 `BMC_SOURCE_ROOTS` 写成
+`/backup-sources/root`；必须同时显式挂载目录，并在计划中使用挂载后的容器路径：
+
+```dotenv
+BMC_SOURCE_NGINX=/root/nginx
+```
+
+```yaml
+- ${BMC_SOURCE_NGINX}:/backup-sources/root/nginx:ro
+```
+
+```json
+{"paths":["/backup-sources/root/nginx"]}
+```
+
+Agent 容器固定以 UID 65532 的非 root 用户运行。若宿主目录是 `0700`（例如
+`/root`），即使 Docker 已完成 bind mount，Agent 仍会收到 `permission denied`。
+仅给实际需要的目录授予遍历/读取 ACL，不要把 Agent 改成 root：
+
+```sh
+sudo setfacl -m u:65532:--x /root
+sudo setfacl -R -m u:65532:rX /root/nginx
+```
+
 ## Agent 状态、临时空间与权限
 
 - `bmc-agent-state` 保存 `identity.json`，不能删除或在多台 Agent 间共享。

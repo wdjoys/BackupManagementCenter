@@ -26,7 +26,10 @@ RUN sed -i "s|deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g; s|security.debian
     install -m 0755 "/tmp/rclone/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone && \
     rm -rf /tmp/rclone /tmp/rclone.zip
 COPY --from=go-build /out/backup-center-agent /usr/local/bin/backup-center-agent
-RUN useradd --system --home-dir /var/lib/bmc-agent --create-home --shell /usr/sbin/nologin bmc-agent && \
+# 固定 UID/GID 65532：compose 中 scratch tmpfs 必须显式指定属主才能匹配
+# 运行用户，同时与 Server 镜像的 distroless nonroot 约定保持一致。
+RUN groupadd --system --gid 65532 bmc-agent && \
+    useradd --system --uid 65532 --gid bmc-agent --home-dir /var/lib/bmc-agent --create-home --shell /usr/sbin/nologin bmc-agent && \
     mkdir -p /var/lib/bmc-agent/scratch && chown -R bmc-agent:bmc-agent /var/lib/bmc-agent
 USER bmc-agent:bmc-agent
 VOLUME ["/var/lib/bmc-agent", "/backup-sources"]

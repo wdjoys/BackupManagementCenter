@@ -30,7 +30,9 @@ services:
     read_only: true
     tmpfs:
       - /tmp:mode=0700
-      - /var/lib/bmc-agent/scratch:mode=0700,size=${BMC_SCRATCH_SIZE:-10g}
+      # tmpfs 缺省归 root:root，而容器以 uid 65532 运行；必须显式对齐，
+      # 否则所有任务在创建临时目录时报 permission denied。
+      - /var/lib/bmc-agent/scratch:uid=65532,gid=65532,mode=0700,size=${BMC_SCRATCH_SIZE:-10g}
     security_opt:
       - no-new-privileges:true
 

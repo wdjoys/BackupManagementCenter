@@ -87,7 +87,11 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 	}
 
 	// Create private temp directory
-	_ = os.MkdirAll(r.dataDir, 0o700)
+	if err := os.MkdirAll(r.dataDir, 0o700); err != nil {
+		log.Printf("[ERROR] create data dir: %v", err)
+		r.sendErrorResult(stream, runID, bmcv1.RunResult_FAILED, "temp_dir_failed", err.Error())
+		return
+	}
 	tempDir, err := os.MkdirTemp(r.dataDir, "bmc-run-*")
 	if err != nil {
 		log.Printf("[ERROR] create temp dir: %v", err)

@@ -152,7 +152,7 @@ BMC_SOURCE_APP=/srv/myapp
 ## Agent 状态、临时空间与权限
 
 - `bmc-agent-state` 保存 `identity.json`，不能删除或在多台 Agent 间共享。
-- 临时导出和恢复使用 `/var/lib/bmc-agent/scratch`，由 Compose 的 tmpfs 提供。
+- 临时导出和恢复使用 `/var/lib/bmc-agent/scratch`，由 Compose 的 tmpfs 提供。tmpfs 缺省归 root:root，模板已显式指定 `uid=65532,gid=65532` 与镜像内用户（Dockerfile.agent 固定 UID/GID 65532）对齐；缺失属主会导致所有任务报 `mkdir ...: permission denied`。
 - `BMC_SCRATCH_SIZE` 应至少为最大逻辑数据库导出的 1.2 倍；空间不足时任务会失败并返回 `insufficient_temp_space`。
 - 容器以非 root 用户运行，并启用 `no-new-privileges`。
 - 只读源目录仍可能包含敏感数据，应限制 Docker 主机访问权限并保护宿主机 Docker 权限。

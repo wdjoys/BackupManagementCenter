@@ -542,6 +542,20 @@ nc -zv backup.example.com 9090
 #   自签证书场景需在 Agent 侧安装 CA 或设置 BMC_DEV_INSECURE=1。
 ```
 
+### 任务失败：`mkdir /var/lib/bmc-agent/scratch/bmc-run-*: permission denied`
+
+Agent 临时目录（`BMC_AGENT_DATA_DIR`，默认 `<state>/scratch`）对运行用户不可写。按部署方式处理：
+
+```sh
+# systemd：目录属主必须是 bmc-agent（曾以 root 手动运行过 agent 的主机常见）
+sudo chown -R bmc-agent:bmc-agent /var/lib/bmc-agent && sudo chmod 700 /var/lib/bmc-agent
+
+# Docker Compose：scratch 是独立 tmpfs，缺省归 root:root 所有。
+# 模板已通过 uid=65532,gid=65532 修复；旧部署重建 Agent 容器后，
+# 若状态卷内旧文件属主不是 65532，执行一次：
+docker run --rm -v bmc-agent-state:/data alpine chown -R 65532:65532 /data
+```
+
 ### 备份任务失败：`insufficient_temp_space`
 
 数据库导出的临时空间不足。解决：

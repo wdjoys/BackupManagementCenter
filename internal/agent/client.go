@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,11 +20,36 @@ import (
 	"backupmanagementcenter/internal/version"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
+
+// ErrRevoked is returned by Run when the server permanently rejected the
+// agent's credentials because it was revoked. Retrying can never succeed:
+// the process exits and re-enrollment with a fresh token is required.
+var ErrRevoked = errors.New("agent revoked on server")
+
+// isRevokedErr reports whether err is the server's PermissionDenied
+// rejection of a revoked agent. Other PermissionDenied cases (e.g. version
+// mismatch) must keep retrying. The error may be wrapped.
+func isRevokedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var gs interface{ GRPCStatus() *status.Status }
+	if errors.As(err, &gs) {
+		if st := gs.GRPCStatus(); st != nil &&
+			st.Code() == codes.PermissionDenied &&
+			strings.Contains(st.Message(), "revoked") {
+			return true
+		}
+	}
+	return strings.Contains(err.Error(), "agent is revoked")
+}
 
 // ConnectClient manages the bidirectional gRPC stream to the server.
 type ConnectClient struct {
@@ -100,8 +127,11 @@ func (c *ConnectClient) Run(ctx context.Context) error {
 		// Run stream — blocks until disconnect
 		if err := c.streamLoop(streamCtx); err != nil && ctx.Err() == nil {
 			log.Printf("[WARN] stream disconnected: %v", err)
+			if isRevokedErr(err) {
+				log.Printf("[ERROR] credentials permanently rejected; stop reconnecting — re-enroll with a fresh token to use this agent again")
+				return fmt.Errorf("%w (%v)", ErrRevoked, err)
+			}
 		}
-
 		c.mu.Lock()
 		c.cancelStream = nil
 		c.mu.Unlock()

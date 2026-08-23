@@ -75,6 +75,14 @@ export default {
     title: 'Agent',
     generateToken: '生成注册令牌',
     revoke: '撤销',
+    rename: '重命名',
+    renamed: 'Agent 已重命名',
+    renameFailed: '重命名失败',
+    renameDialog: {
+      title: '重命名 Agent',
+      message: '请输入新的 Agent 名称：',
+      empty: '名称不能为空',
+    },
     loadFailed: '加载 Agent 列表失败，请确认服务端是否在运行。',
     columns: {
       hostname: '主机名',
@@ -109,6 +117,7 @@ export default {
     online: '在线',
     offline: '离线',
     ready: '就绪',
+    revoked: '已撤销',
     pending: '等待中',
     error: '错误',
     unknown: '未知',

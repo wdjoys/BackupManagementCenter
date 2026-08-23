@@ -75,6 +75,14 @@ export default {
     title: 'Agents',
     generateToken: 'Generate Enrollment Token',
     revoke: 'Revoke',
+    rename: 'Rename',
+    renamed: 'Agent renamed',
+    renameFailed: 'Rename failed',
+    renameDialog: {
+      title: 'Rename Agent',
+      message: 'Enter the new agent name:',
+      empty: 'Name cannot be empty',
+    },
     loadFailed: 'Failed to load agents. Is the server running?',
     columns: {
       hostname: 'Hostname',
@@ -109,6 +117,7 @@ export default {
     online: 'Online',
     offline: 'Offline',
     ready: 'Ready',
+    revoked: 'Revoked',
     pending: 'Pending',
     error: 'Error',
     unknown: 'Unknown',

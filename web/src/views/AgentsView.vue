@@ -66,9 +66,17 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('common.name')" width="180">
+      <el-table-column :label="t('common.name')" width="200">
         <template #default="{ row }">
-          {{ row.name }}
+          <span>{{ row.name }}</span>
+          <el-button
+            text
+            size="small"
+            :title="t('agents.rename')"
+            @click="handleRename(row)"
+          >
+            <el-icon><Edit /></el-icon>
+          </el-button>
         </template>
       </el-table-column>
       <el-table-column :label="t('agents.columns.hostname')">
@@ -91,9 +99,12 @@
           <el-tag size="small">{{ row.version }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="t('common.status')" width="100">
+      <el-table-column :label="t('common.status')" width="110">
         <template #default="{ row }">
-          <el-tag :type="row.status === 'online' ? 'success' : 'danger'">
+          <el-tag v-if="row.revoked" type="info" effect="dark">
+            {{ t('status.revoked') }}
+          </el-tag>
+          <el-tag v-else :type="row.status === 'online' ? 'success' : 'danger'">
             {{ statusText(row.status) }}
           </el-tag>
         </template>
@@ -114,6 +125,7 @@
             type="danger"
             text
             size="small"
+            :disabled="row.revoked"
             @click="handleRevoke(row)"
           >
             {{ t('agents.revoke') }}
@@ -161,11 +173,10 @@
     </el-dialog>
   </div>
 </template>
-
 <script setup lang="ts">
+import { apiGet, apiPost, apiDelete, apiPatch } from '@/api/client'
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { apiGet, apiPost, apiDelete } from '@/api/client'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { translateEnum, formatDateTime } from '@/i18n'
 import type { Agent, EnrollmentTokenResponse } from '@/api/types'
@@ -248,6 +259,31 @@ async function handleRevoke(agent: any): Promise<void> {
   } catch (err: any) {
     if (err !== 'cancel') {
       ElMessage.error(err.message || t('agents.revokeFailed'))
+    }
+  }
+}
+
+async function handleRename(agent: any): Promise<void> {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      t('agents.renameDialog.message'),
+      t('agents.renameDialog.title'),
+      {
+        inputValue: agent.name,
+        inputPattern: /\S+/,
+        inputErrorMessage: t('agents.renameDialog.empty'),
+        confirmButtonText: t('common.save'),
+        cancelButtonText: t('common.cancel'),
+      },
+    )
+    const name = String(value || '').trim()
+    if (!name) return
+    await apiPatch(`/agents/${agent.id}`, { name })
+    ElMessage.success(t('agents.renamed'))
+    await loadAgents()
+  } catch (err: any) {
+    if (err !== 'cancel') {
+      ElMessage.error(err.message || t('agents.renameFailed'))
     }
   }
 }

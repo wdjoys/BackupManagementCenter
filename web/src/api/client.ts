@@ -90,6 +90,8 @@ export const apiPost = <T>(path: string, body?: unknown) =>
 
 export const apiPut = <T>(path: string, body: unknown) =>
   api<T>(path, { method: 'PUT', body: JSON.stringify(body) })
+export const apiPatch = <T>(path: string, body: unknown) =>
+  api<T>(path, { method: 'PATCH', body: JSON.stringify(body) })
 
 export const apiDelete = (path: string) =>
   api<void>(path, { method: 'DELETE' })

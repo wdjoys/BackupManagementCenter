@@ -353,6 +353,34 @@ func TestAgentUpsertAndGet(t *testing.T) {
 	}
 }
 
+func TestAgentRename(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+		ID: "agent-1", Name: "a", Hostname: "h",
+		OS: "linux", Version: "1.0", Status: model.AgentOffline,
+		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
+	})
+
+	if err := ts.RenameAgent(ctx, "agent-1", "renamed"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ts.GetAgent(ctx, "agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "renamed" {
+		t.Fatalf("name not updated: %q", got.Name)
+	}
+
+	if err := ts.RenameAgent(ctx, "missing", "x"); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestStorageTarget(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)

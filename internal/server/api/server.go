@@ -11,11 +11,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-
-	"backupmanagementcenter/internal/server/events"
-	"backupmanagementcenter/internal/server/jobs"
-	"backupmanagementcenter/internal/server/metrics"
-	"backupmanagementcenter/internal/server/store"
+	"backupmanagementcenter/internal/server/agentreg"
+ 	"backupmanagementcenter/internal/server/events"
+ 	"backupmanagementcenter/internal/server/jobs"
+ 	"backupmanagementcenter/internal/server/metrics"
+ 	"backupmanagementcenter/internal/server/store"
 )
 
 // Server carries the dependencies of the HTTP layer.
@@ -25,6 +25,8 @@ type Server struct {
 	Met     *metrics.Metrics
 	Jobs    *jobs.Orchestrator
 	Version string
+	// Reg is the agent connection registry; revoke kicks live streams.
+	Reg *agentreg.Registry
 	// Ready reports overall server readiness for /health/ready.
 	Ready func() bool
 }
@@ -63,6 +65,7 @@ func New(s *Server) http.Handler {
 			})
 			r.Get("/dashboard", s.handleDashboard)
 
+			r.Patch("/agents/{id}", s.handleRenameAgent)
 			r.Get("/agents", s.handleListAgents)
 			r.Delete("/agents/{id}", s.handleRevokeAgent)
 			r.Post("/enrollment-tokens", s.handleCreateEnrollmentToken)

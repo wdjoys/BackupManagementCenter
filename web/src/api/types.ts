@@ -11,6 +11,7 @@ export interface Agent {
   arch: string
   version: string
   status: 'online' | 'offline'
+  revoked?: boolean
   last_seen_at: string
   enrolled_at: string
   capabilities: ToolCapability[]

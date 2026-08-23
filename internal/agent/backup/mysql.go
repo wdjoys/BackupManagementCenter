@@ -37,6 +37,9 @@ func (a *MySQLAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
 	}
+	if err := ValidateExtraArgs(KindMySQL, s.ExtraArgs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -49,7 +52,7 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 
 	// Write defaults-extra-file (0600)
-	cnfContent := fmt.Sprintf("[client]\nuser=%s\npassword=%s\nhost=%s\nport=%d\n", source.Username, rc.Secrets.DBPassword, source.Host, source.Port)
+	cnfContent := fmt.Sprintf("[client]\nuser=%s\npassword=\"%s\"\nhost=\"%s\"\nport=%d\n", mysqlOptionValue(source.Username), mysqlOptionValue(rc.Secrets.DBPassword), mysqlOptionValue(source.Host), source.Port)
 	cnfFile, err := writeSecretFile(rc.TempDir, "my.cnf", cnfContent)
 	if err != nil {
 		return nil, fmt.Errorf("write my.cnf: %w", err)
@@ -57,6 +60,24 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 
 	toolVersions := make(map[string]string)
 	mysqldumpPath := toolPath("mysqldump")
+	logLine := func(l string) { rc.Logf("info", "%s", l) }
+	// Non-transactional tables are not protected by --single-transaction and
+	// can change while the dump is running. Surface the count before starting
+	// the backup so operators can schedule a maintenance window if needed.
+	nonTransactionalQuery := "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema NOT IN ('information_schema','mysql','performance_schema','sys') AND engine IS NOT NULL AND UPPER(engine) NOT IN ('INNODB','NDBCLUSTER')"
+	if source.Database != "" && source.Database != "all" {
+		nonTransactionalQuery += " AND table_schema = '" + strings.ReplaceAll(source.Database, "'", "''") + "'"
+	}
+	var nonTransactional string
+	if _, checkErr := rc.Exec.Run(ctx, Cmd{Exe: toolPath("mysql"), Args: []string{"--defaults-extra-file=" + cnfFile, "-N", "-s", "-e", nonTransactionalQuery}}, func(line string) {
+		nonTransactional = strings.TrimSpace(line)
+	}, logLine); checkErr == nil {
+		if count, parseErr := strconv.Atoi(nonTransactional); parseErr == nil && count > 0 {
+			rc.Logf("warn", "detected %d non-transactional MySQL tables; dump may be inconsistent", count)
+		}
+	} else {
+		rc.Logf("warn", "could not check non-transactional MySQL tables: %v", checkErr)
+	}
 
 	dumpFile := filepath.Join(stagingDir, fmt.Sprintf("%s.sql", rc.Task.PlanID))
 	args := []string{
@@ -72,7 +93,6 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 	args = append(args, source.ExtraArgs...)
 
-	logLine := func(l string) { rc.Logf("info", "%s", l) }
 	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, logLine)
 	if err != nil || exitCode != 0 {
 		return nil, fmt.Errorf("mysqldump failed (exit %d): %w", exitCode, err)
@@ -114,6 +134,10 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}, nil
 }
 
+func mysqlOptionValue(v string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(v, `\`, `\\`), `"`, `\"`), "\n", `\n`)
+}
+
 // Restore imports restored snapshot data into target MySQL/MariaDB.
 func (a *MySQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 	db := spec.Database
@@ -135,9 +159,16 @@ func (a *MySQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 	if manifest.Adapter != KindMySQL {
 		return fmt.Errorf("manifest adapter mismatch: %s", manifest.Adapter)
 	}
+	if len(manifest.Databases) > 0 && manifest.Databases[0].Database == "all" && db.TargetDatabase != "all" {
+		return errors.New("all-databases MySQL snapshot requires target_database=all")
+	}
+	if len(manifest.Databases) > 0 && manifest.Databases[0].Database != "all" && db.TargetDatabase == "all" {
+		return errors.New("single-database MySQL snapshot requires an explicit target_database")
+	}
 
 	// Write defaults-extra-file for target in stagingDir
-	cnfContent := fmt.Sprintf("[client]\nuser=%s\npassword=%s\nhost=%s\nport=%d\n", db.TargetUsername, spec.Secrets.DBPassword, db.TargetHost, db.TargetPort)
+	cnfContent := fmt.Sprintf("[client]\nuser=%s\npassword=\"%s\"\nhost=\"%s\"\nport=%d\n",
+		mysqlOptionValue(db.TargetUsername), mysqlOptionValue(spec.Secrets.DBPassword), mysqlOptionValue(db.TargetHost), db.TargetPort)
 	cnfFile, err := writeSecretFile(stagingDir, "my.cnf", cnfContent)
 	if err != nil {
 		return fmt.Errorf("write my.cnf: %w", err)
@@ -145,10 +176,26 @@ func (a *MySQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 
 	mysqlPath := toolPath("mysql")
 	logLine := func(l string) { spec.Logf("info", "%s", l) }
+	if db.TargetDatabase != "" && db.TargetDatabase != "all" {
+		quoted := "`" + strings.ReplaceAll(db.TargetDatabase, "`", "``") + "`"
+		sql := "CREATE DATABASE IF NOT EXISTS " + quoted
+		if db.ReplaceExisting {
+			sql = "DROP DATABASE IF EXISTS " + quoted + "; CREATE DATABASE " + quoted
+		}
+		setupArgs := []string{
+			"--binary-mode", "--defaults-extra-file=" + cnfFile,
+			"-h", db.TargetHost, "-P", strconv.Itoa(db.TargetPort), "-u", db.TargetUsername,
+			"-e", sql,
+		}
+		if exit, setupErr := spec.Exec.Run(ctx, Cmd{Exe: mysqlPath, Args: setupArgs}, logLine, logLine); setupErr != nil || exit != 0 {
+			return fmt.Errorf("prepare mysql target database failed (exit %d): %w", exit, setupErr)
+		}
+	}
 
 	for _, dbe := range manifest.Databases {
 		dumpFile := filepath.Join(stagingDir, dbe.File)
-		// Build shell pipeline: mysql < dumpfile
+		// Feed the dump through stdin. Keeping the dump path out of a shell
+		// command avoids command injection and preserves spaces/quotes safely.
 		mysqlArgs := []string{
 			"--binary-mode", "--defaults-extra-file=" + cnfFile,
 			"-h", db.TargetHost, "-P", strconv.Itoa(db.TargetPort), "-u", db.TargetUsername,
@@ -156,8 +203,7 @@ func (a *MySQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 		if db.TargetDatabase != "" && db.TargetDatabase != "all" {
 			mysqlArgs = append(mysqlArgs, db.TargetDatabase)
 		}
-		cmdLine := mysqlPath + " " + escapeShellArgs(mysqlArgs) + " < " + dumpFile
-		exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: "sh", Args: []string{"-c", cmdLine}}, logLine, logLine)
+		exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: mysqlPath, Args: mysqlArgs, StdinPath: dumpFile}, logLine, logLine)
 		if err != nil || exitCode != 0 {
 			return fmt.Errorf("mysql restore failed (exit %d): %w", exitCode, err)
 		}
@@ -185,17 +231,4 @@ func (a *MySQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 		spec.Logf("info", "mysql verification: %d tables", tableCount)
 	}
 	return nil
-}
-
-// escapeShellArgs joins args with shell-safe quoting.
-func escapeShellArgs(args []string) string {
-	out := make([]string, len(args))
-	for i, a := range args {
-		if strings.ContainsAny(a, " \t\n\"'$`\\") {
-			out[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
-		} else {
-			out[i] = a
-		}
-	}
-	return strings.Join(out, " ")
 }

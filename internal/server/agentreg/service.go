@@ -212,8 +212,9 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 
 	// Ensure cleanup on exit
 	defer func() {
-		s.reg.Unregister(agentID)
-		s.handleDisconnect(agentID)
+		if s.reg.UnregisterIf(agentID, streamCtx) {
+			s.handleDisconnect(agentID)
+		}
 	}()
 
 	// Wait for the Hello message
@@ -398,12 +399,24 @@ func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca 
 		}
 		return err
 	}
+	if run.AgentID != agentID {
+		return status.Error(codes.PermissionDenied, "run belongs to another agent")
+	}
 
 	if run.Status == model.RunDispatched {
-		return s.store.TransitionRun(ctx, runID, model.RunDispatched, model.RunRunning, func(r *model.Run) {
+		err := s.store.TransitionRun(ctx, runID, model.RunDispatched, model.RunRunning, func(r *model.Run) {
 			now := time.Now().UTC()
 			r.StartedAt = &now
+			r.LeaseExpiresAt = nil
 		})
+		if err == nil && run.Operation == model.OpRestore {
+			if rs, ok := s.store.(interface {
+				UpdateRestorePhase(context.Context, string, string) error
+			}); ok {
+				_ = rs.UpdateRestorePhase(ctx, runID, "running")
+			}
+		}
+		return err
 	}
 	return nil
 }
@@ -428,14 +441,22 @@ func (s *Service) handleRunProgress(ctx context.Context, agentID string, rp *bmc
 		}
 		return err
 	}
+	if run.AgentID != agentID {
+		return status.Error(codes.PermissionDenied, "run belongs to another agent")
+	}
 
 	run.Progress = progress
 	progressJSON, _ := json.Marshal(progress)
 	run.ProgressJSON = string(progressJSON)
 
-	// We publish progress event without needing to persist progress_json separately
-	// since it's typically updated through TransitionRun or direct DB update.
-	// For simplicity, we just publish the event.
+	if ps, ok := s.store.(interface {
+		UpdateRunProgress(context.Context, string, string) error
+	}); ok {
+		if err := ps.UpdateRunProgress(ctx, runID, run.ProgressJSON); err != nil {
+			return err
+		}
+	}
+
 	s.bus.Publish(runID, events.Event{
 		Type:     events.Progress,
 		Progress: &progress,
@@ -449,6 +470,16 @@ func (s *Service) handleRunLogBatch(ctx context.Context, agentID string, batch *
 	entries := batch.GetEntries()
 	if len(entries) == 0 {
 		return nil
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			return nil
+		}
+		return err
+	}
+	if run.AgentID != agentID {
+		return status.Error(codes.PermissionDenied, "run belongs to another agent")
 	}
 
 	logs := make([]model.RunLog, 0, len(entries))
@@ -516,11 +547,16 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	resultJSON := result.GetResultJson()
 	now := time.Now().UTC()
 
+	if run.AgentID != agentID {
+		return status.Error(codes.PermissionDenied, "run belongs to another agent")
+	}
+
 	err = s.store.TransitionRun(ctx, runID, model.RunRunning, toStatus, func(r *model.Run) {
 		r.FinishedAt = &now
 		r.ErrorCode = result.GetErrorCode()
 		r.ErrorMessage = result.GetErrorMessage()
 		r.SnapshotID = snapshotID
+		r.LeaseExpiresAt = nil
 		if len(resultJSON) > 0 {
 			r.ProgressJSON = string(resultJSON)
 		}
@@ -535,6 +571,7 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 			r.ErrorCode = result.GetErrorCode()
 			r.ErrorMessage = result.GetErrorMessage()
 			r.SnapshotID = snapshotID
+			r.LeaseExpiresAt = nil
 			if len(resultJSON) > 0 {
 				r.ProgressJSON = string(resultJSON)
 			}
@@ -547,6 +584,26 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	}
 	if err != nil {
 		return err
+	}
+	if isTerminal(toStatus) {
+		if run.Operation == model.OpRestore {
+			phase := "failed"
+			if toStatus == model.RunSucceeded {
+				phase = "succeeded"
+			}
+			if rs, ok := s.store.(interface {
+				UpdateRestorePhase(context.Context, string, string) error
+			}); ok {
+				_ = rs.UpdateRestorePhase(ctx, runID, phase)
+			}
+		}
+		if rs, ok := s.store.(interface {
+			DeleteRunSecrets(context.Context, string) error
+		}); ok {
+			if secretErr := rs.DeleteRunSecrets(ctx, runID); secretErr != nil {
+				log.Printf("failed to delete run secrets for %s: %v", runID, secretErr)
+			}
+		}
 	}
 
 	// Mark repository checked for backup/check operations on success
@@ -583,6 +640,13 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	return nil
 }
 
+// isTerminal reports whether a run status is immutable.  Keep this helper
+// local to the agent callback service so duplicate terminal callbacks can be
+// treated idempotently without coupling the service to the orchestrator.
+func isTerminal(status string) bool {
+	return status == model.RunSucceeded || status == model.RunFailed || status == model.RunCancelled
+}
+
 // ---------------------------------------------------------------------------
 // Disconnect handling
 // ---------------------------------------------------------------------------
@@ -593,19 +657,54 @@ func (s *Service) handleDisconnect(agentID string) {
 	// Set agent offline
 	_ = s.store.SetAgentStatus(ctx, agentID, model.AgentOffline, time.Now().UTC())
 
-	// Reset dispatched/running runs back to queued
+	// Reset only retry-safe work. A restore/init/forget operation may have
+	// changed external state before the stream disappeared, so silently
+	// replaying it would be destructive. Those runs become an explicit
+	// operator-visible failure instead.
 	runs, err := s.store.ListRunsByStatus(ctx, []string{model.RunDispatched, model.RunRunning})
 	if err == nil {
 		for _, run := range runs {
 			if run.AgentID == agentID {
-				_ = s.store.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
-					r.StartedAt = nil
-				})
+				if retryableOperation(run.Operation) {
+					_ = s.store.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
+						r.StartedAt = nil
+						r.LeaseExpiresAt = nil
+						r.ErrorCode = ""
+						r.ErrorMessage = ""
+					})
+					continue
+				}
+				finished := time.Now().UTC()
+				if err := s.store.TransitionRun(ctx, run.ID, run.Status, model.RunFailed, func(r *model.Run) {
+					r.FinishedAt = &finished
+					r.ErrorCode = model.ErrAgentDisconnected
+					r.ErrorMessage = "agent stream disconnected during a non-retryable operation"
+					r.LeaseExpiresAt = nil
+				}); err == nil {
+					if rs, ok := s.store.(interface {
+						DeleteRunSecrets(context.Context, string) error
+					}); ok {
+						_ = rs.DeleteRunSecrets(ctx, run.ID)
+					}
+					if nerr := s.notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
+						notification.LogFailure(run.ID, nerr)
+					}
+				}
 			}
 		}
 	}
 
 	s.reg.notifyDisconnect(agentID)
+}
+
+func retryableOperation(op string) bool {
+	switch op {
+	case model.OpBackup, model.OpCheck, model.OpSnapshots, model.OpSnapshotLs,
+		model.OpValidatePaths, model.OpProbeCaps, model.OpVerifyRemote:
+		return true
+	default:
+		return false
+	}
 }
 
 // offlineLoop periodically checks for agents that haven't sent a heartbeat

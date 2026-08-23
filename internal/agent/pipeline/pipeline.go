@@ -39,10 +39,14 @@ func (e *PipelineError) Unwrap() error { return e.Cause }
 
 // Deps are process-wide facilities provided by the agent runtime.
 type Deps struct {
-	Tools    map[string]model.ToolInfo
-	Exec     backup.Executor
-	Logf     func(level, format string, args ...any)
-	Progress func(model.Progress)
+	Tools               map[string]model.ToolInfo
+	Exec                backup.Executor
+	Logf                func(level, format string, args ...any)
+	Progress            func(model.Progress)
+	SourceRoots         []string
+	RestoreRoots        []string
+	ScratchMinFreeBytes int64
+	MaxConcurrency      int
 }
 
 // Result mirrors proto RunResult payload fields produced by successful ops.
@@ -103,6 +107,15 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	if !ok {
 		return nil, &PipelineError{Code: "invalid_plan", Message: "unknown kind: " + task.Kind}
 	}
+	if task.Kind == "filesystem" || task.Kind == "sqlite" {
+		paths := task.Source.Paths
+		if task.Kind == "sqlite" {
+			paths = []string{task.Source.Path}
+		}
+		if err := validateAllowedPaths(paths, d.SourceRoots, false); err != nil {
+			return nil, &PipelineError{Code: "path_not_allowed", Message: "source path is outside configured allowlist", Cause: err}
+		}
+	}
 
 	spec := backup.PlanSpec{Kind: task.Kind, Source: task.Source, AgentID: ""}
 	if err := adapter.Validate(ctx, spec); err != nil {
@@ -110,10 +123,25 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	}
 
 	// Space check for database kinds
-	if task.Kind != "filesystem" && task.Source.EstimatedDumpBytes > 0 {
-		required := task.Source.EstimatedDumpBytes * 12 / 10
-		if err := checkTempSpace(tempDir, required); err != nil {
-			return nil, err
+	if task.Kind != "filesystem" {
+		const maxLogicalBackupBytes int64 = 100 << 30
+		estimated := task.Source.EstimatedDumpBytes
+		if task.Kind == "sqlite" && estimated <= 0 {
+			if info, statErr := os.Stat(task.Source.Path); statErr == nil {
+				estimated = info.Size()
+			}
+		}
+		if estimated > maxLogicalBackupBytes {
+			return nil, &PipelineError{Code: model.ErrPhysicalBackupRequired, Message: "logical backup exceeds 100 GiB; physical/incremental backup required"}
+		}
+		if estimated > 0 {
+			required := estimated * 13 / 10
+			if d.ScratchMinFreeBytes > required {
+				required = d.ScratchMinFreeBytes
+			}
+			if err := checkTempSpace(tempDir, required); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -138,10 +166,38 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	}
 
 	var snapshotID string
+	// A retry after an agent disconnect may have completed the upload but lost
+	// its terminal response. The run tag makes the backup idempotent: reuse the
+	// existing snapshot instead of creating a duplicate.
+	for _, tag := range task.Tags {
+		if strings.HasPrefix(tag, "run:") {
+			if snapshots, snapErr := restic.Snapshots(ctx, d.Exec, resticOpts); snapErr == nil {
+				for _, snap := range snapshots {
+					for _, existingTag := range snap.Tags {
+						if existingTag == tag {
+							snapshotID = snap.ID
+							break
+						}
+					}
+					if snapshotID != "" {
+						break
+					}
+				}
+			}
+			break
+		}
+	}
+	if snapshotID != "" {
+		if task.Kind != "filesystem" && artifact.StagingDir != "" {
+			_ = os.RemoveAll(artifact.StagingDir)
+		}
+		return &Result{SnapshotIDs: []string{snapshotID}}, nil
+	}
 	if task.Kind == "filesystem" {
 		_, snapshotID, err = restic.Backup(ctx, d.Exec, resticOpts, artifact.LivePaths, artifact.ExcludeFile, task.Tags, artifact.OneFileSystem, d.Progress)
 	} else {
-		_, snapshotID, err = restic.Backup(ctx, d.Exec, resticOpts, []string{artifact.StagingDir}, "", task.Tags, false, d.Progress)
+		resticOpts.WorkingDir = artifact.StagingDir
+		_, snapshotID, err = restic.Backup(ctx, d.Exec, resticOpts, []string{"."}, "", task.Tags, false, d.Progress)
 	}
 	if err != nil {
 		return nil, &PipelineError{Code: "backup_failed", Message: "restic backup failed", Cause: err}
@@ -149,12 +205,6 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 
 	if task.Kind != "filesystem" && artifact.StagingDir != "" {
 		os.RemoveAll(artifact.StagingDir)
-	}
-
-	if task.Retention.KeepLast > 0 || task.Retention.KeepDaily > 0 || task.Retention.KeepWeekly > 0 || task.Retention.KeepMonthly > 0 {
-		if err := restic.Forget(ctx, d.Exec, resticOpts, task.Retention, task.Tags); err != nil {
-			d.Logf("warn", "retention forget failed: %v", err)
-		}
 	}
 
 	return &Result{SnapshotIDs: []string{snapshotID}}, nil
@@ -184,13 +234,22 @@ func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task
 	if fs == nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "missing filesystem restore spec"}
 	}
+	if err := validateAllowedPaths([]string{fs.TargetPath}, d.RestoreRoots, true); err != nil {
+		return nil, &PipelineError{Code: "path_not_allowed", Message: "restore target is outside configured allowlist", Cause: err}
+	}
 
 	if dryRun {
-		prog, err := restic.RestoreDryRun(ctx, d.Exec, opts, fs.SnapshotID, fs.TargetPath, fs.IncludePaths)
+		prog, err := restic.RestoreDryRunWithOverwrite(ctx, d.Exec, opts, fs.SnapshotID, fs.TargetPath, fs.IncludePaths, fs.OverwriteMode)
 		if err != nil {
 			return nil, &PipelineError{Code: "restore_failed", Message: "dry run failed", Cause: err}
 		}
-		resultJSON, _ := json.Marshal(prog)
+		resultJSON, _ := json.Marshal(map[string]any{
+			"add":     prog.FilesAdded,
+			"changed": prog.FilesChanged,
+			"skipped": prog.FilesSkipped,
+			"delete":  prog.FilesDeleted,
+			"sample":  prog.Sample,
+		})
 		return &Result{ResultJSON: resultJSON}, nil
 	}
 
@@ -200,8 +259,11 @@ func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task
 		}
 	}
 
-	if err := restic.Restore(ctx, d.Exec, opts, fs.SnapshotID, fs.TargetPath, fs.IncludePaths); err != nil {
+	if err := restic.RestoreWithOverwrite(ctx, d.Exec, opts, fs.SnapshotID, fs.TargetPath, fs.IncludePaths, fs.OverwriteMode); err != nil {
 		return nil, &PipelineError{Code: "restore_failed", Message: "restore failed", Cause: err}
+	}
+	if err := validateRestoredSymlinks(fs.TargetPath); err != nil {
+		return nil, &PipelineError{Code: "path_not_allowed", Message: "restored symlink escapes target root", Cause: err}
 	}
 	return &Result{}, nil
 }
@@ -211,6 +273,11 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	db := task.Database
 	if db == nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "missing database restore spec"}
+	}
+	if task.Kind == "sqlite" {
+		if err := validateAllowedPaths([]string{db.TargetDatabase}, d.RestoreRoots, true); err != nil {
+			return nil, &PipelineError{Code: "path_not_allowed", Message: "sqlite restore target is outside configured allowlist", Cause: err}
+		}
 	}
 
 	adapter, ok := backup.For(task.Kind)
@@ -227,7 +294,10 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 		return nil, &PipelineError{Code: "restore_failed", Message: "restic restore snapshot failed", Cause: err}
 	}
 
-	manifestPath := filepath.Join(stagingDir, "manifest.json")
+	manifestPath, artifactRoot, err := findRestoredManifest(stagingDir)
+	if err != nil {
+		return nil, &PipelineError{Code: "restore_verification_failed", Message: "locate manifest failed", Cause: err}
+	}
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, &PipelineError{Code: "restore_verification_failed", Message: "read manifest failed", Cause: err}
@@ -238,6 +308,15 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	}
 	if manifest.Adapter != task.Kind {
 		return nil, &PipelineError{Code: "restore_verification_failed", Message: "manifest adapter mismatch: " + manifest.Adapter}
+	}
+	for _, dbe := range manifest.Databases {
+		if dbe.File == "" || dbe.File == ".." || filepath.IsAbs(dbe.File) || filepath.Clean(dbe.File) != dbe.File || strings.HasPrefix(dbe.File, ".."+string(filepath.Separator)) {
+			return nil, &PipelineError{Code: "restore_verification_failed", Message: "manifest contains an unsafe artifact path"}
+		}
+		artifactPath := filepath.Join(artifactRoot, dbe.File)
+		if info, statErr := os.Stat(artifactPath); statErr != nil || !info.Mode().IsRegular() {
+			return nil, &PipelineError{Code: "restore_verification_failed", Message: "manifest artifact is missing or not a regular file"}
+		}
 	}
 
 	if dryRun {
@@ -251,7 +330,7 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	restoreSpec := &backup.RestoreSpec{
 		SnapshotID: db.SnapshotID,
 		Kind:       task.Kind,
-		StagingDir: stagingDir,
+		StagingDir: artifactRoot,
 		Database:   db,
 		Secrets:    secrets,
 		Tools:      d.Tools,
@@ -265,6 +344,172 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 
 	os.RemoveAll(stagingDir)
 	return &Result{}, nil
+}
+
+func findRestoredManifest(root string) (manifestPath, artifactRoot string, err error) {
+	var found string
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || entry.Name() != "manifest.json" || !entry.Type().IsRegular() {
+			return nil
+		}
+		if found != "" {
+			return fmt.Errorf("multiple manifest.json files in restored snapshot")
+		}
+		found = path
+		return nil
+	})
+	if err != nil {
+		return "", "", err
+	}
+	if found == "" {
+		return "", "", fmt.Errorf("manifest.json not found under %s", root)
+	}
+	return found, filepath.Dir(found), nil
+}
+
+// validateAllowedPaths rejects paths that escape the explicitly configured
+// source/restore roots. An empty allowlist preserves local-development
+// compatibility; production Docker deployments must configure both lists.
+func validateAllowedPaths(paths, roots []string, allowMissing bool) error {
+	for _, p := range paths {
+		if p == "" {
+			return fmt.Errorf("empty path")
+		}
+		abs, err := filepath.Abs(filepath.Clean(p))
+		if err != nil {
+			return err
+		}
+		clean := filepath.ToSlash(filepath.Clean(abs))
+		volumeRoot := filepath.VolumeName(abs) + string(filepath.Separator)
+		if clean == "/" || (volumeRoot != string(filepath.Separator) && filepath.Clean(abs) == filepath.Clean(volumeRoot)) || strings.HasSuffix(clean, "/var/run/docker.sock") || clean == "/docker.sock" {
+			return fmt.Errorf("forbidden path: %s", p)
+		}
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	cleanRoots := make([]string, 0, len(roots))
+	for _, root := range roots {
+		abs, err := filepath.Abs(filepath.Clean(root))
+		if err != nil {
+			return err
+		}
+		rootClean := filepath.ToSlash(filepath.Clean(abs))
+		rootVolume := filepath.VolumeName(abs) + string(filepath.Separator)
+		if rootClean == "/" || (rootVolume != string(filepath.Separator) && filepath.Clean(abs) == filepath.Clean(rootVolume)) || strings.HasSuffix(rootClean, "/var/run/docker.sock") || rootClean == "/docker.sock" {
+			return fmt.Errorf("forbidden allowlist root: %s", root)
+		}
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = real
+		}
+		cleanRoots = append(cleanRoots, filepath.Clean(abs))
+	}
+	for _, p := range paths {
+		if p == "" {
+			return fmt.Errorf("empty path")
+		}
+		abs, err := filepath.Abs(filepath.Clean(p))
+		if err != nil {
+			return err
+		}
+		resolved, err := resolvePathForCheck(abs, allowMissing)
+		if err != nil {
+			return err
+		}
+		abs = resolved
+		if abs == filepath.VolumeName(abs)+string(filepath.Separator) {
+			return fmt.Errorf("root path is not allowed: %s", p)
+		}
+		ok := false
+		for _, root := range cleanRoots {
+			rel, err := filepath.Rel(root, abs)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return fmt.Errorf("path %q is outside configured roots", p)
+		}
+	}
+	return nil
+}
+
+func validateRestoredSymlinks(root string) error {
+	rootAbs, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return err
+	}
+	if real, evalErr := filepath.EvalSymlinks(rootAbs); evalErr == nil {
+		rootAbs = real
+	}
+	return filepath.WalkDir(rootAbs, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
+		target, readErr := os.Readlink(path)
+		if readErr != nil {
+			return readErr
+		}
+		resolved := target
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(filepath.Dir(path), resolved)
+		}
+		resolved, err = filepath.Abs(filepath.Clean(resolved))
+		if err != nil {
+			return err
+		}
+		if real, evalErr := filepath.EvalSymlinks(path); evalErr == nil {
+			resolved = real
+		} else {
+			_ = os.Remove(path)
+			return fmt.Errorf("symlink %q target cannot be resolved: %w", path, evalErr)
+		}
+		rel, relErr := filepath.Rel(rootAbs, resolved)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			// Remove only the newly restored link; never follow it and never
+			// delete a target outside the restore root.
+			_ = os.Remove(path)
+			return fmt.Errorf("symlink %q points outside restore root", path)
+		}
+		return nil
+	})
+}
+
+func resolvePathForCheck(abs string, allowMissing bool) (string, error) {
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(real), nil
+	} else if !allowMissing {
+		return "", err
+	}
+	// Resolve the nearest existing parent so a symlinked directory cannot
+	// escape the allowlist even when the final restore file is new.
+	missing := []string{}
+	cur := abs
+	for {
+		if _, err := os.Lstat(cur); err == nil {
+			real, err := filepath.EvalSymlinks(cur)
+			if err != nil {
+				return "", err
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				real = filepath.Join(real, missing[i])
+			}
+			return filepath.Clean(real), nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs, nil
+		}
+		missing = append(missing, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 // runCheck runs restic check.
@@ -284,7 +529,7 @@ func runCheck(ctx context.Context, d Deps, tempDir string, params []byte, secret
 	return &Result{ResultJSON: resultJSON}, nil
 }
 
-// runForget runs restic forget with retention policy, or restic init if
+// runForget runs restic forget (without prune) with retention policy, or restic init if
 // params is an InitTask (ResticInit=true). InitTask uses no Tags field.
 func runForget(ctx context.Context, d Deps, tempDir string, params []byte, secrets backup.SecretBundle) (*Result, error) {
 	// Try InitTask first
@@ -310,7 +555,7 @@ func runForget(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	if err != nil {
 		return nil, err
 	}
-	if err := restic.Forget(ctx, d.Exec, opts, task.Retention, nil); err != nil {
+	if err := restic.ForgetOnly(ctx, d.Exec, opts, task.Retention, nil); err != nil {
 		return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
 	}
 	return &Result{}, nil
@@ -458,6 +703,9 @@ func runValidatePaths(ctx context.Context, d Deps, tempDir string, params []byte
 	var task model.ValidatePathsTask
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal validate paths task", Cause: err}
+	}
+	if err := validateAllowedPaths(task.Paths, d.SourceRoots, false); err != nil {
+		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path is outside configured allowlist", Cause: err}
 	}
 	adapter, ok := backup.For("filesystem")
 	if !ok {

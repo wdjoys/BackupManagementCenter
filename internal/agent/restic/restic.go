@@ -20,6 +20,7 @@ type Options struct {
 	PasswordFile   string // path to 0600 password file
 	CacheDir       string // optional cache directory
 	RcloneConfFile string // 0600 rclone.conf path; required for rclone: repos
+	WorkingDir     string // optional working directory for relative backup paths
 }
 
 // Snapshot represents a restic snapshot from --json output.
@@ -69,7 +70,7 @@ func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []str
 
 	var snapshotID string
 	var lastSummary string
-	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
+	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env, Dir: opts.WorkingDir},
 		func(line string) {
 			// Parse JSONL output
 			var msg jsonMessage
@@ -180,12 +181,18 @@ func enriched(err error, output string) error {
 	return fmt.Errorf("%w; output: %s", err, out)
 }
 
-// RestoreDryRun runs `restic restore --dry-run --verbose=2` and parses stats.
+// RestoreDryRun keeps the historical API and uses restic's safe default.
 func RestoreDryRun(ctx context.Context, exec backup.Executor, opts Options, snapshotID, target string, includePaths []string) (*model.Progress, error) {
+	return RestoreDryRunWithOverwrite(ctx, exec, opts, snapshotID, target, includePaths, "always")
+}
+
+// RestoreDryRunWithOverwrite runs `restic restore --dry-run --verbose=2` with
+// the exact overwrite policy selected by the caller.
+func RestoreDryRunWithOverwrite(ctx context.Context, exec backup.Executor, opts Options, snapshotID, target string, includePaths []string, overwrite string) (*model.Progress, error) {
 	if opts.Exe == "" {
 		return nil, fmt.Errorf("restic exe not set")
 	}
-	args := []string{"restore", snapshotID, "--target", target, "--dry-run", "--verbose=2"}
+	args := []string{"restore", snapshotID, "--target", target, "--dry-run", "--verbose=2", "--overwrite", normalizeOverwrite(overwrite)}
 	if opts.RepoPath != "" {
 		args = append(args, "--repo", opts.RepoPath)
 	}
@@ -204,23 +211,32 @@ func RestoreDryRun(ctx context.Context, exec backup.Executor, opts Options, snap
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
 
-	var filesAdded, filesChanged int
+	var filesAdded, filesChanged, filesSkipped, filesDeleted int
 	var exampleLines []string
 
 	// Regex for restic verbose dry-run output
-	reSummary := regexp.MustCompile(`(?i)(added|changed|unmodified|scanned)\s*[:=]\s*(\d+)`)
+	reSummary := regexp.MustCompile(`(?i)\b(new|added|changed|unmodified|skipped|deleted|removed)\b[^0-9]*(\d+)`)
 
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
 		func(line string) {
 			// Parse verbose output for stats
 			if m := reSummary.FindStringSubmatch(line); m != nil {
-				if strings.EqualFold(m[1], "added") {
+				switch strings.ToLower(m[1]) {
+				case "new", "added":
 					if n, err := strconv.Atoi(m[2]); err == nil {
 						filesAdded = n
 					}
-				} else if strings.EqualFold(m[1], "changed") {
+				case "changed":
 					if n, err := strconv.Atoi(m[2]); err == nil {
 						filesChanged = n
+					}
+				case "unmodified", "skipped":
+					if n, err := strconv.Atoi(m[2]); err == nil {
+						filesSkipped = n
+					}
+				case "deleted", "removed":
+					if n, err := strconv.Atoi(m[2]); err == nil {
+						filesDeleted = n
 					}
 				}
 			}
@@ -246,18 +262,28 @@ func RestoreDryRun(ctx context.Context, exec backup.Executor, opts Options, snap
 	}
 
 	return &model.Progress{
-		Phase:      "dry_run",
-		FilesDone:  int64(filesAdded + filesChanged),
-		FilesTotal: int64(filesAdded + filesChanged),
+		Phase:        "dry_run",
+		FilesDone:    int64(filesAdded + filesChanged + filesDeleted),
+		FilesTotal:   int64(filesAdded + filesChanged + filesSkipped + filesDeleted),
+		FilesAdded:   int64(filesAdded),
+		FilesChanged: int64(filesChanged),
+		FilesSkipped: int64(filesSkipped),
+		FilesDeleted: int64(filesDeleted),
+		Sample:       exampleLines,
 	}, nil
 }
 
-// Restore runs `restic restore` to target directory.
+// Restore runs `restic restore` to target directory with restic's default
+// overwrite behavior.
 func Restore(ctx context.Context, exec backup.Executor, opts Options, snapshotID, target string, includePaths []string) error {
+	return RestoreWithOverwrite(ctx, exec, opts, snapshotID, target, includePaths, "always")
+}
+
+func RestoreWithOverwrite(ctx context.Context, exec backup.Executor, opts Options, snapshotID, target string, includePaths []string, overwrite string) error {
 	if opts.Exe == "" {
 		return fmt.Errorf("restic exe not set")
 	}
-	args := []string{"restore", snapshotID, "--target", target}
+	args := []string{"restore", snapshotID, "--target", target, "--overwrite", normalizeOverwrite(overwrite)}
 	if opts.RepoPath != "" {
 		args = append(args, "--repo", opts.RepoPath)
 	}
@@ -283,12 +309,26 @@ func Restore(ctx context.Context, exec backup.Executor, opts Options, snapshotID
 	return nil
 }
 
-// Forget runs `restic forget --prune --group-by host,tags` with retention.
+// Forget runs retention and prune. It is reserved for an explicit maintenance
+// run because prune locks the repository.
 func Forget(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string) error {
+	return forget(ctx, exec, opts, retention, tags, true)
+}
+
+// ForgetOnly applies retention without prune. Backups use this path so a
+// long-running prune cannot contend with the next upload.
+func ForgetOnly(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string) error {
+	return forget(ctx, exec, opts, retention, tags, false)
+}
+
+func forget(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string, prune bool) error {
 	if opts.Exe == "" {
 		return fmt.Errorf("restic exe not set")
 	}
-	args := []string{"forget", "--prune", "--group-by", "host,tags"}
+	args := []string{"forget", "--group-by", "host,tags"}
+	if prune {
+		args = append(args, "--prune")
+	}
 	if opts.RepoPath != "" {
 		args = append(args, "--repo", opts.RepoPath)
 	}
@@ -530,4 +570,13 @@ func NormalizeRepoPath(p string) string {
 		return "rclone:" + p
 	}
 	return p
+}
+
+func normalizeOverwrite(v string) string {
+	switch v {
+	case "never", "if-changed", "if-newer", "always":
+		return v
+	default:
+		return "always"
+	}
 }

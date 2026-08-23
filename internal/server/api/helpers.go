@@ -23,7 +23,12 @@ var stableCodes = []string{
 	model.ErrRestoreTargetNotEmpty,
 	model.ErrRestoreVerification,
 	model.ErrStorageRemoteUnreachable,
+	model.ErrDatabaseRestoreDisabled,
 	model.ErrTimeout,
+	model.ErrAgentDisconnected,
+	model.ErrPreRestoreBackupFailed,
+	model.ErrRollbackFailed,
+	model.ErrPhysicalBackupRequired,
 }
 
 func errorCode(err error) (string, bool) {

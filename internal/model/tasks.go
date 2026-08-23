@@ -10,8 +10,8 @@ type BackupTask struct {
 	Kind           string     `json:"kind"`
 	Repository     RepoAccess `json:"repository"`
 	Source         PlanSource `json:"source"`
-	Retention       Retention  `json:"retention,omitempty"` // run after successful backup (best effort)
-	Tags           []string   `json:"tags"`                // always contains plan:<id>, kind:<kind>
+	Retention      Retention  `json:"retention,omitempty"` // run after successful backup (best effort)
+	Tags           []string   `json:"tags"`                // contains plan:<id>, kind:<kind>, run:<id>
 	TimeoutSeconds int        `json:"timeout_seconds,omitempty"`
 }
 
@@ -67,22 +67,22 @@ type SnapshotLsTask struct {
 type FilesystemRestore struct {
 	SnapshotID    string   `json:"snapshot_id"`
 	IncludePaths  []string `json:"include_paths,omitempty"`
-	TargetPath    string   `json:"target_path"` // absolute; staging dir created by agent
+	TargetPath    string   `json:"target_path"`    // absolute; staging dir created by agent
 	OverwriteMode string   `json:"overwrite_mode"` // never|if-changed|always
 	DryRun        bool     `json:"dry_run"`
 }
 
 // DatabaseRestore is the target branch for database kinds.
 type DatabaseRestore struct {
-	SnapshotID      string `json:"snapshot_id"`
-	Kind            string `json:"kind"`
-	TargetHost      string `json:"target_host"`
-	TargetPort      int    `json:"target_port,omitempty"`
-	TargetUsername  string `json:"target_username,omitempty"`
-	TargetDatabase  string `json:"target_database"` // may be "all" for pg full-instance artifacts
-	ReplaceExisting bool   `json:"replace_existing"`
+	SnapshotID       string `json:"snapshot_id"`
+	Kind             string `json:"kind"`
+	TargetHost       string `json:"target_host"`
+	TargetPort       int    `json:"target_port,omitempty"`
+	TargetUsername   string `json:"target_username,omitempty"`
+	TargetDatabase   string `json:"target_database"` // may be "all" for pg full-instance artifacts
+	TargetAuthSource string `json:"target_auth_source,omitempty"`
+	ReplaceExisting  bool   `json:"replace_existing"`
 }
-
 
 // VerifyRemoteTask drives OPERATION_VERIFY_STORAGE_REMOTE: the agent writes
 // the conf to a private temp file and runs rclone listremotes + lsd.

@@ -13,7 +13,7 @@
 - Docker Compose v2，命令为 `docker compose`。
 - Server 主机可被 Agent 通过 TCP `9090` 访问。
 - 生产环境准备 TLS 证书、私钥和 32 字节主密钥。
-- Agent 主机根据备份类型准备数据库客户端；Agent 镜像已包含 `restic`、`rclone`、`sqlite3`、PostgreSQL 客户端和 MariaDB 客户端。MongoDB Database Tools 需要按目标环境额外安装或扩展镜像。
+- Agent 镜像已包含 `restic`、`rclone`、MongoDB Database Tools、`sqlite3`、PostgreSQL 客户端和 MariaDB 客户端。
 
 ## Server Compose 部署
 
@@ -106,7 +106,9 @@ BMC_SERVER_TLS=1
 BMC_ENROLLMENT_TOKEN=<一次性注册令牌>
 BMC_SOURCE_ETC=/etc
 BMC_SOURCE_SRV=/srv
-BMC_SCRATCH_SIZE=20g
+BMC_SOURCE_ROOTS=/backup-sources
+BMC_RESTORE_ROOTS=/backup-restore
+BMC_SCRATCH_MIN_FREE_BYTES=0
 ```
 
 启动 Agent：
@@ -152,8 +154,8 @@ BMC_SOURCE_APP=/srv/myapp
 ## Agent 状态、临时空间与权限
 
 - `bmc-agent-state` 保存 `identity.json`，不能删除或在多台 Agent 间共享。
-- 临时导出和恢复使用 `/var/lib/bmc-agent/scratch`，由 Compose 的 tmpfs 提供。tmpfs 缺省归 root:root，模板已显式指定 `uid=65532,gid=65532` 与镜像内用户（Dockerfile.agent 固定 UID/GID 65532）对齐；缺失属主会导致所有任务报 `mkdir ...: permission denied`。
-- `BMC_SCRATCH_SIZE` 应至少为最大逻辑数据库导出的 1.2 倍；空间不足时任务会失败并返回 `insufficient_temp_space`。
+- 临时导出和恢复使用 `/var/lib/bmc-agent/scratch` 独立持久卷（不再使用 10GB tmpfs），并由镜像内非 root 用户（UID/GID 65532）访问。生产环境必须设置 `BMC_SOURCE_ROOTS`、`BMC_RESTORE_ROOTS`，且两类挂载分别保持只读/读写隔离。
+- `bmc-agent-scratch` 持久卷应按最大逻辑数据库导出大小预留至少 1.3 倍空间；空间不足时任务会失败并返回 `insufficient_temp_space`。
 - 容器以非 root 用户运行，并启用 `no-new-privileges`。
 - 只读源目录仍可能包含敏感数据，应限制 Docker 主机访问权限并保护宿主机 Docker 权限。
 

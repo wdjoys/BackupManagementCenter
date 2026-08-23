@@ -209,7 +209,7 @@ secrets/server.key   # 私钥
 
 ### Agent Compose
 
-Agent 镜像内置：`restic 0.18.0`、`rclone 1.69.0`、`sqlite3`、PostgreSQL 客户端、MariaDB 客户端。MongoDB 工具需自行扩展镜像。
+Agent 镜像内置：`restic 0.18.0`、`rclone 1.69.0`、MongoDB Database Tools 100.12.2、`sqlite3`、PostgreSQL 客户端和 MariaDB 客户端。
 
 #### 第 1 步：获取注册令牌
 
@@ -223,7 +223,10 @@ BMC_SERVER_TLS=1
 BMC_ENROLLMENT_TOKEN=<粘贴一次性令牌>
 BMC_SOURCE_ETC=/etc
 BMC_SOURCE_SRV=/srv
-BMC_SCRATCH_SIZE=20g
+BMC_SOURCE_ROOTS=/backup-sources
+BMC_RESTORE_ROOT=/var/lib/bmc-restore
+BMC_RESTORE_ROOTS=/backup-restore
+BMC_AGENT_MAX_CONCURRENCY=2
 ```
 
 #### 第 3 步：启动
@@ -268,6 +271,10 @@ Agent 容器内的路径 ≠ 主机路径。当前模板挂载：
 - 不要挂载 `/` 或 `/var/run/docker.sock`。
 - 不要给 Agent 容器 `privileged: true`。
 - 只读挂载足够——恢复走 staging 目录再落盘，不需要对源目录写入。
+- `/var/lib/bmc-agent/scratch` 是独立持久卷，不再使用固定 10GB tmpfs；应按估算制品大小配置卷容量。
+- `/backup-restore` 必须是独立读写挂载，且 `BMC_RESTORE_ROOTS` 只列出允许覆盖的容器内路径。
+
+Server 端数据库恢复安全门由 `BMC_ENABLE_DATABASE_RESTORE=1` 显式开启；默认关闭，完成预恢复备份/回滚演练后才应设置。
 
 ---
 
@@ -552,8 +559,7 @@ Agent 临时目录（`BMC_AGENT_DATA_DIR`，默认 `<state>/scratch`）对运行
 # systemd：目录属主必须是 bmc-agent（曾以 root 手动运行过 agent 的主机常见）
 sudo chown -R bmc-agent:bmc-agent /var/lib/bmc-agent && sudo chmod 700 /var/lib/bmc-agent
 
-# Docker Compose：scratch 是独立 tmpfs，缺省归 root:root 所有。
-# 模板已通过 uid=65532,gid=65532 修复；旧部署重建 Agent 容器后，
+# Docker Compose：scratch 是独立持久卷；旧部署重建 Agent 容器后，
 # 若状态卷内旧文件属主不是 65532，执行一次：
 docker run --rm -v bmc-agent-state:/data alpine chown -R 65532:65532 /data
 ```
@@ -562,11 +568,11 @@ docker run --rm -v bmc-agent-state:/data alpine chown -R 65532:65532 /data
 
 数据库导出的临时空间不足。解决：
 
-- Compose：增大 `BMC_SCRATCH_SIZE`；
+- Compose：扩容 `bmc-agent-scratch` 卷；
 - systemd：扩大 `BMC_AGENT_DATA_DIR` 所在分区；
 - 或调小计划的 `estimated_dump_bytes`（如果高估了）。
 
-需求公式：`free_space ≥ estimated_dump_bytes × 1.2`。
+需求公式：`free_space ≥ estimated_dump_bytes × 1.3`。
 
 ### 备份失败：`repository_locked`
 

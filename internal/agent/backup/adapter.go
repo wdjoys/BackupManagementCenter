@@ -5,10 +5,30 @@ package backup
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"backupmanagementcenter/internal/model"
 )
+
+// ValidateExtraArgs permits only non-routing, non-authentication switches.
+// Output paths, credentials, hosts, and arbitrary command fragments are
+// always owned by the adapter and cannot be overridden by plan JSON.
+func ValidateExtraArgs(kind string, args []string) error {
+	allowed := map[string]map[string]bool{
+		KindPostgreSQL: map[string]bool{"--no-owner": true, "--no-privileges": true, "--no-acl": true, "--blobs": true, "--no-comments": true, "--no-publications": true, "--no-subscriptions": true, "--no-security-labels": true, "--inserts": true},
+		KindMySQL:      map[string]bool{"--single-transaction": true, "--quick": true, "--routines": true, "--events": true, "--triggers": true, "--hex-blob": true, "--skip-lock-tables": true},
+		KindMongoDB:    map[string]bool{},
+		KindSQLite:     map[string]bool{},
+	}
+	for _, arg := range args {
+		if strings.TrimSpace(arg) == "" || !allowed[kind][arg] {
+			return fmt.Errorf("extra_args contains disallowed option %q", arg)
+		}
+	}
+	return nil
+}
 
 // Plan kind constants, mirrored from model for convenience.
 const (
@@ -24,6 +44,8 @@ type Cmd struct {
 	Exe  string   // absolute path of the tool
 	Args []string // argv[1:]
 	Env  []string // extra KEY=VAL entries appended to the sanitized env
+	Dir  string   // optional working directory
+	StdinPath string // optional file connected to stdin
 }
 
 // Executor runs commands, streaming stdout/stderr lines to callbacks and

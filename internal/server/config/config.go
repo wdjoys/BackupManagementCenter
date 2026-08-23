@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 )
@@ -45,6 +46,12 @@ func LoadServer() (Server, error) {
 	case "auto", "none":
 	default:
 		return c, fmt.Errorf("config: BMC_TLS_MODE must be auto or none, got %q", c.TLSMode)
+	}
+	if c.PublicURL != "" {
+		u, err := url.Parse(c.PublicURL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return c, fmt.Errorf("config: BMC_PUBLIC_URL must be an absolute http(s) URL")
+		}
 	}
 	plaintext := c.TLSMode == "none"
 	if c.DevInsecure {

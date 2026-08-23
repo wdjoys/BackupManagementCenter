@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -75,9 +76,13 @@ func TestOSExecutor_EnvInjection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	probe := cmdForTest("printenv", "BMC_TEST_VAR")
+	if runtime.GOOS == "windows" {
+		probe = cmdForTest("echo", "%BMC_TEST_VAR%")
+	}
 	exitCode, err := exec.Run(ctx, backup.Cmd{
-		Exe: cmdForTest("printenv", "BMC_TEST_VAR").Exe, Args: cmdForTest("printenv", "BMC_TEST_VAR").Args,
-		Env:  []string{"BMC_TEST_VAR=hello-world"},
+		Exe: probe.Exe, Args: probe.Args,
+		Env: []string{"BMC_TEST_VAR=hello-world"},
 	}, func(line string) {
 		captured = append(captured, line)
 	}, nil)

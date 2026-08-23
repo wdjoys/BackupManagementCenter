@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -26,6 +27,26 @@ const (
 	idleTTL    = 12 * time.Hour
 	absoluteTL = 7 * 24 * time.Hour
 )
+
+type requestPolicyKey struct{}
+type requestPolicy struct{ forceSecure bool; publicOrigin string }
+
+// WithRequestPolicy marks requests received behind a trusted reverse proxy.
+// The public URL is used for Secure cookies and strict Origin validation.
+func WithRequestPolicy(r *http.Request, publicURL string) *http.Request {
+	policy := requestPolicy{forceSecure: publicURL != ""}
+	if u, err := url.Parse(publicURL); err == nil && u.Scheme != "" && u.Host != "" {
+		policy.publicOrigin = strings.TrimRight(u.Scheme+"://"+u.Host, "/")
+	}
+	return r.WithContext(context.WithValue(r.Context(), requestPolicyKey{}, policy))
+}
+
+func policyFor(r *http.Request) requestPolicy {
+	if p, ok := r.Context().Value(requestPolicyKey{}).(requestPolicy); ok { return p }
+	return requestPolicy{}
+}
+
+func secureRequest(r *http.Request) bool { return r.TLS != nil || policyFor(r).forceSecure }
 
 // SessionStore is the session-facing slice of store.Store.
 type SessionStore interface {
@@ -204,7 +225,7 @@ func SetSessionCookie(w http.ResponseWriter, r *http.Request, token string, expi
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   secureRequest(r),
 		Expires:  expires,
 	})
 }
@@ -216,7 +237,7 @@ func ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   secureRequest(r),
 		MaxAge:   -1,
 	})
 }
@@ -229,7 +250,7 @@ func SetCSRFCookie(w http.ResponseWriter, r *http.Request) (csrf string) {
 		Path:     "/",
 		HttpOnly: false, // JS must read it to echo X-CSRF-Token
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   secureRequest(r),
 		Expires:  time.Now().Add(absoluteTL),
 	})
 	return csrf
@@ -242,11 +263,11 @@ func CheckCSRF(r *http.Request) bool {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return true
 	}
-	if origin := r.Header.Get("Origin"); origin != "" {
-		host := r.Host
-		if !sameOrigin(origin, host) {
-			return false
-		}
+	origin := r.Header.Get("Origin")
+	if p := policyFor(r); p.publicOrigin != "" {
+		if origin == "" || !strings.EqualFold(strings.TrimRight(origin, "/"), p.publicOrigin) { return false }
+	} else if origin != "" {
+		if !sameOrigin(origin, r.Host) { return false }
 	}
 	c, err := r.Cookie(CSRFCookie)
 	if err != nil || c.Value == "" {

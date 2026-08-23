@@ -24,6 +24,10 @@ type RunStarter interface {
 	SystemRunCheck(ctx context.Context, repositoryID string) (runID string, err error)
 }
 
+type maintenanceStarter interface {
+	StartRetentionRun(ctx context.Context, repositoryID string) error
+}
+
 const (
 	tickInterval    = 15 * time.Second
 	repoCheckWindow = 7 * 24 * time.Hour
@@ -100,6 +104,50 @@ func (s *Scheduler) runTick(ctx context.Context, now time.Time) {
 	s.tickCron(ctx, now)
 	s.tickStaleQueued(ctx, now)
 	s.tickWeeklyRepoCheck(ctx, now)
+	s.tickMaintenance(ctx, now)
+}
+
+// tickMaintenance schedules forget (without prune) at most once per day per
+// repository. The repository queue serializes it after any active backup.
+func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
+	ms, ok := s.starter.(maintenanceStarter)
+	if !ok {
+		return
+	}
+	repos, err := s.store.ListRepositories(ctx)
+	if err != nil {
+		slog.Error("scheduler: ListRepositories", "error", err)
+		return
+	}
+	for _, repo := range repos {
+		runs, err := s.store.ListRuns(ctx, store.RunFilter{RepositoryID: repo.ID, Limit: 100,
+			Statuses: []string{model.RunQueued, model.RunDispatched, model.RunRunning, model.RunSucceeded}})
+		if err != nil {
+			continue
+		}
+		active := false
+		recent := false
+		for _, run := range runs {
+			if run.Operation == model.OpBackup && (run.Status == model.RunQueued || run.Status == model.RunDispatched || run.Status == model.RunRunning) {
+				active = true
+			}
+			if run.Operation == model.OpForget {
+				at := run.FinishedAt
+				if at == nil {
+					at = &run.QueuedAt
+				}
+				if now.Sub(*at) < 24*time.Hour {
+					recent = true
+				}
+			}
+		}
+		if active || recent {
+			continue
+		}
+		if err := ms.StartRetentionRun(ctx, repo.ID); err != nil {
+			slog.Error("scheduler: StartRetentionRun", "repositoryID", repo.ID, "error", err)
+		}
+	}
 }
 
 // tickCron parses every enabled plan, advances its in-memory cursor and calls
@@ -131,10 +179,22 @@ func (s *Scheduler) tickPlan(ctx context.Context, now time.Time, p model.Plan) {
 	next := sched.Next(now.In(loc)).UTC()
 
 	// Cursor is the slot this plan would fulfill if consumed. On first tick
-	// (or after restart) the cursor does not exist yet, so we only initialize.
+	// load it from SQLite so a server restart can catch up one missed slot.
 	prev, exists := s.cursors[p.ID]
+	if !exists {
+		if cs, ok := s.store.(interface {
+			GetScheduleCursor(context.Context, string) (time.Time, error)
+		}); ok {
+			if persisted, perr := cs.GetScheduleCursor(ctx, p.ID); perr == nil {
+				prev, exists = persisted, true
+			} else if !errors.Is(perr, store.ErrNotFound) {
+				slog.Error("scheduler: GetScheduleCursor", "planID", p.ID, "error", perr)
+			}
+		}
+	}
 	if !exists || prev.IsZero() {
 		s.cursors[p.ID] = next
+		s.saveCursor(ctx, p.ID, next)
 		return
 	}
 
@@ -148,6 +208,17 @@ func (s *Scheduler) tickPlan(ctx context.Context, now time.Time, p model.Plan) {
 		}
 	}
 	s.cursors[p.ID] = next
+	s.saveCursor(ctx, p.ID, next)
+}
+
+func (s *Scheduler) saveCursor(ctx context.Context, planID string, next time.Time) {
+	if cs, ok := s.store.(interface {
+		SaveScheduleCursor(context.Context, string, time.Time) error
+	}); ok {
+		if err := cs.SaveScheduleCursor(ctx, planID, next); err != nil {
+			slog.Error("scheduler: SaveScheduleCursor", "planID", planID, "error", err)
+		}
+	}
 }
 
 // tickStaleQueued fails queued runs whose deadline has passed and whose agent
@@ -198,6 +269,11 @@ func (s *Scheduler) tickStaleQueued(ctx context.Context, now time.Time) {
 			// existing error log and do not notify.
 			slog.Error("scheduler: TransitionRun", "runID", r.ID, "error", err)
 			continue
+		}
+		if rs, ok := s.store.(interface {
+			DeleteRunSecrets(context.Context, string) error
+		}); ok {
+			_ = rs.DeleteRunSecrets(ctx, r.ID)
 		}
 		// System runs (PlanID == "") are filtered inside the notifier.
 		if err := s.notifier.NotifyPlanFailure(ctx, r.ID); err != nil {

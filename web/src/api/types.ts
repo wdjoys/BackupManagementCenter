@@ -72,6 +72,7 @@ export interface PlanSource {
   port?: number
   username?: string
   database?: string
+  auth_source?: string
   extra_args?: string[]
   estimated_dump_bytes?: number
   path?: string
@@ -94,6 +95,7 @@ export interface Plan {
   timezone: string
   enabled: boolean
   source: PlanSource
+  credentials?: { password_set: boolean }
   repository_id: string
   retention: Retention
   timeout_seconds: number
@@ -123,6 +125,8 @@ export interface Run {
   snapshot_id: string | null
   error_code: string | null
   error_message: string | null
+  attempt?: number
+  lease_expires_at?: string | null
 }
 
 export interface RunLog {
@@ -144,11 +148,12 @@ export interface RestoreRequest {
 
 export type RestoreTarget =
   | { target_path: string; include_paths: string[]; overwrite_mode: 'never' | 'if-changed' | 'always' }
-  | { host: string; port: number; username: string; database: string }
+  | { host: string; port: number; username: string; database: string; auth_source?: string }
 
 export interface RestoreDryRun {
   add: number
   changed: number
+  skipped: number
   delete: number
   sample: string[]
 }
@@ -156,6 +161,9 @@ export interface RestoreDryRun {
 export interface RestoreResponse {
   restore_request_id: string
   run_id: string
+  pre_restore_run_id?: string
+  rollback_snapshot_id?: string
+  phase?: string
 }
 
 export interface Dashboard {
@@ -280,4 +288,5 @@ export interface DryRunRequest {
   snapshot_id: string
   include_paths: string[]
   target_path: string
+  overwrite_mode: 'never' | 'if-changed' | 'always'
 }

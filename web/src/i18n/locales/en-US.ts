@@ -46,7 +46,7 @@ export default {
       saved: 'Saved — takes effect immediately',
       cleared: 'Telegram notification settings cleared',
       help:
-        'Create a bot via @BotFather to get the token; add the bot to the target group/channel (or message it first) to obtain the chat ID. Notifications are sent after a failure is persisted; Telegram outages never affect job results.',
+        "Create a bot via {'@'}BotFather to get the token; add the bot to the target group/channel (or message it first) to obtain the chat ID. Notifications are sent after a failure is persisted; Telegram outages never affect job results.",
     },
   },
   layout: {
@@ -432,9 +432,10 @@ export default {
       allEntries: '/ (all entries in current directory)',
       includePathsHint: 'Select items to restore. Leave empty to restore everything under the snapshot.',
       dryRunResult: 'Dry-run Result',
-      add: 'Add',
-      changed: 'Changed',
-      deleteStat: 'Delete',
+        add: 'Add',
+        changed: 'Changed',
+        skipped: 'Skipped',
+        deleteStat: 'Delete',
       sampleChanges: 'Sample changes:',
       moreChanges: '... and {count} more',
       dryRunButton: 'Dry-run',

@@ -110,6 +110,7 @@ type Store interface {
 type RunFilter struct {
 	AgentID   string
 	PlanID    string
+	RepositoryID string
 	Statuses  []string
 	Operation string
 	Limit     int

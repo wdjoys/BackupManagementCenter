@@ -72,6 +72,21 @@ func (r *Registry) Unregister(agentID string) {
 	}
 }
 
+// UnregisterIf removes the stream only when it is the same stream context
+// returned by Register. This prevents an old connection, kicked by a newer
+// connection, from deleting the replacement and marking the agent offline.
+func (r *Registry) UnregisterIf(agentID string, streamCtx context.Context) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st, ok := r.streams[agentID]
+	if !ok || st.ctx != streamCtx {
+		return false
+	}
+	st.cancel()
+	delete(r.streams, agentID)
+	return true
+}
+
 // Send sends a message to the agent's stream.
 // Returns error if agent is not connected or context is cancelled.
 func (r *Registry) Send(agentID string, msg *bmcv1.ServerMessage) error {

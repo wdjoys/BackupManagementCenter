@@ -3,6 +3,8 @@ package backup
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"backupmanagementcenter/internal/model"
 )
 
 // PostgreSQLAdapter implements Adapter for PostgreSQL plans.
@@ -37,6 +41,9 @@ func (a *PostgreSQLAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
 	}
+	if err := ValidateExtraArgs(KindPostgreSQL, s.ExtraArgs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -49,7 +56,7 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 	}
 
 	// Write PGPASSFILE
-	pgpassContent := fmt.Sprintf("%s:%d:*:%s:%s\n", source.Host, source.Port, source.Username, rc.Secrets.DBPassword)
+	pgpassContent := fmt.Sprintf("%s:%d:*:%s:%s\n", pgpassField(source.Host), source.Port, pgpassField(source.Username), pgpassField(rc.Secrets.DBPassword))
 	pgpassFile, err := writeSecretFile(rc.TempDir, "pgpass", pgpassContent)
 	if err != nil {
 		return nil, fmt.Errorf("write pgpass: %w", err)
@@ -75,7 +82,10 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 	if source.Database == "all" {
 		// globals dump
 		globalsFile := filepath.Join(stagingDir, "globals.sql")
-		args := []string{"--globals-only", "--file=" + globalsFile}
+		args := []string{
+			"--globals-only", "--file=" + globalsFile,
+			"--host", source.Host, "--port", strconv.Itoa(source.Port), "--username", source.Username,
+		}
 		args = append(args, source.ExtraArgs...)
 		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dumpall"), Args: args, Env: env}, logLine, logLine)
 		if err != nil || exitCode != 0 {
@@ -99,7 +109,7 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 		}
 
 		for _, db := range dbNames {
-			dumpFile := filepath.Join(stagingDir, fmt.Sprintf("db-%s.pgdump", db))
+			dumpFile := filepath.Join(stagingDir, postgresDumpFilename(db))
 			args := []string{
 				"--format=custom",
 				"--file=" + dumpFile,
@@ -113,7 +123,7 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 			if err != nil || exitCode != 0 {
 				return nil, fmt.Errorf("pg_dump %s failed (exit %d): %w", db, exitCode, err)
 			}
-			dbExports = append(dbExports, DbExport{Database: db, File: fmt.Sprintf("db-%s.pgdump", db), Format: "pgdump"})
+			dbExports = append(dbExports, DbExport{Database: db, File: filepath.Base(dumpFile), Format: "pgdump"})
 		}
 		toolVersions["pg_dump"] = getToolVersion(ctx, rc.Exec, toolPath("pg_dump"), env)
 		toolVersions["psql"] = getToolVersion(ctx, rc.Exec, toolPath("psql"), env)
@@ -163,6 +173,22 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 	}, nil
 }
 
+// postgresDumpFilename never incorporates a database name directly into a
+// path. PostgreSQL identifiers may contain slashes and other path separators;
+// a stable digest keeps artifacts inside the staging directory and avoids
+// collisions between unusual names.
+func postgresDumpFilename(database string) string {
+	sum := sha256.Sum256([]byte(database))
+	return "db-" + hex.EncodeToString(sum[:8]) + ".pgdump"
+}
+
+func pgpassField(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, ":", `\:`)
+	v = strings.ReplaceAll(v, "\n", `\n`)
+	return strings.ReplaceAll(v, "\r", `\r`)
+}
+
 // Restore imports restored snapshot data into target PostgreSQL.
 func (a *PostgreSQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 	db := spec.Database
@@ -184,9 +210,19 @@ func (a *PostgreSQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) erro
 	if manifest.Adapter != KindPostgreSQL {
 		return fmt.Errorf("manifest adapter mismatch: %s", manifest.Adapter)
 	}
+	fullInstance := false
+	for _, dbe := range manifest.Databases {
+		if dbe.Database == "globals" {
+			fullInstance = true
+			break
+		}
+	}
+	if fullInstance && db.TargetDatabase != "all" {
+		return errors.New("full-instance PostgreSQL snapshot requires target_database=all")
+	}
 
 	// Write PGPASSFILE for target in stagingDir (the only writable temp dir we have)
-	pgpassContent := fmt.Sprintf("%s:%d:*:%s:%s\n", db.TargetHost, db.TargetPort, db.TargetUsername, spec.Secrets.DBPassword)
+	pgpassContent := fmt.Sprintf("%s:%d:*:%s:%s\n", pgpassField(db.TargetHost), db.TargetPort, pgpassField(db.TargetUsername), pgpassField(spec.Secrets.DBPassword))
 	pgpassFile, err := writeSecretFile(stagingDir, "pgpass_restore", pgpassContent)
 	if err != nil {
 		return fmt.Errorf("write pgpass: %w", err)
@@ -210,12 +246,18 @@ func (a *PostgreSQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) erro
 			if dbe.Database == "globals" {
 				continue
 			}
+			if err := ensurePostgresDatabase(ctx, spec.Exec, psqlPath, env, db, dbe.Database, logLine); err != nil {
+				return err
+			}
 			dumpFile := filepath.Join(stagingDir, dbe.File)
 			args := []string{
-				"--exit-on-error", "--clean", "--if-exists", "--no-owner",
+				"--exit-on-error", "--no-owner",
 				"--dbname=" + dbe.Database,
 				"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername,
 				dumpFile,
+			}
+			if db.ReplaceExisting {
+				args = append(args[:1], append([]string{"--clean", "--if-exists"}, args[1:]...)...)
 			}
 			exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: pgRestorePath, Args: args, Env: env}, logLine, logLine)
 			if err != nil || exitCode != 0 {
@@ -227,10 +269,13 @@ func (a *PostgreSQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) erro
 			if dbe.Database != "globals" {
 				dumpFile := filepath.Join(stagingDir, dbe.File)
 				args := []string{
-					"--exit-on-error", "--clean", "--if-exists", "--no-owner",
+					"--exit-on-error", "--no-owner",
 					"--dbname=" + db.TargetDatabase,
 					"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername,
 					dumpFile,
+				}
+				if db.ReplaceExisting {
+					args = append(args[:1], append([]string{"--clean", "--if-exists"}, args[1:]...)...)
 				}
 				exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: pgRestorePath, Args: args, Env: env}, logLine, logLine)
 				if err != nil || exitCode != 0 {
@@ -241,15 +286,42 @@ func (a *PostgreSQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) erro
 		}
 	}
 
-	// Verification: count user schemas
-	verifyArgs := []string{"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername, "-d", db.TargetDatabase, "-t", "-c", "SELECT count(*) FROM pg_namespace WHERE nspname NOT IN ('pg_catalog','information_schema')"}
+	// Verification: count user schemas.  A full-instance restore has no
+	// database named "all"; use the maintenance database for that case.
+	verifyDatabase := db.TargetDatabase
+	if verifyDatabase == "all" || verifyDatabase == "" {
+		verifyDatabase = "postgres"
+	}
+	verifyArgs := []string{"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername, "-d", verifyDatabase, "-t", "-c", "SELECT count(*) FROM pg_namespace WHERE nspname NOT IN ('pg_catalog','information_schema')"}
 	var countStr string
 	_, err = spec.Exec.Run(ctx, Cmd{Exe: psqlPath, Args: verifyArgs, Env: env},
 		func(line string) { countStr = strings.TrimSpace(line) }, logLine)
 	if err != nil {
 		spec.Logf("warn", "postgresql verification query failed: %v", err)
 	} else {
-		spec.Logf("info", "postgresql verification: %s user schemas", countStr)
+		spec.Logf("info", "postgresql verification (%s): %s user schemas", verifyDatabase, countStr)
+	}
+	return nil
+}
+
+func ensurePostgresDatabase(ctx context.Context, exec Executor, psqlPath string, env []string, db *model.DatabaseRestore, name string, logLine func(string)) error {
+	if name == "" || name == "postgres" {
+		return nil
+	}
+	checkArgs := []string{"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername, "-d", "postgres", "-tAc", "SELECT 1 FROM pg_database WHERE datname = '" + strings.ReplaceAll(name, "'", "''") + "'"}
+	var found string
+	_, err := exec.Run(ctx, Cmd{Exe: psqlPath, Args: checkArgs, Env: env}, func(line string) { found = strings.TrimSpace(line) }, logLine)
+	if err != nil {
+		return fmt.Errorf("check postgres database %s: %w", name, err)
+	}
+	if found != "" {
+		return nil
+	}
+	quoted := `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	createArgs := []string{"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername, "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", "CREATE DATABASE " + quoted}
+	exit, err := exec.Run(ctx, Cmd{Exe: psqlPath, Args: createArgs, Env: env}, logLine, logLine)
+	if err != nil || exit != 0 {
+		return fmt.Errorf("create postgres database %s failed (exit %d): %w", name, exit, err)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 
 	"backupmanagementcenter/internal/model"
@@ -12,10 +13,11 @@ import (
 // POST /restores/dry-run — filesystem only; returns would-be change stats.
 func (s *Server) handleDryRunRestore(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		RepositoryID string   `json:"repository_id"`
-		SnapshotID   string   `json:"snapshot_id"`
-		IncludePaths []string `json:"include_paths,omitempty"`
-		TargetPath   string   `json:"target_path"`
+		RepositoryID  string   `json:"repository_id"`
+		SnapshotID    string   `json:"snapshot_id"`
+		IncludePaths  []string `json:"include_paths,omitempty"`
+		TargetPath    string   `json:"target_path"`
+		OverwriteMode string   `json:"overwrite_mode"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -28,7 +30,14 @@ func (s *Server) handleDryRunRestore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation_failed", "target_path must be absolute")
 		return
 	}
-	stats, _, err := s.Jobs.DryRunRestore(r.Context(), body.RepositoryID, body.SnapshotID, body.IncludePaths, body.TargetPath)
+	if body.OverwriteMode == "" {
+		body.OverwriteMode = "always"
+	}
+	if body.OverwriteMode != "never" && body.OverwriteMode != "if-changed" && body.OverwriteMode != "always" {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "overwrite_mode must be never|if-changed|always")
+		return
+	}
+	stats, _, err := s.Jobs.DryRunRestore(r.Context(), body.RepositoryID, body.SnapshotID, body.IncludePaths, body.TargetPath, body.OverwriteMode)
 	if err != nil {
 		s.jobsErr(w, err)
 		return
@@ -64,6 +73,13 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case model.KindPostgreSQL, model.KindMySQL, model.KindMongoDB, model.KindSQLite:
+		// Database overwrite/pre-restore rollback is intentionally gated until
+		// the end-to-end restore suite is enabled and passing. Filesystem
+		// restore and read-only browsing remain available meanwhile.
+		if os.Getenv("BMC_ENABLE_DATABASE_RESTORE") != "1" {
+			writeErr(w, http.StatusServiceUnavailable, model.ErrDatabaseRestoreDisabled, "database restore is disabled until pre-restore/rollback verification is enabled")
+			return
+		}
 		if body.Target.Database == "" {
 			writeErr(w, http.StatusBadRequest, "validation_failed", "database targets need target.database")
 			return
@@ -88,8 +104,11 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Met.ObserveRun("restore_requested", "queued", 0)
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"restore_request_id": req.ID,
-		"run":                runView(run),
+		"restore_request_id":   req.ID,
+		"pre_restore_run_id":   req.PreRestoreRunID,
+		"rollback_snapshot_id": req.RollbackSnapshotID,
+		"phase":                req.Phase,
+		"run":                  runView(run),
 	})
 }
 

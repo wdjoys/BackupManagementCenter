@@ -53,17 +53,10 @@ func main() {
 		log.Fatalf("[FATAL] instance id: %v", err)
 	}
 
-	st, err := store.New(filepath.Join(cfg.DataDir, "bmc.db"))
-	if err != nil {
-		log.Fatalf("[FATAL] store: %v", err)
-	}
-	defer st.Close()
-
 	ctx := context.Background()
-	if err := st.Migrate(ctx); err != nil {
-		log.Fatalf("[FATAL] migrate: %v", err)
-	}
-
+	// Load the master key before opening SQLite so every encrypted column,
+	// including Telegram settings, uses the production sealer. Opening the
+	// store first silently selected the development NoopSealer.
 	var seal secrets.Sealer
 	if cfg.MasterKeyFile != "" {
 		key, err := secrets.LoadKey(cfg.MasterKeyFile)
@@ -78,6 +71,33 @@ func main() {
 		log.Printf("[WARN] no master key configured (dev mode): secret sealing disabled")
 		seal = secrets.NewNoopSealer()
 	}
+
+	dbPath := filepath.Join(cfg.DataDir, "bmc.db")
+	// Preserve a consistent copy before applying schema/secret migrations. A
+	// marker prevents creating a new copy on every restart; operators can
+	// remove it to force another pre-migration backup.
+	marker := filepath.Join(cfg.DataDir, ".pre-migration-backup.done")
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		if _, markerErr := os.Stat(marker); os.IsNotExist(markerErr) {
+			backupPath := dbPath + ".pre-migration-" + time.Now().UTC().Format("20060102T150405Z") + ".bak"
+			if backupErr := store.BackupSQLite(ctx, dbPath, backupPath); backupErr != nil {
+				log.Printf("[WARN] sqlite pre-migration backup failed: %v", backupErr)
+			} else if writeErr := os.WriteFile(marker, []byte(backupPath+"\n"), 0o600); writeErr != nil {
+				log.Printf("[WARN] write migration backup marker: %v", writeErr)
+			}
+		}
+	}
+
+	st, err := store.NewWithSealer(dbPath, seal)
+	if err != nil {
+		log.Fatalf("[FATAL] store: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.Migrate(ctx); err != nil {
+		log.Fatalf("[FATAL] migrate: %v", err)
+	}
+	go periodicSQLiteBackup(dbPath, cfg.DataDir)
 
 	bus := events.New()
 	met := metrics.New()
@@ -102,17 +122,34 @@ func main() {
 		OfflineThreshold:         90 * time.Second,
 	}, notifier)
 
-	// Restart recovery: runs left dispatched/running by a previous process
-	// can no longer be trusted.
-	staleIDs, err := st.FailStaleRuns(ctx, []string{"dispatched", "running"}, "server_restarted", time.Now().UTC())
-	if err != nil {
-		log.Printf("[WARN] stale run recovery: %v", err)
-	} else if len(staleIDs) > 0 {
-		log.Printf("[INFO] marked %d stale runs failed (server_restarted)", len(staleIDs))
-		for _, runID := range staleIDs {
-			if nerr := notifier.NotifyPlanFailure(ctx, runID); nerr != nil {
-				notification.LogFailure(runID, nerr)
+	// Restart recovery: retry idempotent work left in-flight, but fail
+	// destructive operations because their external side effects are unknown.
+	if stale, listErr := st.ListRunsByStatus(ctx, []string{model.RunDispatched, model.RunRunning}); listErr != nil {
+		log.Printf("[WARN] stale run recovery: %v", listErr)
+	} else {
+		for _, run := range stale {
+			if startupRetryable(run.Operation) {
+				_ = st.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) { r.StartedAt = nil; r.LeaseExpiresAt = nil; r.ErrorCode = ""; r.ErrorMessage = "" })
+				continue
 			}
+			finished := time.Now().UTC()
+			if err := st.TransitionRun(ctx, run.ID, run.Status, model.RunFailed, func(r *model.Run) { r.FinishedAt = &finished; r.ErrorCode = model.ErrAgentDisconnected; r.ErrorMessage = "server restarted during non-retryable operation"; r.LeaseExpiresAt = nil }); err == nil {
+				if rs, ok := st.(interface{ DeleteRunSecrets(context.Context, string) error }); ok { _ = rs.DeleteRunSecrets(ctx, run.ID) }
+				if nerr := notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil { notification.LogFailure(run.ID, nerr) }
+			}
+		}
+	}
+
+	// Rebuild the durable queue after a restart. Runs that were queued before
+	// the process exited must not depend on an in-memory enqueue call.
+	if queued, qerr := st.ListRunsByStatus(ctx, []string{model.RunQueued}); qerr != nil {
+		log.Printf("[WARN] restart queue recovery: %v", qerr)
+	} else {
+		for _, run := range queued {
+			disp.Enqueue(ctx, run.ID, run.AgentID, run.RepositoryID)
+		}
+		if len(queued) > 0 {
+			log.Printf("[INFO] recovered %d queued runs", len(queued))
 		}
 	}
 
@@ -148,6 +185,7 @@ func main() {
 	handler := api.New(&api.Server{
 		ST: st, Bus: bus, Met: met, Jobs: orch,
 		Version: version.Version,
+		PublicURL: cfg.PublicURL,
 		Reg:     reg,
 		Ready:   ready.Load,
 	})
@@ -193,6 +231,29 @@ func main() {
 	gs.GracefulStop()
 }
 
+func periodicSQLiteBackup(dbPath, dataDir string) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		backupPath := filepath.Join(dataDir, "bmc.db.daily-"+time.Now().UTC().Format("20060102T150405Z")+".bak")
+		if err := store.BackupSQLite(context.Background(), dbPath, backupPath); err != nil {
+			log.Printf("[WARN] daily sqlite backup failed: %v", err)
+		} else {
+			log.Printf("[INFO] daily sqlite backup written: %s", backupPath)
+		}
+	}
+}
+
+func startupRetryable(op string) bool {
+	switch op {
+	case model.OpBackup, model.OpCheck, model.OpSnapshots, model.OpSnapshotLs,
+		model.OpValidatePaths, model.OpProbeCaps, model.OpVerifyRemote:
+		return true
+	default:
+		return false
+	}
+}
+
 // schedAdapter adapts the orchestrator to the scheduler's narrow interface.
 type schedAdapter struct{ o *jobs.Orchestrator }
 
@@ -211,6 +272,10 @@ func (a schedAdapter) SystemRunCheck(ctx context.Context, repositoryID string) (
 		return "", err
 	}
 	return run.ID, nil
+}
+
+func (a schedAdapter) StartRetentionRun(ctx context.Context, repositoryID string) error {
+	return a.o.StartRetentionRun(ctx, repositoryID)
 }
 
 func serverTLS(cfg servercfg.Server) (*tls.Config, error) {

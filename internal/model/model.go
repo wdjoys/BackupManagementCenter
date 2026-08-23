@@ -16,16 +16,16 @@ const (
 
 // Run operations.
 const (
-	OpBackup         = "backup"
-	OpRestore        = "restore"
-	OpRestoreDryRun  = "restore_dry_run"
-	OpCheck          = "check"
-	OpForget         = "forget"
-	OpSnapshots      = "snapshots"
-	OpSnapshotLs     = "snapshot_ls"
-	OpVerifyRemote   = "verify_storage_remote"
-	OpValidatePaths  = "validate_paths"
-	OpProbeCaps      = "probe_capabilities"
+	OpBackup        = "backup"
+	OpRestore       = "restore"
+	OpRestoreDryRun = "restore_dry_run"
+	OpCheck         = "check"
+	OpForget        = "forget"
+	OpSnapshots     = "snapshots"
+	OpSnapshotLs    = "snapshot_ls"
+	OpVerifyRemote  = "verify_storage_remote"
+	OpValidatePaths = "validate_paths"
+	OpProbeCaps     = "probe_capabilities"
 )
 
 // Run statuses, in state-machine order. Terminal: succeeded|failed|cancelled.
@@ -55,6 +55,11 @@ const (
 	ErrRestoreVerification      = "restore_verification_failed"
 	ErrStorageRemoteUnreachable = "storage_remote_unreachable"
 	ErrTimeout                  = "run_timeout"
+	ErrAgentDisconnected        = "agent_disconnected"
+	ErrPreRestoreBackupFailed   = "pre_restore_backup_failed"
+	ErrRollbackFailed           = "rollback_failed"
+	ErrPhysicalBackupRequired   = "physical_backup_required"
+	ErrDatabaseRestoreDisabled  = "database_restore_disabled"
 )
 
 func nowUTC() time.Time { return time.Now().UTC() }
@@ -68,7 +73,7 @@ type Admin struct {
 }
 
 type Session struct {
-	IDHash     string    // SHA-256 hex of the bearer token; never the token itself
+	IDHash     string // SHA-256 hex of the bearer token; never the token itself
 	AdminID    string
 	ExpiresAt  time.Time
 	CreatedAt  time.Time
@@ -83,19 +88,19 @@ const (
 )
 
 type Agent struct {
-	ID               string            `json:"id"`
-	Name             string            `json:"name"`
-	Hostname         string            `json:"hostname"`
-	OS               string            `json:"os"`
-	Arch             string            `json:"arch"`
-	Version          string            `json:"version"`
-	Status           AgentStatus       `json:"status"`
-	LastSeenAt       *time.Time        `json:"last_seen_at,omitempty"`
-	EnrolledAt       time.Time         `json:"enrolled_at"`
-	TokenHash        string            `json:"-"` // SHA-256 hex of the agent secret
-	Capabilities     []ToolInfo        `json:"capabilities"`
-	CapabilitiesJSON string            `json:"-"`
-	Revoked          bool              `json:"revoked"`
+	ID               string      `json:"id"`
+	Name             string      `json:"name"`
+	Hostname         string      `json:"hostname"`
+	OS               string      `json:"os"`
+	Arch             string      `json:"arch"`
+	Version          string      `json:"version"`
+	Status           AgentStatus `json:"status"`
+	LastSeenAt       *time.Time  `json:"last_seen_at,omitempty"`
+	EnrolledAt       time.Time   `json:"enrolled_at"`
+	TokenHash        string      `json:"-"` // SHA-256 hex of the agent secret
+	Capabilities     []ToolInfo  `json:"capabilities"`
+	CapabilitiesJSON string      `json:"-"`
+	Revoked          bool        `json:"revoked"`
 }
 
 // ToolInfo mirrors the proto message for REST exposure.
@@ -115,14 +120,14 @@ type EnrollmentToken struct {
 // StorageTarget is a cloud drive destination accessed via rclone. Config is
 // stored AES-256-GCM sealed; never returned in plaintext by any API.
 type StorageTarget struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	Type             string    `json:"type"` // only "rclone" in phase 1
-	RemoteName       string    `json:"remote_name"`
-	RemotePath       string    `json:"remote_path"`
-	EncryptedConfig  []byte    `json:"-"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Type            string    `json:"type"` // only "rclone" in phase 1
+	RemoteName      string    `json:"remote_name"`
+	RemotePath      string    `json:"remote_path"`
+	EncryptedConfig []byte    `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type Repository struct {
@@ -149,7 +154,7 @@ type Plan struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
 	AgentID        string     `json:"agent_id"`
-	Kind           string     `json:"kind"` // filesystem|postgresql|mysql|mongodb|sqlite
+	Kind           string     `json:"kind"`     // filesystem|postgresql|mysql|mongodb|sqlite
 	Schedule       string     `json:"schedule"` // five-field cron
 	Timezone       string     `json:"timezone"` // IANA name
 	Enabled        bool       `json:"enabled"`
@@ -175,10 +180,11 @@ type PlanSource struct {
 	Host       string   `json:"host,omitempty"`
 	Port       int      `json:"port,omitempty"`
 	Username   string   `json:"username,omitempty"`
-	Database   string   `json:"database,omitempty"` // single db or literal "all"
+	Database   string   `json:"database,omitempty"`    // single db or literal "all"
+	AuthSource string   `json:"auth_source,omitempty"` // mongodb authentication database
 	ExtraArgs  []string `json:"extra_args,omitempty"`
 	// Estimated dump size in bytes; required for database plans to guard temp
-	// space (run fails insufficient_temp_space when free < 1.2x).
+	// space (the agent requires at least 1.3x free space).
 	EstimatedDumpBytes int64 `json:"estimated_dump_bytes,omitempty"`
 
 	// mongodb only
@@ -189,7 +195,7 @@ type PlanSource struct {
 }
 
 type Run struct {
-	ID           string     `json:"id"`
+	ID string `json:"id"`
 	// PlanID empty => system-initiated run not bound to a plan (stored NULL).
 	PlanID       string     `json:"plan_id,omitempty"`
 	AgentID      string     `json:"agent_id"`
@@ -204,18 +210,30 @@ type Run struct {
 	ErrorCode    string     `json:"error_code,omitempty"`
 	ErrorMessage string     `json:"error_message,omitempty"`
 	RepositoryID string     `json:"repository_id,omitempty"`
+	// Attempt increments whenever a queued run is claimed for delivery. It is
+	// persisted so a server restart can distinguish an old lease from a new
+	// dispatch attempt.
+	Attempt        int        `json:"attempt"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
 	// ScheduledAt is the cron slot this run fulfils; (plan_id, scheduled_at)
 	// is unique to prevent double-queueing. Empty for manual runs.
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
 }
 
 type Progress struct {
-	Phase      string `json:"phase,omitempty"`
+	Phase      string  `json:"phase,omitempty"`
 	Percent    float64 `json:"percent,omitempty"`
-	BytesDone  int64  `json:"bytes_done,omitempty"`
-	BytesTotal int64  `json:"bytes_total,omitempty"`
-	FilesDone  int64  `json:"files_done,omitempty"`
-	FilesTotal int64  `json:"files_total,omitempty"`
+	BytesDone  int64   `json:"bytes_done,omitempty"`
+	BytesTotal int64   `json:"bytes_total,omitempty"`
+	FilesDone  int64   `json:"files_done,omitempty"`
+	FilesTotal int64   `json:"files_total,omitempty"`
+	// Restore dry-run details. These remain in the JSON result even though the
+	// streaming protobuf only carries the aggregate files counters.
+	FilesAdded   int64    `json:"files_added,omitempty"`
+	FilesChanged int64    `json:"files_changed,omitempty"`
+	FilesSkipped int64    `json:"files_skipped,omitempty"`
+	FilesDeleted int64    `json:"files_deleted,omitempty"`
+	Sample       []string `json:"sample,omitempty"`
 }
 
 type RunLog struct {
@@ -227,15 +245,18 @@ type RunLog struct {
 }
 
 type RestoreRequest struct {
-	ID                string     `json:"id"`
-	RunID             string     `json:"run_id"` // the restore run created for it
-	SnapshotID        string     `json:"snapshot_id"`
-	RestoreKind       string     `json:"restore_kind"` // filesystem|postgresql|mysql|mongodb|sqlite
-	Target            RestoreTarget `json:"target"`
-	TargetJSON        string     `json:"-"`
-	Overwrite         bool       `json:"overwrite"`
-	ConfirmationHash  string     `json:"-"` // SHA-256 of typed db name when overwriting
-	CreatedAt         time.Time  `json:"created_at"`
+	ID                 string        `json:"id"`
+	RunID              string        `json:"run_id"` // the restore run created for it
+	SnapshotID         string        `json:"snapshot_id"`
+	RestoreKind        string        `json:"restore_kind"` // filesystem|postgresql|mysql|mongodb|sqlite
+	Target             RestoreTarget `json:"target"`
+	TargetJSON         string        `json:"-"`
+	Overwrite          bool          `json:"overwrite"`
+	ConfirmationHash   string        `json:"-"` // SHA-256 of typed db name when overwriting
+	PreRestoreRunID    string        `json:"pre_restore_run_id,omitempty"`
+	RollbackSnapshotID string        `json:"rollback_snapshot_id,omitempty"`
+	Phase              string        `json:"phase,omitempty"`
+	CreatedAt          time.Time     `json:"created_at"`
 }
 
 type RestoreTarget struct {
@@ -245,10 +266,11 @@ type RestoreTarget struct {
 	OverwriteMode string   `json:"overwrite_mode,omitempty"` // never|if-changed|always
 
 	// databases
-	Host     string `json:"host,omitempty"`
-	Port     int    `json:"port,omitempty"`
-	Username string `json:"username,omitempty"`
-	Database string `json:"database,omitempty"`
+	Host       string `json:"host,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	Username   string `json:"username,omitempty"`
+	Database   string `json:"database,omitempty"`
+	AuthSource string `json:"auth_source,omitempty"`
 }
 
 type AuditEvent struct {
@@ -282,17 +304,17 @@ const (
 // Snapshot is a read model assembled from `restic snapshots --json` on the
 // agent; not persisted server-side.
 type Snapshot struct {
-	ID       string   `json:"id"`
-	Time     string   `json:"time"`
-	Host     string   `json:"host"`
-	Tags     []string `json:"tags,omitempty"`
-	Paths    []string `json:"paths,omitempty"`
-	PlanID   string   `json:"-"`
+	ID     string   `json:"id"`
+	Time   string   `json:"time"`
+	Host   string   `json:"host"`
+	Tags   []string `json:"tags,omitempty"`
+	Paths  []string `json:"paths,omitempty"`
+	PlanID string   `json:"-"`
 }
 
 // ServerInfo is reported to agents during handshake.
 type ServerInfo struct {
-	Version        string
-	InstanceID     string
-	HeartbeatSecs  int
+	Version       string
+	InstanceID    string
+	HeartbeatSecs int
 }

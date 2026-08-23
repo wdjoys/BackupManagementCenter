@@ -632,9 +632,21 @@ func TestBuildCommandBackupSecretsAndParams(t *testing.T) {
 	if task.Kind != model.KindFilesystem {
 		t.Fatalf("expected filesystem, got %s", task.Kind)
 	}
-	if len(task.Tags) != 2 {
-		t.Fatalf("expected 2 tags, got %v", task.Tags)
+	if len(task.Tags) != 3 {
+		t.Fatalf("expected plan, kind and run tags, got %v", task.Tags)
 	}
+	if !containsString(task.Tags, "run:"+run.ID) {
+		t.Fatalf("expected run tag, got %v", task.Tags)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildCommandSystemRun(t *testing.T) {

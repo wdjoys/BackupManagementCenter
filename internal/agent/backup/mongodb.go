@@ -37,6 +37,9 @@ func (a *MongoDBAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
 	}
+	if err := ValidateExtraArgs(KindMongoDB, s.ExtraArgs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -49,7 +52,7 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 	}
 
 	// Write mongodb config YAML (0600)
-	configContent := buildMongoConfig(source.Host, source.Port, source.Username, rc.Secrets.DBPassword, source.Database)
+	configContent := buildMongoConfig(source.Host, source.Port, source.Username, rc.Secrets.DBPassword, source.Database, source.AuthSource)
 	configFile, err := writeSecretFile(rc.TempDir, "mongo.yml", configContent)
 	if err != nil {
 		return nil, fmt.Errorf("write mongo config: %w", err)
@@ -134,6 +137,9 @@ func (a *MongoDBAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 	if manifest.Adapter != KindMongoDB {
 		return fmt.Errorf("manifest adapter mismatch: %s", manifest.Adapter)
 	}
+	if len(manifest.Databases) > 0 && manifest.Databases[0].Database == "all" && db.TargetDatabase != "all" {
+		return errors.New("all-databases MongoDB snapshot requires target_database=all")
+	}
 
 	// Find the archive file
 	archiveFile := ""
@@ -156,14 +162,32 @@ func (a *MongoDBAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 		return errors.New("no archive file found in staging dir")
 	}
 
+	// mongorestore must use the restore target, not the source hints embedded
+	// in the manifest. Keep credentials in a 0600 config file and never put
+	// them in argv or a shell command.
+	authSource := db.TargetAuthSource
+	if authSource == "" {
+		authSource = "admin"
+	}
+	configFile, err := WriteSecretFile(stagingDir, "mongo-restore.yml",
+		buildMongoConfig(db.TargetHost, db.TargetPort, db.TargetUsername, spec.Secrets.DBPassword, db.TargetDatabase, authSource))
+	if err != nil {
+		return fmt.Errorf("write mongo restore config: %w", err)
+	}
+
 	mongorestorePath := toolPath("mongorestore")
 	logLine := func(l string) { spec.Logf("info", "%s", l) }
 
 	args := []string{
-		"--archive=" + archiveFile, "--gzip",
+		"--archive=" + archiveFile, "--gzip", "--config=" + configFile,
 	}
 	if db.ReplaceExisting {
 		args = append(args, "--drop")
+	}
+	if db.TargetDatabase != "" && db.TargetDatabase != "all" && len(manifest.Databases) > 0 && manifest.Databases[0].Database != db.TargetDatabase {
+		args = append(args,
+			"--nsFrom="+manifest.Databases[0].Database+".*",
+			"--nsTo="+db.TargetDatabase+".*")
 	}
 
 	exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: mongorestorePath, Args: args, Env: nil}, logLine, logLine)
@@ -176,20 +200,19 @@ func (a *MongoDBAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 }
 
 // buildMongoConfig builds the YAML config for mongodump/mongorestore.
-func buildMongoConfig(host string, port int, username, password, database string) string {
+func buildMongoConfig(host string, port int, username, password, database, authSource string) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("host: %s\n", host))
+	b.WriteString(fmt.Sprintf("host: %s\n", strconv.Quote(host)))
 	b.WriteString(fmt.Sprintf("port: %d\n", port))
 	if username != "" {
-		b.WriteString(fmt.Sprintf("username: %s\n", username))
+		b.WriteString(fmt.Sprintf("username: %s\n", strconv.Quote(username)))
 	}
 	if password != "" {
-		b.WriteString(fmt.Sprintf("password: %s\n", password))
+		b.WriteString(fmt.Sprintf("password: %s\n", strconv.Quote(password)))
 	}
-	if database != "" && database != "all" {
-		b.WriteString(fmt.Sprintf("authSource: %s\n", database))
-	} else {
-		b.WriteString("authSource: admin\n")
+	if authSource == "" {
+		authSource = "admin"
 	}
+	b.WriteString(fmt.Sprintf("authSource: %s\n", strconv.Quote(authSource)))
 	return b.String()
 }

@@ -972,7 +972,7 @@ func TestTransitionRunInvalidPaths(t *testing.T) {
 		// Invalid skips.
 		{from: model.RunQueued, to: model.RunRunning},
 		{from: model.RunQueued, to: model.RunSucceeded},
-		{from: model.RunRunning, to: model.RunQueued},
+		{from: model.RunRunning, to: model.RunDispatched},
 		// Wrong from state.
 		{from: model.RunRunning, to: model.RunSucceeded},
 	}

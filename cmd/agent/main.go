@@ -59,6 +59,10 @@ func main() {
 
 	runner := agent.NewRunner(pipeline.Deps{
 		Exec: agent.OSExecutor{},
+		SourceRoots: cfg.SourceRoots,
+		RestoreRoots: cfg.RestoreRoots,
+		ScratchMinFreeBytes: cfg.ScratchMinFreeBytes,
+		MaxConcurrency: cfg.MaxConcurrency,
 		Logf: func(level, format string, args ...any) {
 			log.Printf("[%s] "+format, append([]any{level}, args...)...)
 		},

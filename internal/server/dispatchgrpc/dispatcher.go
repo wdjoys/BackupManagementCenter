@@ -42,6 +42,18 @@ type job struct {
 	repositoryID string
 }
 
+const dispatchLease = 2 * time.Minute
+
+func retryableOperation(op string) bool {
+	switch op {
+	case model.OpBackup, model.OpCheck, model.OpSnapshots, model.OpSnapshotLs,
+		model.OpValidatePaths, model.OpProbeCaps, model.OpVerifyRemote:
+		return true
+	default:
+		return false
+	}
+}
+
 // repoQueue is a FIFO queue for a single repository with a dedicated worker.
 type repoQueue struct {
 	mu       sync.Mutex
@@ -167,6 +179,24 @@ func (d *Dispatcher) processJob(j *job) {
 		return
 	}
 
+	// Claim the run before building or sending the command. This is the
+	// durable queued -> dispatched edge that makes the delivery protocol
+	// observable to the agent and safe across concurrent workers.
+	leaseUntil := time.Now().UTC().Add(dispatchLease)
+	if err := d.store.TransitionRun(ctx, j.runID, model.RunQueued, model.RunDispatched, func(r *model.Run) {
+		r.Attempt++
+		r.LeaseExpiresAt = &leaseUntil
+	}); err != nil {
+		if err == store.ErrInvalidTransition {
+			// A cancelled/terminal run may still be present in the in-memory
+			// queue after a user action. Drop it idempotently.
+			d.removeEnqueued(j.runID)
+			return
+		}
+		log.Printf("dispatcher: failed to claim run %s: %v", j.runID, err)
+		return
+	}
+
 	// CommandSource resolves repository/target/plan from the run itself.
 
 	// CommandSource resolves repository/target/plan from the run itself.
@@ -176,17 +206,19 @@ func (d *Dispatcher) processJob(j *job) {
 	if err != nil {
 		log.Printf("dispatcher: failed to build command for run %s: %v", j.runID, err)
 		// Permanent build failure: fail the run instead of spinning the queue.
-		if terr := d.store.TransitionRun(ctx, j.runID, model.RunQueued, model.RunFailed, func(r *model.Run) {
+		if terr := d.store.TransitionRun(ctx, j.runID, model.RunDispatched, model.RunFailed, func(r *model.Run) {
 			now := time.Now().UTC()
 			r.ErrorCode = model.ErrInvalidPlan
 			r.ErrorMessage = err.Error()
 			r.FinishedAt = &now
+			r.LeaseExpiresAt = nil
 		}); terr != nil {
 			// Transition failed: no notification; keep the original build error.
 			log.Printf("dispatcher: failed to transition run %s to failed: %v", j.runID, terr)
 		} else if nerr := d.notifier.NotifyPlanFailure(ctx, j.runID); nerr != nil {
 			notification.LogFailure(j.runID, nerr)
 		}
+		d.deleteRunSecrets(ctx, j.runID)
 		d.removeEnqueued(j.runID)
 		return
 	}
@@ -198,9 +230,34 @@ func (d *Dispatcher) processJob(j *job) {
 	if err := d.reg.Send(j.agentID, msg); err != nil {
 		log.Printf("dispatcher: failed to send command to agent %s: %v", j.agentID, err)
 		// Revert to queued
-		_ = d.store.TransitionRun(ctx, j.runID, model.RunDispatched, model.RunQueued, nil)
+		_ = d.store.TransitionRun(ctx, j.runID, model.RunDispatched, model.RunQueued, func(r *model.Run) {
+			r.LeaseExpiresAt = nil
+		})
 		d.requeueJob(j)
 		return
+	}
+
+	// Do not dispatch the next operation for this repository until this run
+	// reaches a terminal state (or is explicitly re-queued after disconnect).
+	// Restic serializes repository access; sending commands back-to-back would
+	// otherwise create concurrent backup/prune/restore processes on the agent.
+	for {
+		run, err := d.store.GetRun(ctx, j.runID)
+		if err != nil {
+			d.removeEnqueued(j.runID)
+			return
+		}
+		if run.Status == model.RunSucceeded || run.Status == model.RunFailed || run.Status == model.RunCancelled {
+			d.removeEnqueued(j.runID)
+			return
+		}
+		if run.Status == model.RunQueued {
+			// The agent stream was lost and the service re-queued a retry-safe
+			// operation. Put the same idempotent job back at the tail.
+			d.requeueJob(j)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
@@ -233,6 +290,16 @@ func (d *Dispatcher) removeEnqueued(runID string) {
 	d.mu.Lock()
 	delete(d.enqueuedRuns, runID)
 	d.mu.Unlock()
+}
+
+func (d *Dispatcher) deleteRunSecrets(ctx context.Context, runID string) {
+	if rs, ok := d.store.(interface {
+		DeleteRunSecrets(context.Context, string) error
+	}); ok {
+		if err := rs.DeleteRunSecrets(ctx, runID); err != nil {
+			log.Printf("dispatcher: failed to delete run secrets for %s: %v", runID, err)
+		}
+	}
 }
 
 // buildExecuteCommand constructs the ExecuteCommand message for a run.
@@ -301,11 +368,15 @@ func (d *Dispatcher) Cancel(ctx context.Context, runID string) error {
 
 	// If run is queued (not yet dispatched), just mark cancelled
 	if run.Status == model.RunQueued {
-		return d.store.TransitionRun(ctx, runID, run.Status, model.RunCancelled, func(r *model.Run) {
+		err := d.store.TransitionRun(ctx, runID, run.Status, model.RunCancelled, func(r *model.Run) {
 			now := time.Now().UTC()
 			r.FinishedAt = &now
 			r.ErrorCode = model.ErrCancelled
 		})
+		if err == nil {
+			d.deleteRunSecrets(ctx, runID)
+		}
+		return err
 	}
 
 	// If dispatched or running, send CancelCommand to agent
@@ -322,11 +393,15 @@ func (d *Dispatcher) Cancel(ctx context.Context, runID string) error {
 
 	// If running and no response within timeout, we'll rely on watchdog to mark failed
 	// For now, just transition to cancelled if we can
-	return d.store.TransitionRun(ctx, runID, run.Status, model.RunCancelled, func(r *model.Run) {
+	err = d.store.TransitionRun(ctx, runID, run.Status, model.RunCancelled, func(r *model.Run) {
 		now := time.Now().UTC()
 		r.FinishedAt = &now
 		r.ErrorCode = model.ErrCancelled
 	})
+	if err == nil {
+		d.deleteRunSecrets(ctx, runID)
+	}
+	return err
 }
 
 // ConnectedAgents implements dispatch.Dispatcher.
@@ -395,6 +470,29 @@ func (d *Dispatcher) checkTimeouts() {
 
 	now := time.Now().UTC()
 	for _, run := range runs {
+		if run.LeaseExpiresAt != nil && now.After(*run.LeaseExpiresAt) {
+			if retryableOperation(run.Operation) {
+				if err := d.store.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
+					r.StartedAt = nil
+					r.LeaseExpiresAt = nil
+					r.ErrorCode = ""
+					r.ErrorMessage = ""
+				}); err == nil {
+					d.Enqueue(ctx, run.ID, run.AgentID, run.RepositoryID)
+				}
+			} else {
+				if err := d.store.TransitionRun(ctx, run.ID, run.Status, model.RunFailed, func(r *model.Run) {
+					now := time.Now().UTC()
+					r.FinishedAt = &now
+					r.ErrorCode = model.ErrAgentDisconnected
+					r.ErrorMessage = "dispatch lease expired"
+					r.LeaseExpiresAt = nil
+				}); err == nil {
+					d.deleteRunSecrets(ctx, run.ID)
+				}
+			}
+			continue
+		}
 		// Use plan timeout if available, otherwise default 300s
 		timeoutSeconds := 300
 		if run.PlanID != "" {
@@ -428,8 +526,11 @@ func (d *Dispatcher) checkTimeouts() {
 						r.ErrorMessage = "agent did not respond within timeout"
 					}); err != nil {
 						log.Printf("watchdog: failed to fail run %s: %v", run.ID, err)
-					} else if nerr := d.notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
-						notification.LogFailure(run.ID, nerr)
+					} else {
+						if nerr := d.notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
+							notification.LogFailure(run.ID, nerr)
+						}
+						d.deleteRunSecrets(ctx, run.ID)
 					}
 				}
 			} else if run.Status == model.RunDispatched {
@@ -449,8 +550,11 @@ func (d *Dispatcher) checkTimeouts() {
 					r.ErrorMessage = "run timed out in dispatched state"
 				}); err != nil {
 					log.Printf("watchdog: failed to fail run %s: %v", run.ID, err)
-				} else if nerr := d.notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
-					notification.LogFailure(run.ID, nerr)
+				} else {
+					if nerr := d.notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
+						notification.LogFailure(run.ID, nerr)
+					}
+					d.deleteRunSecrets(ctx, run.ID)
 				}
 			}
 		}

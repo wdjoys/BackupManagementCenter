@@ -3,13 +3,17 @@ package backup
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // SQLiteAdapter implements Adapter for SQLite plans.
@@ -30,10 +34,15 @@ func (a *SQLiteAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if _, err := os.Stat(s.Path); err != nil {
 		return fmt.Errorf("path %q not accessible: %w", s.Path, err)
 	}
+	if err := ValidateExtraArgs(KindSQLite, s.ExtraArgs); err != nil {
+		return err
+	}
 	return nil
 }
 
-// Backup runs sqlite3 .backup then integrity_check.
+// Backup uses SQLite's online VACUUM INTO primitive. Keeping the operation in
+// the Go driver avoids shell quoting and produces a consistent snapshot while
+// the source database is serving traffic.
 func (a *SQLiteAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtifact, error) {
 	source := rc.Task.Source
 	stagingDir := filepath.Join(rc.TempDir, "staging")
@@ -41,33 +50,21 @@ func (a *SQLiteAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArti
 		return nil, fmt.Errorf("mkdir staging: %w", err)
 	}
 
-	sqlite3Path := toolPath("sqlite3")
-	logLine := func(l string) { rc.Logf("info", "%s", l) }
-
 	backupFile := filepath.Join(stagingDir, fmt.Sprintf("%s.sqlite", rc.Task.PlanID))
 
-	// Step 1: .backup
-	backupCmd := fmt.Sprintf(".backup '%s'", backupFile)
-	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: sqlite3Path, Args: []string{source.Path, backupCmd}}, logLine, logLine)
-	if err != nil || exitCode != 0 {
-		return nil, fmt.Errorf("sqlite3 backup failed (exit %d): %w", exitCode, err)
+	if err := sqliteVacuumInto(ctx, source.Path, backupFile); err != nil {
+		return nil, fmt.Errorf("sqlite online backup failed: %w", err)
 	}
-
-	// Step 2: integrity_check on the copy
-	var integrityOutput string
-	exitCode, err = rc.Exec.Run(ctx, Cmd{Exe: sqlite3Path, Args: []string{backupFile, "PRAGMA integrity_check;"}},
-		func(line string) {
-			integrityOutput = strings.TrimSpace(line)
-		}, logLine)
-	if err != nil || exitCode != 0 {
-		return nil, fmt.Errorf("sqlite3 integrity_check failed (exit %d): %w", exitCode, err)
-	}
-	if !strings.EqualFold(integrityOutput, "ok") {
-		return nil, fmt.Errorf("sqlite3 integrity_check failed: %s", integrityOutput)
+	if err := sqliteIntegrityCheck(ctx, backupFile); err != nil {
+		return nil, fmt.Errorf("sqlite integrity_check failed: %w", err)
 	}
 
 	toolVersions := make(map[string]string)
-	toolVersions["sqlite3"] = getToolVersion(ctx, rc.Exec, sqlite3Path, nil)
+	// Preserve the probed CLI version for diagnostics when available; the
+	// backup itself does not invoke the CLI.
+	if sqlite3Path := toolPath("sqlite3"); sqlite3Path != "" {
+		toolVersions["sqlite3"] = getToolVersion(ctx, rc.Exec, sqlite3Path, nil)
+	}
 
 	manifest := &Manifest{
 		Adapter:      KindSQLite,
@@ -148,26 +145,81 @@ func (a *SQLiteAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
 		return errors.New("target_database (path) is required for sqlite restore")
 	}
 
-	sqlite3Path := toolPath("sqlite3")
-	logLine := func(l string) { spec.Logf("info", "%s", l) }
-
-	// Copy the backup file to the target path
-	exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: "sh", Args: []string{"-c", fmt.Sprintf("cp '%s' '%s'", sqliteFile, targetPath)}}, logLine, logLine)
-	if err != nil || exitCode != 0 {
-		return fmt.Errorf("copy sqlite file failed (exit %d): %w", exitCode, err)
+	if !db.ReplaceExisting {
+		if _, statErr := os.Stat(targetPath); statErr == nil {
+			return errors.New("sqlite restore target exists and replace_existing=false")
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("stat sqlite restore target: %w", statErr)
+		}
+	}
+	// Copy into the target directory, fsync, then atomically rename. This
+	// avoids leaving a half-written SQLite database after interruption.
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+		return fmt.Errorf("create sqlite target directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(targetPath), ".bmc-restore-*.sqlite")
+	if err != nil {
+		return fmt.Errorf("create sqlite restore temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod sqlite restore temp: %w", err)
+	}
+	srcFile, err := os.Open(sqliteFile)
+	if err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("open sqlite backup: %w", err)
+	}
+	_, copyErr := io.Copy(tmp, srcFile)
+	_ = srcFile.Close()
+	if copyErr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("copy sqlite file: %w", copyErr)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync sqlite restore temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close sqlite restore temp: %w", err)
+	}
+	if err := os.Rename(tmpName, targetPath); err != nil {
+		return fmt.Errorf("replace sqlite target: %w", err)
 	}
 
-	// Verify integrity
-	var integrityOutput string
-	exitCode, err = spec.Exec.Run(ctx, Cmd{Exe: sqlite3Path, Args: []string{targetPath, "PRAGMA integrity_check;"}},
-		func(line string) {
-			integrityOutput = strings.TrimSpace(line)
-		}, logLine)
-	if err != nil || exitCode != 0 {
-		return fmt.Errorf("sqlite restore integrity_check failed (exit %d): %w", exitCode, err)
+	if err := sqliteIntegrityCheck(ctx, targetPath); err != nil {
+		return fmt.Errorf("sqlite restore integrity_check failed: %w", err)
 	}
-	if !strings.EqualFold(integrityOutput, "ok") {
-		return fmt.Errorf("sqlite restore integrity_check failed: %s", integrityOutput)
+	return nil
+}
+
+func sqliteVacuumInto(ctx context.Context, sourcePath, backupPath string) error {
+	db, err := sql.Open("sqlite", sourcePath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", backupPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func sqliteIntegrityCheck(ctx context.Context, databasePath string) error {
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	var result string
+	if err := db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&result); err != nil {
+		return err
+	}
+	result = strings.TrimSpace(result)
+	if !strings.EqualFold(result, "ok") {
+		return fmt.Errorf("%s", result)
 	}
 	return nil
 }

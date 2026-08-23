@@ -262,6 +262,7 @@
             <div style="display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap">
               <el-statistic :title="t('snapshots.restoreDialog.add')" :value="dryRunResult.add" />
               <el-statistic :title="t('snapshots.restoreDialog.changed')" :value="dryRunResult.changed" />
+              <el-statistic :title="t('snapshots.restoreDialog.skipped')" :value="dryRunResult.skipped" />
               <el-statistic :title="t('snapshots.restoreDialog.deleteStat')" :value="dryRunResult.delete" />
             </div>
             <div v-if="dryRunResult.sample && dryRunResult.sample.length > 0" style="margin-top: 8px">
@@ -327,6 +328,7 @@ function entryTypeText(type: string): string {
 interface DryRunResult {
   add: number
   changed: number
+  skipped: number
   delete: number
   sample: string[]
 }
@@ -504,6 +506,7 @@ async function handleDryRun(): Promise<void> {
       snapshot_id: selectedSnapshot.value.id,
       include_paths: restoreForm.value.include_paths,
       target_path: restoreForm.value.target_path,
+      overwrite_mode: restoreForm.value.overwrite_mode,
     })
     ElMessage.success(t('snapshots.messages.dryRunCompleted'))
   } catch (err: unknown) {

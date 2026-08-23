@@ -13,7 +13,15 @@ import (
 
 // authMiddleware resolves sessions into context.
 func authMiddleware(s *Server) func(http.Handler) http.Handler {
-	return auth.Middleware(s.ST)
+	base := auth.Middleware(s.ST)
+	return func(next http.Handler) http.Handler {
+		return base(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if s.PublicURL != "" {
+				r = auth.WithRequestPolicy(r, s.PublicURL)
+			}
+			next.ServeHTTP(w, r)
+		}))
+	}
 }
 
 // requireAuth rejects unauthenticated requests and enforces CSRF.
@@ -45,6 +53,10 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 
 // POST /setup — creates the one and only admin; 404 afterwards forever.
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if !s.allowAuthAttempt(r) {
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
+		return
+	}
 	has, err := s.ST.HasAdmin(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -81,6 +93,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 
 // POST /auth/login — sets session + csrf cookies.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.allowAuthAttempt(r) {
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
+		return
+	}
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`

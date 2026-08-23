@@ -46,7 +46,7 @@ export default {
       saved: '已保存，立即生效',
       cleared: '已清除 Telegram 通知配置',
       help:
-        '通过 @BotFather 创建 Bot 获取 Token；将 Bot 加入目标群组/频道或先向其发送消息以获取 Chat ID。通知在失败状态落库后发送，Telegram 不可用不影响任务结果。',
+        "通过 {'@'}BotFather 创建 Bot 获取 Token；将 Bot 加入目标群组/频道或先向其发送消息以获取 Chat ID。通知在失败状态落库后发送，Telegram 不可用不影响任务结果。",
     },
   },
   layout: {
@@ -432,9 +432,10 @@ export default {
       allEntries: '/（当前目录下所有条目）',
       includePathsHint: '选择要恢复的条目；留空则恢复快照下的全部内容。',
       dryRunResult: '试运行结果',
-      add: '新增',
-      changed: '变更',
-      deleteStat: '删除',
+        add: '新增',
+        changed: '变更',
+        skipped: '跳过',
+        deleteStat: '删除',
       sampleChanges: '变更示例：',
       moreChanges: '... 以及另外 {count} 条',
       dryRunButton: '试运行',

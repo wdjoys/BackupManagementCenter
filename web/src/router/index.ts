@@ -81,7 +81,7 @@ const router = createRouter({
 let appInitialized = false
 let setupInitialized: boolean | null = null
 
-router.beforeEach(async (to, _from, next) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (!appInitialized) {
     appInitialized = true
@@ -101,31 +101,26 @@ router.beforeEach(async (to, _from, next) => {
 
   if (setupInitialized === false) {
     if (to.path !== '/setup') {
-      next('/setup')
-      return
+      return '/setup'
     }
-    next()
-    return
+    return true
   }
   if (setupInitialized === true && to.path === '/setup') {
-    next('/dashboard')
-    return
+    return '/dashboard'
   }
 
   // Setup itself is public. All other non-login pages require a session.
   if (to.path !== '/login' && to.path !== '/setup' && !auth.isLoggedIn) {
     await auth.fetchMe()
     if (!auth.isLoggedIn) {
-      next('/login')
-      return
+      return '/login'
     }
   }
   if (to.path === '/login' && auth.isLoggedIn) {
-    next('/dashboard')
-    return
+    return '/dashboard'
   }
 
-  next()
+  return true
 })
 
 export default router

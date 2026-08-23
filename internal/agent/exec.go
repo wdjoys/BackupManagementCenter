@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"os"
 	"os/exec"
 	"runtime"
 
@@ -17,6 +18,17 @@ func (OSExecutor) Run(ctx context.Context, cmd backup.Cmd, onStdout func(line st
 	// Build the command
 	c := exec.CommandContext(ctx, cmd.Exe, cmd.Args...)
 	c.Env = childEnv(cmd.Env)
+	if cmd.Dir != "" {
+		c.Dir = cmd.Dir
+	}
+	if cmd.StdinPath != "" {
+		stdin, openErr := os.Open(cmd.StdinPath)
+		if openErr != nil {
+			return -1, openErr
+		}
+		defer stdin.Close()
+		c.Stdin = stdin
+	}
 
 	// Set up stdout pipe
 	stdout, err := c.StdoutPipe()

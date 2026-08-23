@@ -8,14 +8,17 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 
+	"backupmanagementcenter/internal/server/agentreg"
+	"backupmanagementcenter/internal/server/events"
+	"backupmanagementcenter/internal/server/jobs"
+	"backupmanagementcenter/internal/server/metrics"
+	"backupmanagementcenter/internal/server/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"backupmanagementcenter/internal/server/agentreg"
- 	"backupmanagementcenter/internal/server/events"
- 	"backupmanagementcenter/internal/server/jobs"
- 	"backupmanagementcenter/internal/server/metrics"
- 	"backupmanagementcenter/internal/server/store"
 )
 
 // Server carries the dependencies of the HTTP layer.
@@ -25,10 +28,47 @@ type Server struct {
 	Met     *metrics.Metrics
 	Jobs    *jobs.Orchestrator
 	Version string
+	// PublicURL is the externally visible origin used to enforce secure
+	// cookies and complete Origin checks when the server is behind a proxy.
+	PublicURL string
 	// Reg is the agent connection registry; revoke kicks live streams.
 	Reg *agentreg.Registry
 	// Ready reports overall server readiness for /health/ready.
-	Ready func() bool
+	Ready  func() bool
+	rateMu sync.Mutex
+	rate   map[string]rateWindow
+}
+
+type rateWindow struct {
+	started time.Time
+	count   int
+}
+
+// allowAuthAttempt is a small in-process login/setup limiter. It is
+// deliberately keyed by the peer address and fails closed after ten attempts
+// in fifteen minutes; a reverse proxy should apply an additional edge limit.
+func (s *Server) allowAuthAttempt(r *http.Request) bool {
+	key := r.RemoteAddr
+	if i := strings.LastIndex(key, ":"); i > 0 {
+		key = key[:i]
+	}
+	now := time.Now()
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	if s.rate == nil {
+		s.rate = make(map[string]rateWindow)
+	}
+	w := s.rate[key]
+	if w.started.IsZero() || now.Sub(w.started) >= 15*time.Minute {
+		w = rateWindow{started: now}
+	}
+	if w.count >= 10 {
+		s.rate[key] = w
+		return false
+	}
+	w.count++
+	s.rate[key] = w
+	return true
 }
 
 func New(s *Server) http.Handler {

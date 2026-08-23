@@ -75,10 +75,11 @@ type VerifyResult struct {
 
 // DryRunStats is the parsed payload of a RESTORE_DRY_RUN run.
 type DryRunStats struct {
-	Add     int64
-	Changed int64
-	Delete  int64
-	Sample  []string
+	Add     int64    `json:"add"`
+	Changed int64    `json:"changed"`
+	Skipped int64    `json:"skipped"`
+	Delete  int64    `json:"delete"`
+	Sample  []string `json:"sample"`
 }
 
 // TreeResult is the parsed payload of a SNAPSHOT_LS run.
@@ -152,6 +153,9 @@ func (o *Orchestrator) StartPlanRun(ctx context.Context, planID string, schedule
 	repo, err := o.Store.GetRepository(ctx, plan.RepositoryID)
 	if err != nil {
 		return nil, err
+	}
+	if repo.AgentID != plan.AgentID {
+		return nil, fmt.Errorf("%s: repository %s belongs to agent %s, plan selects agent %s", model.ErrInvalidPlan, repo.ID, repo.AgentID, plan.AgentID)
 	}
 	if repo.Status != "ready" {
 		return nil, fmt.Errorf("repository not ready: %s", repo.Status)
@@ -265,7 +269,21 @@ func (o *Orchestrator) systemRun(ctx context.Context, agentID, repositoryID, ope
 	}
 
 	if conf != "" {
-		o.stashConf(run.ID, conf)
+		if rs, ok := o.Store.(interface {
+			SaveRunRcloneConfig(context.Context, string, string) error
+		}); ok {
+			if err := rs.SaveRunRcloneConfig(ctx, run.ID, conf); err != nil {
+				_ = o.Store.TransitionRun(ctx, run.ID, model.RunQueued, model.RunFailed, func(r *model.Run) {
+					now := time.Now().UTC()
+					r.FinishedAt = &now
+					r.ErrorCode = "secret_storage_failed"
+					r.ErrorMessage = "failed to persist temporary remote configuration"
+				})
+				return nil, err
+			}
+		} else {
+			o.stashConf(run.ID, conf)
+		}
 	}
 
 	if repositoryID != "" {
@@ -708,6 +726,35 @@ func (o *Orchestrator) EnsureRepository(ctx context.Context, repo *model.Reposit
 	return fmt.Errorf("ensure repository init failed: %s %s", term.ErrorCode, term.ErrorMessage)
 }
 
+// StartRetentionRun queues a non-pruning forget operation. Prune is reserved
+// for a separately managed maintenance window; this operation only applies
+// retention metadata and is serialized by the repository dispatcher queue.
+func (o *Orchestrator) StartRetentionRun(ctx context.Context, repositoryID string) error {
+	repo, err := o.Store.GetRepository(ctx, repositoryID)
+	if err != nil {
+		return err
+	}
+	plans, err := o.Store.ListPlans(ctx, repo.AgentID)
+	if err != nil {
+		return err
+	}
+	var retention model.Retention
+	var planID, kind string
+	for _, plan := range plans {
+		if plan.RepositoryID == repositoryID && plan.Enabled {
+			retention, planID, kind = plan.Retention, plan.ID, plan.Kind
+			break
+		}
+	}
+	if retention.KeepLast+retention.KeepDaily+retention.KeepWeekly+retention.KeepMonthly == 0 {
+		return nil
+	}
+	_, err = o.SystemRun(ctx, repo.AgentID, repositoryID, model.OpForget, model.ForgetTask{
+		PlanID: planID, Kind: kind, Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath}, Retention: retention,
+	}, 0)
+	return err
+}
+
 // StartRestore creates a restore request and a restore run. For filesystem
 // restores target_path must be absolute and overwrite_mode ∈ {never,if-changed,always}.
 // For database restores with overwrite=true, input.Confirmation must equal
@@ -740,11 +787,26 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		}
 	default:
 		// database
+		// Check the destructive confirmation before validating connection
+		// details.  A caller with a stale/incorrect confirmation must receive
+		// the same forbidden response regardless of which target fields are
+		// omitted or malformed.
 		if in.Overwrite {
 			expected := secrets.HashToken(in.Target.Database)
 			if in.Confirmation != expected {
 				return nil, nil, ErrForbidden
 			}
+		}
+		if in.RestoreKind != model.KindSQLite {
+			if in.Target.Host == "" || in.Target.Port <= 0 || in.Target.Username == "" {
+				return nil, nil, fmt.Errorf("%w: database target host, port and username are required", ErrPathInvalid)
+			}
+		}
+		if in.Target.Database == "" {
+			return nil, nil, fmt.Errorf("%w: target database/path is required", ErrPathInvalid)
+		}
+		if in.RestoreKind == model.KindSQLite && !filepath.IsAbs(in.Target.Database) {
+			return nil, nil, fmt.Errorf("%w: sqlite target path must be absolute", ErrPathInvalid)
 		}
 		task.Database = &model.DatabaseRestore{
 			SnapshotID:      in.SnapshotID,
@@ -772,6 +834,7 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		TargetJSON:       string(targetJSON),
 		Overwrite:        in.Overwrite,
 		ConfirmationHash: confirmationHash,
+		Phase:            "queued",
 		CreatedAt:        time.Now().UTC(),
 	}
 
@@ -792,7 +855,28 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 
 	rr.RunID = run.ID
 	if err := o.Store.CreateRestoreRequest(ctx, rr); err != nil {
+		now := time.Now().UTC()
+		_ = o.Store.TransitionRun(ctx, run.ID, model.RunQueued, model.RunFailed, func(r *model.Run) {
+			r.FinishedAt = &now
+			r.ErrorCode = model.ErrInvalidPlan
+			r.ErrorMessage = "failed to persist restore request"
+		})
 		return nil, nil, err
+	}
+	if in.TargetPassword != "" {
+		if rs, ok := o.Store.(interface {
+			SaveRunTargetPassword(context.Context, string, string) error
+		}); ok {
+			if err := rs.SaveRunTargetPassword(ctx, run.ID, in.TargetPassword); err != nil {
+				_ = o.Store.TransitionRun(ctx, run.ID, model.RunQueued, model.RunFailed, func(r *model.Run) {
+					now := time.Now().UTC()
+					r.FinishedAt = &now
+					r.ErrorCode = "secret_storage_failed"
+					r.ErrorMessage = "failed to persist restore credential"
+				})
+				return nil, nil, fmt.Errorf("save restore credential: %w", err)
+			}
+		}
 	}
 
 	o.Disp.Enqueue(ctx, run.ID, run.AgentID, repo.ID)
@@ -810,7 +894,7 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 }
 
 // DryRunRestore runs a filesystem restore dry-run.
-func (o *Orchestrator) DryRunRestore(ctx context.Context, repoID, snapshotID string, includePaths []string, targetPath string) (*DryRunStats, *model.Run, error) {
+func (o *Orchestrator) DryRunRestore(ctx context.Context, repoID, snapshotID string, includePaths []string, targetPath, overwriteMode string) (*DryRunStats, *model.Run, error) {
 	repo, err := o.Store.GetRepository(ctx, repoID)
 	if err != nil {
 		return nil, nil, err
@@ -820,10 +904,11 @@ func (o *Orchestrator) DryRunRestore(ctx context.Context, repoID, snapshotID str
 		Kind:       model.KindFilesystem,
 		Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath},
 		Filesystem: &model.FilesystemRestore{
-			SnapshotID:   snapshotID,
-			IncludePaths: includePaths,
-			TargetPath:   targetPath,
-			DryRun:       true,
+			SnapshotID:    snapshotID,
+			IncludePaths:  includePaths,
+			TargetPath:    targetPath,
+			OverwriteMode: overwriteMode,
+			DryRun:        true,
 		},
 	}
 	run, err := o.SystemRun(ctx, repo.AgentID, repoID, model.OpRestoreDryRun, params, 0)
@@ -895,12 +980,24 @@ func (o *Orchestrator) BuildCommand(ctx context.Context, runID string) (string, 
 			return "", nil, err
 		}
 
-		// db_password only for backup/restore of database plans
+		// Database credentials are resolved from encrypted per-plan/per-run
+		// secret storage. The legacy JSON fallback exists only for old stores
+		// during migration and never enters the API response.
 		var dbPassword string
-		if run.PlanID != "" && (run.Operation == model.OpBackup || run.Operation == model.OpRestore) {
-			plan, err := o.Store.GetPlan(ctx, run.PlanID)
-			if err == nil {
+		if run.Operation == model.OpBackup && run.PlanID != "" {
+			if ps, ok := o.Store.(interface {
+				GetPlanDBPassword(context.Context, string) (string, error)
+			}); ok {
+				dbPassword, _ = ps.GetPlanDBPassword(ctx, run.PlanID)
+			} else if plan, planErr := o.Store.GetPlan(ctx, run.PlanID); planErr == nil {
 				dbPassword, _ = o.extractDBPasswordFromSource(plan.SourceJSON)
+			}
+		}
+		if run.Operation == model.OpRestore {
+			if rs, ok := o.Store.(interface {
+				GetRunTargetPassword(context.Context, string) (string, error)
+			}); ok {
+				dbPassword, _ = rs.GetRunTargetPassword(ctx, run.ID)
 			}
 		}
 
@@ -914,7 +1011,15 @@ func (o *Orchestrator) BuildCommand(ctx context.Context, runID string) (string, 
 	// System runs without a repo (e.g. verify_storage_remote) may still
 	// need rclone config from the per-run stash.
 	if repoID == "" {
-		stashedConf := o.confFor(run.ID)
+		stashedConf := ""
+		if rs, ok := o.Store.(interface {
+			GetRunRcloneConfig(context.Context, string) (string, error)
+		}); ok {
+			stashedConf, _ = rs.GetRunRcloneConfig(ctx, run.ID)
+		}
+		if stashedConf == "" {
+			stashedConf = o.confFor(run.ID)
+		}
 		if stashedConf != "" {
 			secrets = &bmcv1.SecretSet{RcloneConf: stashedConf}
 		}
@@ -1018,7 +1123,7 @@ func (o *Orchestrator) buildBackupParams(ctx context.Context, run *model.Run) ([
 	}
 
 	// Retention tags (already present on plan, we forward as-is)
-	tags := []string{"plan:" + plan.ID, "kind:" + plan.Kind}
+	tags := []string{"plan:" + plan.ID, "kind:" + plan.Kind, "run:" + run.ID}
 	task := model.BackupTask{
 		PlanID:         plan.ID,
 		Kind:           plan.Kind,
@@ -1070,20 +1175,21 @@ func (o *Orchestrator) buildRestoreParams(ctx context.Context, run *model.Run) (
 		}
 	default:
 		task.Database = &model.DatabaseRestore{
-			SnapshotID:      rr.SnapshotID,
-			Kind:            rr.RestoreKind,
-			TargetHost:      rr.Target.Host,
-			TargetPort:      rr.Target.Port,
-			TargetUsername:  rr.Target.Username,
-			TargetDatabase:  rr.Target.Database,
-			ReplaceExisting: rr.Overwrite,
+			SnapshotID:       rr.SnapshotID,
+			Kind:             rr.RestoreKind,
+			TargetHost:       rr.Target.Host,
+			TargetPort:       rr.Target.Port,
+			TargetUsername:   rr.Target.Username,
+			TargetDatabase:   rr.Target.Database,
+			TargetAuthSource: rr.Target.AuthSource,
+			ReplaceExisting:  rr.Overwrite,
 		}
 	}
 	return json.Marshal(task)
 }
 
-// planSourceWithSecret is a superset of model.PlanSource that also captures
-// the optional encrypted "password" key stored alongside the source JSON.
+// planSourceWithSecret is a legacy compatibility shape used only while
+// migrating old plans that embedded a password in source_json.
 type planSourceWithSecret struct {
 	model.PlanSource
 	Password string `json:"password,omitempty"`
@@ -1097,11 +1203,8 @@ func (o *Orchestrator) extractDBPasswordFromSource(sourceJSON string) (string, e
 	if ps.Password == "" {
 		return "", nil
 	}
-	// The password is stored encrypted inside source_json.
-	// It was sealed with AAD "backup_plans:<planID>:password" — we don't
-	// have the planID here, so we rely on the API layer to have already
-	// resolved it. Return as-is and let the caller use it; if decryption
-	// was already done upstream, this is the plaintext.
+	// New plans keep this value in the separate encrypted secret table. This
+	// fallback exists only for one-time migration of old rows.
 	return ps.Password, nil
 }
 

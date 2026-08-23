@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -28,6 +29,9 @@ type Runner struct {
 	mu       sync.Mutex
 	running  map[string]context.CancelFunc
 	finished *lruCache // run_id -> RunResult (cached for idempotency)
+	repoMu   sync.Mutex
+	repoLocks map[string]*sync.Mutex
+	slots chan struct{}
 
 	prober *Prober // optional; refreshed tool paths before each execution
 }
@@ -43,8 +47,10 @@ func NewRunner(deps pipeline.Deps, dataDir string, identity *Identity) *Runner {
 		identity:  identity,
 		running:   make(map[string]context.CancelFunc),
 		finished:  newLRUCache(512),
+		repoLocks: make(map[string]*sync.Mutex),
 		executeFn: pipeline.Execute,
 	}
+	if deps.MaxConcurrency > 0 { r.slots = make(chan struct{}, deps.MaxConcurrency) }
 	return r
 }
 
@@ -169,14 +175,31 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 		}
 		// Extract secrets from SecretSet
 		secrets := r.extractSecrets(cmd.Secrets)
-
-		// Execute pipeline
-		result, err := r.executeFn(runCtx, deps, tempDir, cmd.Operation, cmd.ParamsJson, secrets)
+		if repoKey := commandRepositoryKey(cmd.ParamsJson); repoKey != "" {
+			repoLock := r.repositoryLock(repoKey)
+			repoLock.Lock()
+			defer repoLock.Unlock()
+		}
+		// Execute pipeline, respecting the global concurrency cap without
+		// leaving cancelled commands blocked behind a full semaphore.
+		var result *pipeline.Result
+		var err error
+		if r.slots != nil {
+			select {
+			case r.slots <- struct{}{}:
+				defer func() { <-r.slots }()
+			case <-runCtx.Done():
+				err = runCtx.Err()
+			}
+		}
+		if err == nil {
+			result, err = r.executeFn(runCtx, deps, tempDir, cmd.Operation, cmd.ParamsJson, secrets)
+		}
 
 		var runResult *bmcv1.RunResult
 		if err != nil {
 			log.Printf("[ERROR] pipeline execute run %s: %v", runID, err)
-			if ctx.Err() != nil {
+			if runCtx.Err() != nil {
 				// Context was cancelled — treat as CANCELLED
 				runResult = &bmcv1.RunResult{
 					RunId:        runID,
@@ -223,6 +246,29 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 		// Send RunResult
 		r.sendRunResult(stream, runResult)
 	}()
+}
+
+func (r *Runner) repositoryLock(key string) *sync.Mutex {
+	r.repoMu.Lock()
+	defer r.repoMu.Unlock()
+	if lock := r.repoLocks[key]; lock != nil {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	r.repoLocks[key] = lock
+	return lock
+}
+
+func commandRepositoryKey(params []byte) string {
+	var envelope struct {
+		Repository struct {
+			RepositoryPath string `json:"repository_path"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(params, &envelope); err == nil && envelope.Repository.RepositoryPath != "" {
+		return envelope.Repository.RepositoryPath
+	}
+	return ""
 }
 
 // Cancel cancels a running command by run_id.

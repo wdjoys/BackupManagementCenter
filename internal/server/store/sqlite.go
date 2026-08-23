@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,19 @@ type sqliteStore struct {
 	db   *sql.DB
 	mu   sync.Mutex
 	seal secrets.Sealer
+}
+
+// BackupSQLite creates a consistent point-in-time copy using SQLite's online
+// backup primitive. It is used before migrations or secret-format upgrades so
+// an operator always has a recoverable copy of the control database.
+func BackupSQLite(ctx context.Context, dbPath, backupPath string) error {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil { return err }
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", backupPath); err != nil {
+		return fmt.Errorf("sqlite online backup: %w", err)
+	}
+	return nil
 }
 
 // New opens or creates a SQLite database at path with a no-op sealer (dev).
@@ -474,9 +488,29 @@ func (s *sqliteStore) GetTelegramSettings(ctx context.Context) (*model.TelegramS
 	}
 	token, err := s.seal.Open(model.TelegramSettingsTable, model.TelegramSettingsRow, model.TelegramTokenColumn, encToken)
 	if err != nil {
+		// Installations created before the master-key boundary used the
+		// development NoopSealer. Migrate that legacy payload on first read so
+		// it is immediately rewritten with the configured AES-GCM sealer.
+		if legacy, ok := decodeLegacyNoop(encToken); ok {
+			migrated := &model.TelegramSettings{BotToken: legacy, ChatID: chatID, UpdatedAt: parseTime(updated)}
+			if saveErr := s.SaveTelegramSettings(ctx, migrated); saveErr != nil {
+				return nil, fmt.Errorf("migrate telegram token: %w", saveErr)
+			}
+			return migrated, nil
+		}
 		return nil, fmt.Errorf("unseal telegram token: %w", err)
 	}
 	return &model.TelegramSettings{BotToken: token, ChatID: chatID, UpdatedAt: parseTime(updated)}, nil
+}
+
+func decodeLegacyNoop(data []byte) (string, bool) {
+	if len(data) == 0 { return "", false }
+	raw, err := base64.StdEncoding.DecodeString(string(data))
+	const prefix = "noop:"
+	if err != nil || len(raw) < len(prefix) || string(raw[:len(prefix)]) != prefix {
+		return "", false
+	}
+	return string(raw[len(prefix):]), true
 }
 
 func (s *sqliteStore) SaveTelegramSettings(ctx context.Context, ts *model.TelegramSettings) error {
@@ -836,8 +870,8 @@ func (s *sqliteStore) CreateRun(ctx context.Context, r *model.Run) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO runs (id, plan_id, agent_id, operation, status,
 		   queued_at, started_at, finished_at, progress_json, snapshot_id,
-		   error_code, error_message, repository_id, scheduled_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   error_code, error_message, repository_id, scheduled_at, attempt, lease_expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, planID, r.AgentID, r.Operation, r.Status,
 		r.QueuedAt.Format(time.RFC3339),
 		nullTime(r.StartedAt),
@@ -846,6 +880,8 @@ func (s *sqliteStore) CreateRun(ctx context.Context, r *model.Run) error {
 		r.ErrorCode, r.ErrorMessage,
 		repoID,
 		nullTime(r.ScheduledAt),
+		r.Attempt,
+		nullTime(r.LeaseExpiresAt),
 	)
 	if err != nil {
 		if isUniqueConstraint(err) {
@@ -860,7 +896,8 @@ func (s *sqliteStore) GetRun(ctx context.Context, id string) (*model.Run, error)
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
-		        error_code, error_message, repository_id, scheduled_at
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at
 		 FROM runs WHERE id = ?`, id,
 	)
 	return scanRun(row)
@@ -877,6 +914,10 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 	if f.PlanID != "" {
 		where = append(where, "plan_id = ?")
 		args = append(args, f.PlanID)
+	}
+	if f.RepositoryID != "" {
+		where = append(where, "repository_id = ?")
+		args = append(args, f.RepositoryID)
 	}
 	if f.Operation != "" {
 		where = append(where, "operation = ?")
@@ -898,7 +939,8 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 	query := fmt.Sprintf(
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
-		        error_code, error_message, repository_id, scheduled_at
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at
 		 FROM runs WHERE %s ORDER BY queued_at DESC LIMIT ? OFFSET ?`,
 		strings.Join(where, " AND "),
 	)
@@ -927,8 +969,8 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 // dispatched/running. Terminal states remain final.
 var validTransitions = map[string]map[string]bool{
 	model.RunQueued:     {model.RunDispatched: true, model.RunFailed: true},
-	model.RunDispatched: {model.RunRunning: true, model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
-	model.RunRunning:    {model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
+	model.RunDispatched: {model.RunQueued: true, model.RunRunning: true, model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
+	model.RunRunning:    {model.RunQueued: true, model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
 }
 
 func isTerminal(status string) bool {
@@ -949,7 +991,8 @@ func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mu
 	row := tx.QueryRowContext(ctx,
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
-		        error_code, error_message, repository_id, scheduled_at
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at
 		 FROM runs WHERE id = ?`, id,
 	)
 	run, err := scanRun(row)
@@ -979,13 +1022,13 @@ func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mu
 	// Write back.
 	_, err = tx.ExecContext(ctx,
 		`UPDATE runs SET status=?, started_at=?, finished_at=?, progress_json=?,
-		   snapshot_id=?, error_code=?, error_message=?
+		   snapshot_id=?, error_code=?, error_message=?, attempt=?, lease_expires_at=?
 		 WHERE id=?`,
 		run.Status,
 		nullTime(run.StartedAt),
 		nullTime(run.FinishedAt),
 		run.ProgressJSON, run.SnapshotID,
-		run.ErrorCode, run.ErrorMessage,
+		run.ErrorCode, run.ErrorMessage, run.Attempt, nullTime(run.LeaseExpiresAt),
 		run.ID,
 	)
 	if err != nil {
@@ -1012,7 +1055,8 @@ func (s *sqliteStore) ListRunsByStatus(ctx context.Context, statuses []string) (
 	query := fmt.Sprintf(
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
-		        error_code, error_message, repository_id, scheduled_at
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at
 		 FROM runs WHERE status IN (%s) ORDER BY queued_at DESC`,
 		strings.Join(placeholders, ","),
 	)
@@ -1034,6 +1078,20 @@ func (s *sqliteStore) ListRunsByStatus(ctx context.Context, statuses []string) (
 	return out, rows.Err()
 }
 
+// UpdateRunProgress persists a progress snapshot without changing the run
+// state. Progress messages are high frequency and must not go through the
+// terminal-state transition function.
+func (s *sqliteStore) UpdateRunProgress(ctx context.Context, id, progressJSON string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET progress_json = ?
+		 WHERE id = ? AND status IN ('queued','dispatched','running')`,
+		progressJSON, id)
+	if err != nil {
+		return fmt.Errorf("update run progress: %w", err)
+	}
+	return nil
+}
+
 // FailStaleRuns force-fails runs stuck in the given non-terminal statuses
 // and returns the IDs actually moved to failed, enabling per-run failure
 // notifications without a read-then-write race.
@@ -1047,7 +1105,7 @@ func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, erro
 	}
 
 	query := fmt.Sprintf(
-		`UPDATE runs SET status='failed', error_code=?, finished_at=?
+		`UPDATE runs SET status='failed', error_code=?, finished_at=?, lease_expires_at=NULL
 		 WHERE status IN (%s) RETURNING id`,
 		strings.Join(placeholders, ","),
 	)
@@ -1168,10 +1226,12 @@ func (s *sqliteStore) MaxRunLogSeq(ctx context.Context, runID string) (uint64, e
 func (s *sqliteStore) CreateRestoreRequest(ctx context.Context, rr *model.RestoreRequest) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO restore_requests (id, run_id, snapshot_id, restore_kind,
-		   target_json, overwrite, confirmation_hash, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		       target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		       rollback_snapshot_id, phase, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rr.ID, rr.RunID, rr.SnapshotID, rr.RestoreKind,
-		rr.TargetJSON, boolInt(rr.Overwrite), rr.ConfirmationHash,
+		rr.TargetJSON, boolInt(rr.Overwrite), rr.ConfirmationHash, rr.PreRestoreRunID,
+		rr.RollbackSnapshotID, rr.Phase,
 		rr.CreatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
@@ -1183,7 +1243,8 @@ func (s *sqliteStore) CreateRestoreRequest(ctx context.Context, rr *model.Restor
 func (s *sqliteStore) GetRestoreRequest(ctx context.Context, id string) (*model.RestoreRequest, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, run_id, snapshot_id, restore_kind,
-		        target_json, overwrite, confirmation_hash, created_at
+		        target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		        rollback_snapshot_id, phase, created_at
 		 FROM restore_requests WHERE id = ?`, id,
 	)
 	return scanRestoreRequest(row)
@@ -1195,7 +1256,8 @@ func (s *sqliteStore) ListRestoreRequests(ctx context.Context, limit int) ([]mod
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, run_id, snapshot_id, restore_kind,
-		        target_json, overwrite, confirmation_hash, created_at
+		        target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		        rollback_snapshot_id, phase, created_at
 		 FROM restore_requests ORDER BY created_at DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -1212,6 +1274,12 @@ func (s *sqliteStore) ListRestoreRequests(ctx context.Context, limit int) ([]mod
 		out = append(out, *rr)
 	}
 	return out, rows.Err()
+}
+
+func (s *sqliteStore) UpdateRestorePhase(ctx context.Context, runID, phase string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE restore_requests SET phase=? WHERE run_id=?`, phase, runID)
+	if err != nil { return fmt.Errorf("update restore phase: %w", err) }
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1453,8 +1521,10 @@ func scanRun(row interface{ Scan(dest ...any) error }) (*model.Run, error) {
 		errorCode, errorMessage        sql.NullString
 		planID, repositoryID           sql.NullString
 		scheduledAt                    sql.NullString
+		attempt                        int
+		leaseExpiresAt                 sql.NullString
 	)
-	if err := row.Scan(&id, &planID, &agentID, &operation, &status, &queuedAt, &startedAt, &finishedAt, &progressJSON, &snapshotID, &errorCode, &errorMessage, &repositoryID, &scheduledAt); err != nil {
+	if err := row.Scan(&id, &planID, &agentID, &operation, &status, &queuedAt, &startedAt, &finishedAt, &progressJSON, &snapshotID, &errorCode, &errorMessage, &repositoryID, &scheduledAt, &attempt, &leaseExpiresAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1479,6 +1549,8 @@ func scanRun(row interface{ Scan(dest ...any) error }) (*model.Run, error) {
 		ErrorCode:    errorCode.String,
 		ErrorMessage: errorMessage.String,
 		RepositoryID: repositoryID.String,
+		Attempt:      attempt,
+		LeaseExpiresAt: parseTimePtr(leaseExpiresAt),
 		ScheduledAt:  parseTimePtr(scheduledAt),
 	}, nil
 }
@@ -1504,9 +1576,10 @@ func scanRestoreRequest(row interface{ Scan(dest ...any) error }) (*model.Restor
 		targetJSON                         string
 		overwrite                          int
 		confirmationHash                   sql.NullString
+		preRestoreRunID, rollbackSnapshotID, phase sql.NullString
 		createdAt                          string
 	)
-	if err := row.Scan(&id, &runID, &snapshotID, &restoreKind, &targetJSON, &overwrite, &confirmationHash, &createdAt); err != nil {
+	if err := row.Scan(&id, &runID, &snapshotID, &restoreKind, &targetJSON, &overwrite, &confirmationHash, &preRestoreRunID, &rollbackSnapshotID, &phase, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1525,6 +1598,9 @@ func scanRestoreRequest(row interface{ Scan(dest ...any) error }) (*model.Restor
 		TargetJSON:       targetJSON,
 		Overwrite:        overwrite != 0,
 		ConfirmationHash: confirmationHash.String,
+		PreRestoreRunID: preRestoreRunID.String,
+		RollbackSnapshotID: rollbackSnapshotID.String,
+		Phase: phase.String,
 		CreatedAt:        parseTime(createdAt),
 	}, nil
 }

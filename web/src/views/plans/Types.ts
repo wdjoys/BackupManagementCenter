@@ -14,6 +14,7 @@ export interface PlanFormSource {
   username?: string
   password?: string
   database?: string
+  auth_source?: string
   extra_args?: string[]
   estimated_dump_bytes?: number | null
   path?: string
@@ -50,7 +51,8 @@ export function buildPayload(model: PlanFormModel): Record<string, unknown> {
   if (source.extra_args) source.extra_args = filterTrimmed(source.extra_args)
   if (source.port == null) delete source.port
   if (source.estimated_dump_bytes == null) delete source.estimated_dump_bytes
-  if (!source.password) delete source.password
+	const password = source.password
+	delete source.password
 
   const payload: Record<string, unknown> = {
     name: model.name.trim(),
@@ -63,8 +65,9 @@ export function buildPayload(model: PlanFormModel): Record<string, unknown> {
     retention: { ...model.retention },
     timeout_seconds: model.timeout_seconds,
   }
-  if (model.id) payload.enabled = model.enabled
-  return payload
+	if (model.id) payload.enabled = model.enabled
+	if (password) payload.credentials = { password }
+	return payload
 }
 
 /** Payload for POST /plans/validate — never includes the password. */

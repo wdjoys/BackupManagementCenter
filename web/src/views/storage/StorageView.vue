@@ -103,6 +103,15 @@
           </div>
         </div>
 
+        <el-alert
+          :title="t('storage.repositoryHelp.title')"
+          :description="t('storage.repositoryHelp.description')"
+          type="info"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 16px"
+        />
+
         <div v-if="reposError" class="error-state">
           <el-icon><Warning /></el-icon>
           <p>{{ reposError }}</p>
@@ -138,10 +147,10 @@
           <el-table-column :label="t('common.status')" width="100">
             <template #default="{ row }">
               <el-tag
-                :type="row.status === 'ready' ? 'success' : 'warning'"
+                :type="repositoryStatusType(row.status)"
                 size="small"
               >
-                {{ statusText(row.status) }}
+                {{ repositoryStatusText(row.status) }}
               </el-tag>
             </template>
           </el-table-column>
@@ -332,8 +341,8 @@ token = ..."
                   <code>{{ bindResult.repository_path }}</code>
                 </el-form-item>
                 <el-form-item :label="t('common.status')">
-                  <el-tag :type="bindResult.status === 'ready' ? 'success' : 'warning'">
-                    {{ statusText(bindResult.status) }}
+                  <el-tag :type="repositoryStatusType(bindResult.status)">
+                    {{ repositoryStatusText(bindResult.status) }}
                   </el-tag>
                 </el-form-item>
               </el-form>
@@ -368,8 +377,23 @@ import type { Agent, StorageTarget, Repository } from '@/api/types'
 
 const { t } = useI18n()
 
-function statusText(status: string): string {
-  return translateEnum('status', status)
+function repositoryStatusText(status: string): string {
+  switch (status) {
+    case 'pending':
+      return t('storage.repositoryStatus.pending')
+    case 'ready':
+      return t('storage.repositoryStatus.ready')
+    case 'error':
+      return t('storage.repositoryStatus.error')
+    default:
+      return translateEnum('status', status)
+  }
+}
+
+function repositoryStatusType(status: string): 'success' | 'danger' | 'warning' {
+  if (status === 'ready') return 'success'
+  if (status === 'error') return 'danger'
+  return 'warning'
 }
 
 // Local types
@@ -538,6 +562,7 @@ async function handleBindRepo(): Promise<void> {
   } catch (err: unknown) {
     const e = err as { message?: string; code?: string }
     ElMessage.error(e.message || t('storage.bindDialog.bindFailedCode', { code: e.code || 'unknown' }))
+    await loadRepos()
   } finally {
     bindLoading.value = false
   }

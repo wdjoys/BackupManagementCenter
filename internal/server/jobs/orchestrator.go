@@ -619,6 +619,7 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 		// the stale row, otherwise it stays pending forever.
 		if existing.Status != "ready" {
 			if err := o.EnsureRepository(ctx, existing, agentID); err != nil {
+				o.markRepositoryError(existing.ID)
 				return nil, err
 			}
 			existing.Status = "ready"
@@ -657,6 +658,7 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 		return nil, err
 	}
 	if err := o.EnsureRepository(ctx, repo, agentID); err != nil {
+		o.markRepositoryError(repo.ID)
 		return nil, err
 	}
 	// EnsureRepository updated the DB row; mirror it into the struct so the
@@ -664,6 +666,18 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 	repo.Status = "ready"
 
 	return repo, nil
+}
+
+// markRepositoryError records a failed bind independently of the HTTP request
+// context. Binding waits for agent-side restic operations, so a reverse proxy
+// or browser timeout must not leave the repository permanently pending.
+func (o *Orchestrator) markRepositoryError(repoID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if repo, err := o.Store.GetRepository(ctx, repoID); err == nil && repo.Status == "ready" {
+		return
+	}
+	_ = o.Store.UpdateRepositoryStatus(ctx, repoID, "error")
 }
 
 // EnsureRepository executes the init-or-adopt flow:

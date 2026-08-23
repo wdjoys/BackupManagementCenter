@@ -256,6 +256,15 @@ export default {
     reposLoadFailed: 'Failed to load repositories.',
     emptyTargets: 'No storage targets. Import an rclone config to start.',
     emptyRepositories: 'No repositories. Bind one by selecting an Agent and a Storage Target.',
+    repositoryHelp: {
+      title: 'Repository binding',
+      description: 'Binding makes the Agent create or adopt an isolated Restic repository under the selected remote path. The first bind checks the repository and may initialize it, which can take several seconds; failed binds can be retried.',
+    },
+    repositoryStatus: {
+      pending: 'Initializing',
+      ready: 'Ready',
+      error: 'Initialization failed',
+    },
     columns: {
       type: 'Type',
       remoteName: 'Remote Name',

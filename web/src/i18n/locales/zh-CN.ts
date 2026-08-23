@@ -256,6 +256,15 @@ export default {
     reposLoadFailed: '加载仓库列表失败。',
     emptyTargets: '暂无存储目标，请先导入 rclone 配置。',
     emptyRepositories: '暂无仓库，请选择一个 Agent 和一个存储目标进行绑定。',
+    repositoryHelp: {
+      title: '仓库绑定说明',
+      description: '绑定会让 Agent 在所选网盘路径创建或接管一个独立的 Restic 仓库。首次绑定会先检查仓库，再执行初始化，可能需要几十秒；失败后可重新点击绑定重试。',
+    },
+    repositoryStatus: {
+      pending: '初始化中',
+      ready: '就绪',
+      error: '初始化失败',
+    },
     columns: {
       type: '类型',
       remoteName: '远端名称',

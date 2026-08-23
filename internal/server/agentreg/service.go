@@ -550,6 +550,10 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	if run.AgentID != agentID {
 		return status.Error(codes.PermissionDenied, "run belongs to another agent")
 	}
+	initRepositoryID := ""
+	if isRepositoryInitRun(run) {
+		initRepositoryID = run.RepositoryID
+	}
 
 	err = s.store.TransitionRun(ctx, runID, model.RunRunning, toStatus, func(r *model.Run) {
 		r.FinishedAt = &now
@@ -586,6 +590,19 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 		return err
 	}
 	if isTerminal(toStatus) {
+		// Binding waits synchronously for restic init, but the HTTP request can
+		// time out while the agent is still finishing. Reconcile the repository
+		// status from the eventual terminal init result so a late success heals
+		// the pending/error row automatically.
+		if initRepositoryID != "" {
+			repositoryStatus := "error"
+			if toStatus == model.RunSucceeded {
+				repositoryStatus = "ready"
+			}
+			if err := s.store.UpdateRepositoryStatus(ctx, initRepositoryID, repositoryStatus); err != nil {
+				log.Printf("failed to update repository %s status after init: %v", initRepositoryID, err)
+			}
+		}
 		if run.Operation == model.OpRestore {
 			phase := "failed"
 			if toStatus == model.RunSucceeded {
@@ -638,6 +655,19 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	}
 
 	return nil
+}
+
+// isRepositoryInitRun distinguishes the repository bootstrap form of the
+// legacy FORGET operation from normal retention/forget runs.
+func isRepositoryInitRun(run *model.Run) bool {
+	if run == nil || run.Operation != model.OpForget || run.RepositoryID == "" {
+		return false
+	}
+	var task model.InitTask
+	if err := json.Unmarshal([]byte(run.ProgressJSON), &task); err != nil {
+		return false
+	}
+	return task.ResticInit
 }
 
 // isTerminal reports whether a run status is immutable.  Keep this helper

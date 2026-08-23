@@ -20,11 +20,17 @@ import (
 // handleRunResult are implemented; any other call panics loudly.
 type fakeStore struct {
 	store.Store
-	mu   sync.Mutex
-	runs map[string]*model.Run
+	mu           sync.Mutex
+	runs         map[string]*model.Run
+	repoStatuses map[string]string
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{runs: make(map[string]*model.Run)} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		runs:         make(map[string]*model.Run),
+		repoStatuses: make(map[string]string),
+	}
+}
 
 func (f *fakeStore) addRun(r model.Run) {
 	f.mu.Lock()
@@ -69,6 +75,13 @@ func (f *fakeStore) TransitionRun(_ context.Context, id, from, to string, mutate
 	return nil
 }
 
+func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, id, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.repoStatuses[id] = status
+	return nil
+}
+
 type recordingNotifier struct {
 	mu  sync.Mutex
 	ids []string
@@ -100,6 +113,65 @@ func failedResult(runID string) *bmcv1.RunResult {
 		Status:       bmcv1.RunResult_FAILED,
 		ErrorCode:    "restic_backup_failed",
 		ErrorMessage: "snapshot exited 3",
+	}
+}
+
+func TestIsRepositoryInitRun(t *testing.T) {
+	initRun := model.Run{
+		Operation:    model.OpForget,
+		RepositoryID: "repo-1",
+		ProgressJSON: `{"repository":{"repository_path":"rclone:remote:/bmc"},"restic_init":true}`,
+	}
+	if !isRepositoryInitRun(&initRun) {
+		t.Fatal("expected restic init run to be recognized")
+	}
+
+	retentionRun := initRun
+	retentionRun.ProgressJSON = `{"repository":{"repository_path":"rclone:remote:/bmc"},"retention":{"keep_last":3}}`
+	if isRepositoryInitRun(&retentionRun) {
+		t.Fatal("retention run must not be treated as repository init")
+	}
+
+	missingRepo := initRun
+	missingRepo.RepositoryID = ""
+	if isRepositoryInitRun(&missingRepo) {
+		t.Fatal("init without repository must not be reconciled")
+	}
+}
+
+func TestHandleInitRunReconcilesRepositoryStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   bmcv1.RunResult_Status
+		expected string
+	}{
+		{name: "success", status: bmcv1.RunResult_SUCCEEDED, expected: "ready"},
+		{name: "failure", status: bmcv1.RunResult_FAILED, expected: "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			run := model.Run{
+				ID:           "init-run-" + tc.name,
+				AgentID:      "agent-1",
+				Operation:    model.OpForget,
+				Status:       model.RunRunning,
+				RepositoryID: "repo-1",
+				ProgressJSON: `{"repository":{"repository_path":"rclone:remote:/bmc"},"restic_init":true}`,
+				QueuedAt:     time.Now().UTC(),
+			}
+			st.addRun(run)
+			svc, _ := newTestService(st)
+			result := &bmcv1.RunResult{RunId: run.ID, Status: tc.status}
+			if err := svc.handleRunResult(context.Background(), "agent-1", result); err != nil {
+				t.Fatalf("handleRunResult: %v", err)
+			}
+			st.mu.Lock()
+			got := st.repoStatuses[run.RepositoryID]
+			st.mu.Unlock()
+			if got != tc.expected {
+				t.Fatalf("repository status = %q, want %q", got, tc.expected)
+			}
+		})
 	}
 }
 

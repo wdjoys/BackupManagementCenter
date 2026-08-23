@@ -481,6 +481,11 @@ func (o *Orchestrator) ValidateStorageRemote(ctx context.Context, confContent, r
 	}
 	if term.Status == model.RunFailed {
 		if term.ErrorCode == model.ErrStorageRemoteUnreachable {
+			// Surface the agent-side reason (rclone stderr) instead of the
+			// bare stable code; errorCode() still matches by substring.
+			if detail := strings.TrimSpace(term.ErrorMessage); detail != "" {
+				return nil, fmt.Errorf("%w: %s", ErrStorageRemote, detail)
+			}
 			return nil, ErrStorageRemote
 		}
 		return nil, fmt.Errorf("verify remote failed: %s", term.ErrorMessage)

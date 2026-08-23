@@ -122,6 +122,9 @@ func TestOSExecutor_ContextCancelled(t *testing.T) {
 }
 
 func cmdForTest(args ...string) backup.Cmd {
+	if len(args) == 1 && args[0] == "exit1" {
+		args = []string{"exit", "1"}
+	}
 	return backup.Cmd{
 		Exe:  shell(),
 		Args: shellArgs(args...),
@@ -129,12 +132,19 @@ func cmdForTest(args ...string) backup.Cmd {
 }
 
 func shell() string {
-	return "cmd.exe"
+	if runtime.GOOS == "windows" {
+		return "cmd.exe"
+	}
+	return "sh"
 }
 
 func shellArgs(args ...string) []string {
-	if len(args) == 0 {
-		return []string{"/c", "exit"} // no-op success
+	flag := "-c"
+	if runtime.GOOS == "windows" {
+		flag = "/c"
 	}
-	return []string{"/c", strings.Join(args, " ")}
+	if len(args) == 0 {
+		return []string{flag, "exit"} // no-op success
+	}
+	return []string{flag, strings.Join(args, " ")}
 }

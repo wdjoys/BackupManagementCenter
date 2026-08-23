@@ -364,6 +364,15 @@ function pushState(r: Run): void {
 }
 
 function connectWs(): void {
+  const id = runId.value
+  // A detail view can briefly be mounted while the router is resolving a
+  // redirect. Never open a socket for an invalid ID; it only creates noisy
+  // /ws/runs/undefined requests and cannot deliver run events.
+  if (!id || id === 'undefined' || id === 'null') {
+    closeWs()
+    wsClosed.value = true
+    return
+  }
   if (ws) {
     ws.close()
     ws = null
@@ -371,7 +380,7 @@ function connectWs(): void {
   reconnectAttempts = 0
   wsConnected.value = false
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = `${protocol}//${location.host}/ws/runs/${runId.value}`
+  const url = `${protocol}//${location.host}/ws/runs/${encodeURIComponent(id)}`
   try {
     ws = new WebSocket(url)
   } catch {

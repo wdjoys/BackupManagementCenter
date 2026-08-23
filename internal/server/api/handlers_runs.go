@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -124,11 +125,16 @@ func atoiSafe(s string, def int) int {
 // wsHandler serves GET /ws/runs/{runID}.
 func wsHandler(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		runID := strings.TrimSpace(chi.URLParam(r, "runID"))
+		if runID == "" || runID == "undefined" || runID == "null" {
+			writeErr(w, http.StatusBadRequest, "validation_failed", "run id is required")
+			return
+		}
 		if _, err := s.sessionForWS(r); err != nil {
 			http.Error(w, `{"error":{"code":"unauthorized","message":"login required"}}`, http.StatusUnauthorized)
 			return
 		}
-		s.serveRunWS(w, r, chi.URLParam(r, "runID"))
+		s.serveRunWS(w, r, runID)
 	}
 }
 

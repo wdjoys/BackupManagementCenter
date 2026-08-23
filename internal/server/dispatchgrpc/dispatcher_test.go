@@ -22,8 +22,9 @@ import (
 // processJob / checkTimeouts are implemented; anything else panics loudly.
 type fakeStore struct {
 	store.Store
-	mu   sync.Mutex
-	runs map[string]*model.Run
+	mu              sync.Mutex
+	runs            map[string]*model.Run
+	transitionError error
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{runs: make(map[string]*model.Run)} }
@@ -56,6 +57,14 @@ func (f *fakeStore) GetPlan(_ context.Context, _ string) (*model.Plan, error) {
 	return nil, store.ErrNotFound
 }
 
+func (f *fakeStore) MaxRunLogSeq(_ context.Context, _ string) (uint64, error) {
+	return 0, nil
+}
+
+func (f *fakeStore) AppendRunLogs(_ context.Context, _ []model.RunLog) error {
+	return nil
+}
+
 func (f *fakeStore) ListRunsByStatus(_ context.Context, statuses []string) ([]model.Run, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -75,6 +84,9 @@ func (f *fakeStore) ListRunsByStatus(_ context.Context, statuses []string) ([]mo
 func (f *fakeStore) TransitionRun(_ context.Context, id, from, to string, mutate func(*model.Run)) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.transitionError != nil {
+		return f.transitionError
+	}
 	r, ok := f.runs[id]
 	if !ok {
 		return store.ErrNotFound
@@ -82,7 +94,9 @@ func (f *fakeStore) TransitionRun(_ context.Context, id, from, to string, mutate
 	if r.Status != from {
 		return store.ErrInvalidTransition
 	}
-	mutate(r)
+	if mutate != nil {
+		mutate(r)
+	}
 	r.Status = to
 	return nil
 }
@@ -157,6 +171,35 @@ func TestProcessJobBuildFailureNotifiesOnce(t *testing.T) {
 	got := notifier.calls()
 	if len(got) != 1 || got[0] != "run-1" {
 		t.Fatalf("expected exactly one notification for run-1, got %v", got)
+	}
+}
+
+func TestProcessJobClaimFailureRequeuesInsteadOfOrphaning(t *testing.T) {
+	st := newFakeStore()
+	st.addRun(queuedRun("run-lock"))
+	st.transitionError = errors.New("transition run update: database is locked (5) (SQLITE_BUSY)")
+	d, _ := newTestDispatcher(st, &fakeSource{})
+	d.cfg.ClaimRetryDelay = time.Nanosecond
+	d.cfg.OfflineRetryDelay = 0
+	reg := agentreg.NewRegistry()
+	_, _ = reg.Register(context.Background(), "agent-1")
+	d.reg = reg
+
+	j := &job{runID: "run-lock", agentID: "agent-1", repositoryID: "repo-1"}
+	d.mu.Lock()
+	d.enqueuedRuns[j.runID] = true
+	rq := &repoQueue{jobs: make([]*job, 0), workerCh: make(chan struct{}, 1), stopCh: make(chan struct{})}
+	d.repoQueues[j.repositoryID] = rq
+	d.mu.Unlock()
+	d.processJob(j)
+
+	rq.mu.Lock()
+	defer rq.mu.Unlock()
+	if len(rq.jobs) != 1 || rq.jobs[0].runID != j.runID {
+		t.Fatalf("claim failure orphaned the run instead of requeueing: %+v", rq.jobs)
+	}
+	if !d.enqueuedRuns[j.runID] {
+		t.Fatalf("requeued run lost idempotency marker")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,10 @@ type Config struct {
 	OfflineRetryDelay time.Duration
 	// NoResponseTimeout is how long to wait for a response after dispatching before forcing failure.
 	NoResponseTimeout time.Duration
+	// ClaimRetryDelay controls the initial backoff when SQLite temporarily
+	// rejects the queued -> dispatched write because another writer holds the
+	// database lock. A zero value uses 100ms.
+	ClaimRetryDelay time.Duration
 }
 
 // DefaultConfig returns sensible defaults.
@@ -32,6 +37,7 @@ func DefaultConfig() Config {
 		WatchdogInterval:  15 * time.Second,
 		OfflineRetryDelay: 2 * time.Second,
 		NoResponseTimeout: 30 * time.Second,
+		ClaimRetryDelay:   100 * time.Millisecond,
 	}
 }
 
@@ -74,10 +80,24 @@ type Dispatcher struct {
 	mu           sync.Mutex
 	repoQueues   map[string]*repoQueue
 	enqueuedRuns map[string]bool // runID -> true (for idempotency)
+	// processingRuns distinguishes a job popped by a repository worker from a
+	// stale in-memory enqueue marker. It lets the watchdog repair queue entries
+	// lost by a transient store error without duplicating active work.
+	processingRuns map[string]bool
 
 	// watchdog
 	stopWatchdog chan struct{}
 	wg           sync.WaitGroup
+
+	// dispatchLogState prevents an offline agent or a busy SQLite database from
+	// generating one persisted log row every retry tick.
+	dispatchLogMu    sync.Mutex
+	dispatchLogState map[string]dispatchLogState
+}
+
+type dispatchLogState struct {
+	message string
+	at      time.Time
 }
 
 // NewDispatcher creates a new gRPC-based dispatcher. notifier may be nil; a
@@ -87,13 +107,15 @@ func NewDispatcher(s store.Store, reg *agentreg.Registry, cfg Config, notifier n
 		notifier = notification.NopNotifier{}
 	}
 	return &Dispatcher{
-		store:        s,
-		reg:          reg,
-		cfg:          cfg,
-		notifier:     notifier,
-		repoQueues:   make(map[string]*repoQueue),
-		enqueuedRuns: make(map[string]bool),
-		stopWatchdog: make(chan struct{}),
+		store:            s,
+		reg:              reg,
+		cfg:              cfg,
+		notifier:         notifier,
+		repoQueues:       make(map[string]*repoQueue),
+		enqueuedRuns:     make(map[string]bool),
+		processingRuns:   make(map[string]bool),
+		stopWatchdog:     make(chan struct{}),
+		dispatchLogState: make(map[string]dispatchLogState),
 	}
 }
 
@@ -162,7 +184,9 @@ func (d *Dispatcher) repoWorker(repositoryID string, rq *repoQueue) {
 				rq.jobs = rq.jobs[1:]
 				rq.mu.Unlock()
 
+				d.markProcessing(j.runID, true)
 				d.processJob(j)
+				d.markProcessing(j.runID, false)
 			}
 		}
 	}
@@ -175,6 +199,7 @@ func (d *Dispatcher) processJob(j *job) {
 	// Check if agent is connected
 	if !d.reg.IsConnected(j.agentID) {
 		log.Printf("dispatcher: agent %s not connected; requeue run %s", j.agentID, j.runID)
+		d.appendDispatchLog(ctx, j.runID, "warn", "等待 Agent 连接，任务将自动重试")
 		d.requeueJob(j)
 		return
 	}
@@ -183,10 +208,16 @@ func (d *Dispatcher) processJob(j *job) {
 	// durable queued -> dispatched edge that makes the delivery protocol
 	// observable to the agent and safe across concurrent workers.
 	leaseUntil := time.Now().UTC().Add(dispatchLease)
-	if err := d.store.TransitionRun(ctx, j.runID, model.RunQueued, model.RunDispatched, func(r *model.Run) {
-		r.Attempt++
-		r.LeaseExpiresAt = &leaseUntil
-	}); err != nil {
+	attempt := 0
+	claim := func() error {
+		return d.store.TransitionRun(ctx, j.runID, model.RunQueued, model.RunDispatched, func(r *model.Run) {
+			r.Attempt++
+			attempt = r.Attempt
+			r.LeaseExpiresAt = &leaseUntil
+		})
+	}
+	err := d.retryStoreWrite(claim)
+	if err != nil {
 		if err == store.ErrInvalidTransition {
 			// A cancelled/terminal run may still be present in the in-memory
 			// queue after a user action. Drop it idempotently.
@@ -194,8 +225,14 @@ func (d *Dispatcher) processJob(j *job) {
 			return
 		}
 		log.Printf("dispatcher: failed to claim run %s: %v", j.runID, err)
+		d.appendDispatchLog(ctx, j.runID, "error", "分发任务时暂时无法写入控制数据库，稍后自动重试: "+err.Error())
+		// Never leave a run only in enqueuedRuns. The old implementation did
+		// that on SQLITE_BUSY, which made the run permanently queued until a
+		// server restart.
+		d.requeueJob(j)
 		return
 	}
+	d.appendDispatchLog(ctx, j.runID, "info", fmt.Sprintf("已分发到 Agent（第 %d 次尝试）", attempt))
 
 	// CommandSource resolves repository/target/plan from the run itself.
 
@@ -206,12 +243,14 @@ func (d *Dispatcher) processJob(j *job) {
 	if err != nil {
 		log.Printf("dispatcher: failed to build command for run %s: %v", j.runID, err)
 		// Permanent build failure: fail the run instead of spinning the queue.
-		if terr := d.store.TransitionRun(ctx, j.runID, model.RunDispatched, model.RunFailed, func(r *model.Run) {
-			now := time.Now().UTC()
-			r.ErrorCode = model.ErrInvalidPlan
-			r.ErrorMessage = err.Error()
-			r.FinishedAt = &now
-			r.LeaseExpiresAt = nil
+		if terr := d.retryStoreWrite(func() error {
+			return d.store.TransitionRun(ctx, j.runID, model.RunDispatched, model.RunFailed, func(r *model.Run) {
+				now := time.Now().UTC()
+				r.ErrorCode = model.ErrInvalidPlan
+				r.ErrorMessage = err.Error()
+				r.FinishedAt = &now
+				r.LeaseExpiresAt = nil
+			})
 		}); terr != nil {
 			// Transition failed: no notification; keep the original build error.
 			log.Printf("dispatcher: failed to transition run %s to failed: %v", j.runID, terr)
@@ -229,10 +268,20 @@ func (d *Dispatcher) processJob(j *job) {
 	}
 	if err := d.reg.Send(j.agentID, msg); err != nil {
 		log.Printf("dispatcher: failed to send command to agent %s: %v", j.agentID, err)
-		// Revert to queued
-		_ = d.store.TransitionRun(ctx, j.runID, model.RunDispatched, model.RunQueued, func(r *model.Run) {
-			r.LeaseExpiresAt = nil
-		})
+		d.appendDispatchLog(ctx, j.runID, "warn", "发送到 Agent 失败，任务将自动重试: "+err.Error())
+		// Revert to queued. If the database is still locked, leave the run in
+		// dispatched state and let the lease watchdog handle it; retrying the
+		// command while the durable state is dispatched could duplicate work.
+		if revertErr := d.retryStoreWrite(func() error {
+			return d.store.TransitionRun(ctx, j.runID, model.RunDispatched, model.RunQueued, func(r *model.Run) {
+				r.LeaseExpiresAt = nil
+			})
+		}); revertErr != nil {
+			log.Printf("dispatcher: failed to requeue run %s after send failure: %v", j.runID, revertErr)
+			d.appendDispatchLog(ctx, j.runID, "error", "发送失败后无法恢复排队状态，等待租约看门狗处理: "+revertErr.Error())
+			d.removeEnqueued(j.runID)
+			return
+		}
 		d.requeueJob(j)
 		return
 	}
@@ -258,6 +307,66 @@ func (d *Dispatcher) processJob(j *job) {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// retryStoreWrite retries only transient SQLite lock errors. Other errors are
+// returned immediately so invalid data or a broken database is still visible.
+func (d *Dispatcher) retryStoreWrite(write func() error) error {
+	delay := d.cfg.ClaimRetryDelay
+	if delay <= 0 {
+		delay = 100 * time.Millisecond
+	}
+	var err error
+	for attempt := 0; attempt < 6; attempt++ {
+		err = write()
+		if err == nil || err == store.ErrInvalidTransition || !isSQLiteBusy(err) {
+			return err
+		}
+		if attempt < 5 {
+			time.Sleep(delay)
+			delay *= 2
+		}
+	}
+	return err
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "sqlite_busy") ||
+		strings.Contains(message, "database table is locked")
+}
+
+func (d *Dispatcher) appendDispatchLog(ctx context.Context, runID, level, message string) {
+	now := time.Now().UTC()
+	d.dispatchLogMu.Lock()
+	if previous, ok := d.dispatchLogState[runID]; ok && previous.message == message && now.Sub(previous.at) < 30*time.Second {
+		d.dispatchLogMu.Unlock()
+		return
+	}
+	d.dispatchLogState[runID] = dispatchLogState{message: message, at: now}
+	d.dispatchLogMu.Unlock()
+
+	// Agent log sequences start at 1. Keep server-side diagnostics in a
+	// separate high range so they never collide with an agent's sequence.
+	const serverLogSeqBase = uint64(1 << 62)
+	seq, err := d.store.MaxRunLogSeq(ctx, runID)
+	if err != nil {
+		log.Printf("dispatcher: failed to allocate run log sequence for %s: %v", runID, err)
+		return
+	}
+	if seq < serverLogSeqBase {
+		seq = serverLogSeqBase
+	} else {
+		seq++
+	}
+	entry := model.RunLog{RunID: runID, Seq: seq, Timestamp: now, Level: level, Message: message}
+	if err := d.store.AppendRunLogs(ctx, []model.RunLog{entry}); err != nil {
+		log.Printf("dispatcher: failed to persist run log for %s: %v", runID, err)
 	}
 }
 
@@ -289,7 +398,63 @@ func (d *Dispatcher) requeueJob(j *job) {
 func (d *Dispatcher) removeEnqueued(runID string) {
 	d.mu.Lock()
 	delete(d.enqueuedRuns, runID)
+	delete(d.processingRuns, runID)
 	d.mu.Unlock()
+	d.dispatchLogMu.Lock()
+	delete(d.dispatchLogState, runID)
+	d.dispatchLogMu.Unlock()
+}
+
+func (d *Dispatcher) markProcessing(runID string, processing bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if processing {
+		d.processingRuns[runID] = true
+	} else {
+		delete(d.processingRuns, runID)
+	}
+}
+
+// recoverQueuedRuns repairs queued rows that lost their in-memory queue entry
+// after a process error. This is intentionally run periodically, not only at
+// startup, because transient SQLite locks can happen while the server is live.
+func (d *Dispatcher) recoverQueuedRuns() {
+	ctx := context.Background()
+	runs, err := d.store.ListRunsByStatus(ctx, []string{model.RunQueued})
+	if err != nil {
+		log.Printf("watchdog: failed to recover queued runs: %v", err)
+		return
+	}
+	for _, run := range runs {
+		if !d.prepareRecovery(run.ID, run.RepositoryID) {
+			continue
+		}
+		log.Printf("watchdog: recovering queued run %s", run.ID)
+		d.Enqueue(ctx, run.ID, run.AgentID, run.RepositoryID)
+	}
+}
+
+// prepareRecovery returns true when the run is not represented by a live
+// worker/job. It removes an orphaned idempotency marker left by older builds.
+func (d *Dispatcher) prepareRecovery(runID, repositoryID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.processingRuns[runID] {
+		return false
+	}
+	rq := d.repoQueues[repositoryID]
+	if rq != nil {
+		rq.mu.Lock()
+		for _, queued := range rq.jobs {
+			if queued.runID == runID {
+				rq.mu.Unlock()
+				return false
+			}
+		}
+		rq.mu.Unlock()
+	}
+	delete(d.enqueuedRuns, runID)
+	return true
 }
 
 func (d *Dispatcher) deleteRunSecrets(ctx context.Context, runID string) {
@@ -460,6 +625,11 @@ func (d *Dispatcher) watchdogLoop() {
 // checkTimeouts finds runs that have exceeded their timeout and cancels them.
 func (d *Dispatcher) checkTimeouts() {
 	ctx := context.Background()
+
+	// Repair queued rows that are not represented by a live in-memory job.
+	// This also heals rows orphaned by a previous server version that returned
+	// after SQLITE_BUSY without re-queueing the job.
+	d.recoverQueuedRuns()
 
 	// Find dispatched and running runs
 	runs, err := d.store.ListRunsByStatus(ctx, []string{model.RunDispatched, model.RunRunning})

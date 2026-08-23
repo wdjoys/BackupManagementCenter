@@ -138,8 +138,11 @@ type Repository struct {
 	EncryptedPassword []byte     `json:"-"`
 	Status            string     `json:"status"` // pending|ready|error
 	LastCheckAt       *time.Time `json:"last_check_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	// DetachedAt marks a logical unbind. The row and encrypted repository
+	// password are retained so a later bind can safely re-adopt remote data.
+	DetachedAt *time.Time `json:"-"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // Retention maps 1:1 to restic forget flags.

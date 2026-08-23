@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/server/jobs"
@@ -83,6 +84,35 @@ func (s *Server) handleListStorageTargets(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 
+// PATCH /storage-targets/{id} {name}
+// Only the display name is editable. The encrypted connection configuration
+// and remote path are immutable after import; create a new target to rotate
+// credentials or move a remote safely.
+func (s *Server) handleRenameStorageTarget(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "name is required")
+		return
+	}
+	t, err := s.Jobs.RenameStorageTarget(r.Context(), actorID(r), pathParam(r, "id"), body.Name)
+	if err != nil {
+		if errors.Is(err, jobs.ErrStorageTargetName) {
+			writeErr(w, http.StatusBadRequest, "validation_failed", "name is required")
+			return
+		}
+		if !mapStoreErr(w, err) {
+			s.jobsErr(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, targetView(t))
+}
+
 // DELETE /storage-targets/{id}
 func (s *Server) handleDeleteStorageTarget(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
@@ -140,6 +170,19 @@ func (s *Server) handleListRepositories(w http.ResponseWriter, r *http.Request) 
 		out = append(out, s.repoView(r, &repos[i]))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// DELETE /repositories/{id} removes the server-side binding only. Remote
+// Restic snapshots are preserved and can be adopted again by binding the same
+// Agent and storage target later.
+func (s *Server) handleUnbindRepository(w http.ResponseWriter, r *http.Request) {
+	if err := s.Jobs.UnbindRepository(r.Context(), actorID(r), pathParam(r, "id")); err != nil {
+		if !mapStoreErr(w, err) {
+			s.jobsErr(w, err)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) repoView(r *http.Request, repo *model.Repository) repositoryView {

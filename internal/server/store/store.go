@@ -68,6 +68,10 @@ type Store interface {
 	GetRepositoryByAgentAndTarget(ctx context.Context, agentID, targetID string) (*model.Repository, error)
 	ListRepositories(ctx context.Context) ([]model.Repository, error)
 	ListRepositoriesNeedingCheck(ctx context.Context, olderThan time.Time) ([]model.Repository, error)
+	// DetachRepository hides a binding from normal listings while retaining its
+	// encrypted repository password for a later safe re-adoption. It never
+	// deletes remote Restic data.
+	DetachRepository(ctx context.Context, id string) error
 	UpdateRepositoryStatus(ctx context.Context, id, status string) error
 	MarkRepositoryChecked(ctx context.Context, id string, at time.Time) error
 

@@ -645,7 +645,7 @@ func (s *sqliteStore) CreateRepository(ctx context.Context, r *model.Repository)
 func (s *sqliteStore) GetRepository(ctx context.Context, id string) (*model.Repository, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, agent_id, storage_target_id, repository_path,
-		        encrypted_password, status, last_check_at, created_at, updated_at
+		        encrypted_password, status, last_check_at, detached_at, created_at, updated_at
 		 FROM repositories WHERE id = ?`, id,
 	)
 	return scanRepository(row)
@@ -654,7 +654,7 @@ func (s *sqliteStore) GetRepository(ctx context.Context, id string) (*model.Repo
 func (s *sqliteStore) GetRepositoryByAgentAndTarget(ctx context.Context, agentID, targetID string) (*model.Repository, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, agent_id, storage_target_id, repository_path,
-		        encrypted_password, status, last_check_at, created_at, updated_at
+		        encrypted_password, status, last_check_at, detached_at, created_at, updated_at
 		 FROM repositories WHERE agent_id = ? AND storage_target_id = ?`,
 		agentID, targetID,
 	)
@@ -664,8 +664,8 @@ func (s *sqliteStore) GetRepositoryByAgentAndTarget(ctx context.Context, agentID
 func (s *sqliteStore) ListRepositories(ctx context.Context) ([]model.Repository, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, agent_id, storage_target_id, repository_path,
-		        encrypted_password, status, last_check_at, created_at, updated_at
-		 FROM repositories ORDER BY repository_path`,
+		        encrypted_password, status, last_check_at, detached_at, created_at, updated_at
+		 FROM repositories WHERE detached_at IS NULL ORDER BY repository_path`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list repositories: %w", err)
@@ -687,9 +687,9 @@ func (s *sqliteStore) ListRepositoriesNeedingCheck(ctx context.Context, olderTha
 	ot := olderThan.Format(time.RFC3339)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, agent_id, storage_target_id, repository_path,
-		        encrypted_password, status, last_check_at, created_at, updated_at
+		        encrypted_password, status, last_check_at, detached_at, created_at, updated_at
 		 FROM repositories
-		 WHERE status = 'ready' AND (last_check_at IS NULL OR last_check_at < ?)
+		 WHERE detached_at IS NULL AND status = 'ready' AND (last_check_at IS NULL OR last_check_at < ?)
 		 ORDER BY COALESCE(last_check_at, '1970-01-01T00:00:00Z') ASC`,
 		ot,
 	)
@@ -709,11 +709,44 @@ func (s *sqliteStore) ListRepositoriesNeedingCheck(ctx context.Context, olderTha
 	return out, rows.Err()
 }
 
+// DetachRepository removes the binding from normal server listings while
+// retaining its encrypted password. Restic data in the remote remains
+// untouched and can be adopted again by a later bind.
+func (s *sqliteStore) DetachRepository(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	at := nowUTC().Format(time.RFC3339)
+	result, err := s.db.ExecContext(ctx,
+		"UPDATE repositories SET detached_at = ?, updated_at = ? WHERE id = ?",
+		at, at, id)
+	if err != nil {
+		return fmt.Errorf("detach repository: %w", err)
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("detach repository rows affected: %w", err)
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *sqliteStore) UpdateRepositoryStatus(ctx context.Context, id, status string) error {
-	_, err := s.db.ExecContext(ctx,
-		"UPDATE repositories SET status = ?, updated_at = ? WHERE id = ?",
-		status, nowUTC().Format(time.RFC3339), id,
+	var (
+		err error
+		at  = nowUTC().Format(time.RFC3339)
 	)
+	if status == "ready" {
+		_, err = s.db.ExecContext(ctx,
+			"UPDATE repositories SET status = ?, detached_at = NULL, updated_at = ? WHERE id = ?",
+			status, at, id,
+		)
+	} else {
+		_, err = s.db.ExecContext(ctx,
+			"UPDATE repositories SET status = ?, updated_at = ? WHERE id = ?",
+			status, at, id,
+		)
+	}
 	if err != nil {
 		return fmt.Errorf("update repository status: %w", err)
 	}
@@ -1450,10 +1483,10 @@ func scanRepository(row interface{ Scan(dest ...any) error }) (*model.Repository
 		id, agentID, targetID, repoPath string
 		encPass                         []byte
 		status                          string
-		lastCheckAt                     sql.NullString
+		lastCheckAt, detachedAt         sql.NullString
 		createdAt, updatedAt            string
 	)
-	if err := row.Scan(&id, &agentID, &targetID, &repoPath, &encPass, &status, &lastCheckAt, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&id, &agentID, &targetID, &repoPath, &encPass, &status, &lastCheckAt, &detachedAt, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1467,6 +1500,7 @@ func scanRepository(row interface{ Scan(dest ...any) error }) (*model.Repository
 		EncryptedPassword: encPass,
 		Status:            status,
 		LastCheckAt:       parseTimePtr(lastCheckAt),
+		DetachedAt:        parseTimePtr(detachedAt),
 		CreatedAt:         parseTime(createdAt),
 		UpdatedAt:         parseTime(updatedAt),
 	}, nil

@@ -69,8 +69,11 @@
               {{ formatTime(row.updated_at) }}
             </template>
           </el-table-column>
-          <el-table-column :label="t('common.actions')" width="100" fixed="right">
+          <el-table-column :label="t('common.actions')" width="180" fixed="right">
             <template #default="{ row }">
+              <el-button type="primary" text size="small" @click="openEditTargetDialog(row as StorageTarget)">
+                {{ t('common.edit') }}
+              </el-button>
               <el-button type="danger" text size="small" @click="handleDeleteTarget(row as StorageTarget)">
                 {{ t('common.delete') }}
               </el-button>
@@ -157,6 +160,31 @@
           <el-table-column :label="t('storage.columns.lastCheck')" width="220">
             <template #default="{ row }">
               {{ row.last_check_at ? formatTime(row.last_check_at) : t('common.never') }}
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('common.actions')" width="180" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                v-if="row.status !== 'ready'"
+                type="primary"
+                text
+                size="small"
+                :loading="repoActionLoading[row.id]"
+                :disabled="repoActionLoading[row.id]"
+                @click="handleRetryRepo(row as Repository)"
+              >
+                {{ t('common.retry') }}
+              </el-button>
+              <el-button
+                type="danger"
+                text
+                size="small"
+                :loading="repoActionLoading[row.id]"
+                :disabled="repoActionLoading[row.id]"
+                @click="handleUnbindRepo(row as Repository)"
+              >
+                {{ t('storage.repositoryDialog.unbind') }}
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -286,6 +314,34 @@ token = ..."
       </div>
     </el-dialog>
 
+    <!-- Rename storage target dialog -->
+    <el-dialog
+      v-model="editTargetDialogVisible"
+      :title="t('storage.editDialog.title')"
+      width="480"
+      destroy-on-close
+      :close-on-click-modal="false"
+    >
+      <el-alert
+        :title="t('storage.editDialog.notice')"
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 16px"
+      />
+      <el-form :model="editForm" label-position="top">
+        <el-form-item :label="t('storage.editDialog.name')" required>
+          <el-input v-model="editForm.name" :placeholder="t('storage.editDialog.namePlaceholder')" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editTargetDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="handleRenameTarget" :loading="editTargetLoading" :disabled="!editForm.name.trim()">
+          {{ t('common.save') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- Bind Repository Dialog -->
     <el-dialog
       v-model="bindDialogVisible"
@@ -370,7 +426,7 @@ token = ..."
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { apiGet, apiPost, apiDelete } from '@/api/client'
+import { apiGet, apiPost, apiPatch, apiDelete } from '@/api/client'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { translateEnum, formatDateTime } from '@/i18n'
 import type { Agent, StorageTarget, Repository } from '@/api/types'
@@ -412,6 +468,7 @@ const targetsLoading = ref(false)
 const targetsError = ref('')
 const reposLoading = ref(false)
 const reposError = ref('')
+const repoActionLoading = ref<Record<string, boolean>>({})
 
 const onlineAgents = computed(() => agents.value.filter((a) => a.status === 'online'))
 const offlineAgents = computed(() => agents.value.filter((a) => a.status !== 'online'))
@@ -428,6 +485,11 @@ const importForm = ref({
 const validateLoading = ref(false)
 const validateResult = ref<StorageTargetValidateResponse | null>(null)
 const importLoading = ref(false)
+
+const editTargetDialogVisible = ref(false)
+const editTargetLoading = ref(false)
+const editTargetID = ref('')
+const editForm = ref({ name: '' })
 
 // ---- Bind repository dialog ----
 const bindDialogVisible = ref(false)
@@ -522,6 +584,27 @@ async function handleImport(): Promise<void> {
   }
 }
 
+function openEditTargetDialog(target: StorageTarget): void {
+  editTargetID.value = target.id
+  editForm.value = { name: target.name }
+  editTargetDialogVisible.value = true
+}
+
+async function handleRenameTarget(): Promise<void> {
+  editTargetLoading.value = true
+  try {
+    await apiPatch<StorageTarget>(`/storage-targets/${editTargetID.value}`, { name: editForm.value.name.trim() })
+    ElMessage.success(t('storage.editDialog.saved'))
+    editTargetDialogVisible.value = false
+    await Promise.all([loadTargets(), loadRepos()])
+  } catch (err: unknown) {
+    const e = err as { message?: string; code?: string }
+    ElMessage.error(e.message || t('storage.editDialog.failedCode', { code: e.code || 'unknown' }))
+  } finally {
+    editTargetLoading.value = false
+  }
+}
+
 async function handleDeleteTarget(target: StorageTarget): Promise<void> {
   try {
     await ElMessageBox.confirm(
@@ -565,6 +648,48 @@ async function handleBindRepo(): Promise<void> {
     await loadRepos()
   } finally {
     bindLoading.value = false
+  }
+}
+
+async function handleRetryRepo(repo: Repository): Promise<void> {
+  repoActionLoading.value[repo.id] = true
+  try {
+    await apiPost<Repository>('/repositories', {
+      agent_id: repo.agent_id,
+      storage_target_id: repo.storage_target_id,
+    })
+    ElMessage.success(t('storage.repositoryDialog.retried'))
+    await loadRepos()
+  } catch (err: unknown) {
+    const e = err as { message?: string; code?: string }
+    ElMessage.error(e.message || t('storage.repositoryDialog.retryFailedCode', { code: e.code || 'unknown' }))
+    await loadRepos()
+  } finally {
+    repoActionLoading.value[repo.id] = false
+  }
+}
+
+async function handleUnbindRepo(repo: Repository): Promise<void> {
+  repoActionLoading.value[repo.id] = true
+  try {
+    await ElMessageBox.confirm(
+      t('storage.repositoryDialog.confirmUnbind', { name: repo.storage_target_name || repo.storage_target_id }),
+      t('storage.repositoryDialog.unbindTitle'),
+      { type: 'warning', confirmButtonText: t('storage.repositoryDialog.unbind') },
+    )
+    await apiDelete(`/repositories/${repo.id}`)
+    ElMessage.success(t('storage.repositoryDialog.unbound'))
+    await Promise.all([loadRepos(), loadTargets()])
+  } catch (err: unknown) {
+    if (err === 'cancel') return
+    const e = err as { message?: string; code?: string }
+    if (e.code === 'conflict') {
+      ElMessage.warning(t('storage.repositoryDialog.conflict'))
+    } else {
+      ElMessage.error(e.message || t('storage.repositoryDialog.unbindFailedCode', { code: e.code || 'unknown' }))
+    }
+  } finally {
+    repoActionLoading.value[repo.id] = false
   }
 }
 

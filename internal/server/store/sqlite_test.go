@@ -534,6 +534,22 @@ func TestRepository(t *testing.T) {
 	if len(repos) != 1 {
 		t.Fatal("list count wrong")
 	}
+	if err := ts.DetachRepository(ctx, "repo-1"); err != nil {
+		t.Fatalf("detach repository: %v", err)
+	}
+	got, err = ts.GetRepository(ctx, "repo-1")
+	if err != nil || got.DetachedAt == nil {
+		t.Fatalf("expected repository to be detached and retained, got=%+v err=%v", got, err)
+	}
+	if repos, err := ts.ListRepositories(ctx); err != nil || len(repos) != 0 {
+		t.Fatalf("detached repository should be hidden from list, got=%d err=%v", len(repos), err)
+	}
+	if err := ts.UpdateRepositoryStatus(ctx, "repo-1", "ready"); err != nil {
+		t.Fatalf("re-adopt repository: %v", err)
+	}
+	if got, err = ts.GetRepository(ctx, "repo-1"); err != nil || got.DetachedAt != nil {
+		t.Fatalf("ready status should reattach repository, got=%+v err=%v", got, err)
+	}
 }
 
 func TestListRepositoriesNeedingCheck(t *testing.T) {

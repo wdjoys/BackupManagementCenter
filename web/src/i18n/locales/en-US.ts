@@ -258,7 +258,7 @@ export default {
     emptyRepositories: 'No repositories. Bind one by selecting an Agent and a Storage Target.',
     repositoryHelp: {
       title: 'Repository binding',
-      description: 'Binding makes the Agent create or adopt an isolated Restic repository under the selected remote path. The first bind checks the repository and may initialize it, which can take several seconds; failed binds can be retried.',
+      description: 'Binding makes the Agent create or adopt an isolated Restic repository under the selected remote path. The first bind checks the repository and may initialize it, which can take several seconds; failed binds can be retried. Unbinding hides only the Server record; remote data is preserved and can be adopted again later.',
     },
     repositoryStatus: {
       pending: 'Initializing',
@@ -299,6 +299,14 @@ export default {
       imported: 'Storage target imported',
       importFailedCode: 'Import failed (code: {code})',
     },
+    editDialog: {
+      title: 'Edit Storage Target',
+      notice: 'Only the display name is editable here. Connection details and remote path stay unchanged; import a new target to rotate credentials.',
+      name: 'Name',
+      namePlaceholder: 'Enter a storage target name',
+      saved: 'Storage target updated',
+      failedCode: 'Update failed (code: {code})',
+    },
     deleteDialog: {
       title: 'Delete Storage Target',
       confirm: 'Delete storage target "{name}"?',
@@ -314,6 +322,16 @@ export default {
       boundSuccessfully: 'Repository bound successfully',
       bound: 'Repository bound',
       bindFailedCode: 'Bind failed (code: {code})',
+    },
+    repositoryDialog: {
+      unbindTitle: 'Unbind Repository Record',
+      confirmUnbind: 'Unbind the repository record for “{name}”? Only the Server binding is removed; remote backup data is preserved.',
+      unbind: 'Unbind',
+      unbound: 'Repository record unbound; remote backup data preserved',
+      conflict: 'Cannot unbind: the repository is referenced by a plan or has an active run',
+      unbindFailedCode: 'Unbind failed (code: {code})',
+      retried: 'Repository check/initialization was retried',
+      retryFailedCode: 'Retry failed (code: {code})',
     },
   },
   runs: {

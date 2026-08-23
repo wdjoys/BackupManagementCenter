@@ -33,18 +33,19 @@ import (
 )
 
 var (
-	ErrForbidden     = errors.New("forbidden")
-	ErrNotFound      = errors.New("not found")
-	ErrWaitTimeout   = errors.New("wait timeout")
-	ErrPlanInvalid   = errors.New("invalid plan")
-	ErrAgentRevoked  = errors.New("agent revoked")
-	ErrAgentOffline  = errors.New("agent offline")
-	ErrMissingTools  = errors.New("missing_tools")
-	ErrPathInvalid   = errors.New("path_validation_failed")
-	ErrRepoPassword  = errors.New("wrong_repository_password")
-	ErrRepoLocked    = errors.New("repository_locked")
-	ErrRepoMissing   = errors.New("repository_missing")
-	ErrStorageRemote = errors.New("storage_remote_unreachable")
+	ErrForbidden         = errors.New("forbidden")
+	ErrNotFound          = errors.New("not found")
+	ErrWaitTimeout       = errors.New("wait timeout")
+	ErrPlanInvalid       = errors.New("invalid plan")
+	ErrAgentRevoked      = errors.New("agent revoked")
+	ErrAgentOffline      = errors.New("agent offline")
+	ErrMissingTools      = errors.New("missing_tools")
+	ErrPathInvalid       = errors.New("path_validation_failed")
+	ErrRepoPassword      = errors.New("wrong_repository_password")
+	ErrRepoLocked        = errors.New("repository_locked")
+	ErrRepoMissing       = errors.New("repository_missing")
+	ErrStorageRemote     = errors.New("storage_remote_unreachable")
+	ErrStorageTargetName = errors.New("storage target name required")
 )
 
 // MissingToolsError carries the list of missing tool names.
@@ -605,6 +606,30 @@ func (o *Orchestrator) CreateStorageTargetWithAgent(ctx context.Context, actorID
 	return t, nil
 }
 
+// RenameStorageTarget changes the operator-facing name without exposing or
+// replacing the encrypted rclone configuration. Connection details are
+// intentionally immutable after import: changing them behind an existing
+// repository binding would make the repository path ambiguous. Operators can
+// import a new target when they need to move credentials or remotes.
+func (o *Orchestrator) RenameStorageTarget(ctx context.Context, actorID, targetID, name string) (*model.StorageTarget, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrStorageTargetName
+	}
+	t, err := o.Store.GetStorageTarget(ctx, targetID)
+	if err != nil {
+		return nil, err
+	}
+	t.Name = name
+	t.UpdatedAt = time.Now().UTC()
+	if err := o.Store.UpdateStorageTarget(ctx, t); err != nil {
+		return nil, err
+	}
+	o.Audit(ctx, "admin", actorID, "storage_target.rename", "storage_target", targetID,
+		map[string]string{"name": name})
+	return t, nil
+}
+
 // BindRepository creates (or returns existing) repository for the agent+target pair.
 func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, storageTargetID string) (*model.Repository, error) {
 	target, err := o.Store.GetStorageTarget(ctx, storageTargetID)
@@ -615,9 +640,10 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 	existing, err := o.Store.GetRepositoryByAgentAndTarget(ctx, agentID, storageTargetID)
 	if err == nil && existing != nil {
 		// A previous bind attempt may have left the row non-ready (agent
-		// offline, failed init). Retry adoption/init instead of returning
-		// the stale row, otherwise it stays pending forever.
-		if existing.Status != "ready" {
+		// offline, failed init), or an earlier unbind may have hidden it while
+		// retaining its password. Retry adoption/init instead of returning a
+		// stale row, otherwise it stays pending forever.
+		if existing.Status != "ready" || existing.DetachedAt != nil {
 			if err := o.EnsureRepository(ctx, existing, agentID); err != nil {
 				o.markRepositoryError(existing.ID)
 				return nil, err
@@ -666,6 +692,46 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 	repo.Status = "ready"
 
 	return repo, nil
+}
+
+// UnbindRepository logically removes the server-side repository binding. It
+// never deletes remote Restic data or the encrypted repository password, so
+// a later bind can safely re-adopt the same remote. Plans and active runs are
+// checked here so a repository cannot disappear while still in use.
+func (o *Orchestrator) UnbindRepository(ctx context.Context, actorID, repositoryID string) error {
+	repo, err := o.Store.GetRepository(ctx, repositoryID)
+	if err != nil {
+		return err
+	}
+
+	plans, err := o.Store.ListPlans(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, plan := range plans {
+		if plan.RepositoryID == repositoryID {
+			return store.ErrInUse
+		}
+	}
+
+	runs, err := o.Store.ListRuns(ctx, store.RunFilter{
+		RepositoryID: repositoryID,
+		Statuses:     []string{model.RunQueued, model.RunDispatched, model.RunRunning},
+		Limit:        1,
+	})
+	if err != nil {
+		return err
+	}
+	if len(runs) > 0 {
+		return store.ErrInUse
+	}
+
+	if err := o.Store.DetachRepository(ctx, repositoryID); err != nil {
+		return err
+	}
+	o.Audit(ctx, "admin", actorID, "repository.unbind", "repository", repositoryID,
+		map[string]string{"agent_id": repo.AgentID, "storage_target_id": repo.StorageTargetID, "remote_data": "preserved"})
+	return nil
 }
 
 // markRepositoryError records a failed bind independently of the HTTP request

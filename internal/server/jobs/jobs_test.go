@@ -170,6 +170,9 @@ func (s *fakeStore) UpdateRepositoryStatus(ctx context.Context, id, status strin
 		return store.ErrNotFound
 	}
 	r.Status = status
+	if status == "ready" {
+		r.DetachedAt = nil
+	}
 	return nil
 }
 
@@ -262,6 +265,17 @@ func (s *fakeStore) ListRepositories(ctx context.Context) ([]model.Repository, e
 func (s *fakeStore) ListRepositoriesNeedingCheck(ctx context.Context, olderThan time.Time) ([]model.Repository, error) {
 	return nil, nil
 }
+func (s *fakeStore) DetachRepository(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.repos[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	now := time.Now().UTC()
+	r.DetachedAt = &now
+	return nil
+}
 func (s *fakeStore) MarkRepositoryChecked(ctx context.Context, id string, at time.Time) error {
 	return nil
 }
@@ -269,11 +283,38 @@ func (s *fakeStore) CreatePlan(ctx context.Context, p *model.Plan) error { retur
 func (s *fakeStore) UpdatePlan(ctx context.Context, p *model.Plan) error { return nil }
 func (s *fakeStore) DeletePlan(ctx context.Context, id string) error     { return nil }
 func (s *fakeStore) ListPlans(ctx context.Context, agentID string) ([]model.Plan, error) {
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]model.Plan, 0, len(s.plans))
+	for _, p := range s.plans {
+		if agentID == "" || p.AgentID == agentID {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
 }
 func (s *fakeStore) ListEnabledPlans(ctx context.Context) ([]model.Plan, error) { return nil, nil }
 func (s *fakeStore) ListRuns(ctx context.Context, f store.RunFilter) ([]model.Run, error) {
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	statusSet := make(map[string]bool, len(f.Statuses))
+	for _, status := range f.Statuses {
+		statusSet[status] = true
+	}
+	out := make([]model.Run, 0)
+	for _, run := range s.runs {
+		if f.RepositoryID != "" && run.RepositoryID != f.RepositoryID {
+			continue
+		}
+		if len(statusSet) > 0 && !statusSet[run.Status] {
+			continue
+		}
+		out = append(out, *run)
+		if f.Limit > 0 && len(out) >= f.Limit {
+			break
+		}
+	}
+	return out, nil
 }
 func (s *fakeStore) ListRunsByStatus(ctx context.Context, statuses []string) ([]model.Run, error) {
 	return nil, nil
@@ -450,6 +491,63 @@ func newTestOrchestrator(st *fakeStore, disp *fakeDispatcher) (*Orchestrator, se
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+func TestRenameStorageTargetKeepsConnectionFields(t *testing.T) {
+	st := newFakeStore()
+	o, seal := newTestOrchestrator(st, newFakeDispatcher())
+	target := testTarget(seal)
+	if err := st.CreateStorageTarget(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := o.RenameStorageTarget(context.Background(), "admin", target.ID, "  production drive  ")
+	if err != nil {
+		t.Fatalf("RenameStorageTarget: %v", err)
+	}
+	if got.Name != "production drive" || got.RemoteName != target.RemoteName || got.RemotePath != target.RemotePath {
+		t.Fatalf("unexpected target after rename: %+v", got)
+	}
+}
+
+func TestUnbindRepositoryProtectsReferences(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+	o, seal := newTestOrchestrator(st, newFakeDispatcher())
+	target := testTarget(seal)
+	_ = st.CreateStorageTarget(ctx, target)
+	repo := testRepo(seal, st, target)
+
+	if err := o.UnbindRepository(ctx, "admin", repo.ID); err != nil {
+		t.Fatalf("unbound repository should succeed: %v", err)
+	}
+	if got, err := st.GetRepository(ctx, repo.ID); err != nil || got.DetachedAt == nil {
+		t.Fatalf("expected repository to be detached and retained, got=%+v err=%v", got, err)
+	}
+
+	// A plan reference blocks unbind before the row can be removed.
+	repo = testRepo(seal, st, target)
+	_ = testPlan(st, testAgent(), repo)
+	if err := o.UnbindRepository(ctx, "admin", repo.ID); !errors.Is(err, store.ErrInUse) {
+		t.Fatalf("expected plan reference conflict, got %v", err)
+	}
+	if _, err := st.GetRepository(ctx, repo.ID); err != nil {
+		t.Fatalf("repository should remain after blocked unbind: %v", err)
+	}
+}
+
+func TestUnbindRepositoryProtectsActiveRuns(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+	o, seal := newTestOrchestrator(st, newFakeDispatcher())
+	target := testTarget(seal)
+	_ = st.CreateStorageTarget(ctx, target)
+	repo := testRepo(seal, st, target)
+	st.runs["run-1"] = &model.Run{ID: "run-1", RepositoryID: repo.ID, Status: model.RunRunning}
+
+	if err := o.UnbindRepository(ctx, "admin", repo.ID); !errors.Is(err, store.ErrInUse) {
+		t.Fatalf("expected active run conflict, got %v", err)
+	}
+}
 
 func TestStartPlanRunHappyPath(t *testing.T) {
 	st := newFakeStore()

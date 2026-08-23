@@ -114,10 +114,12 @@ func New(s *Server) http.Handler {
 			r.Post("/storage-targets/validate", s.handleValidateStorageTarget)
 			r.Post("/storage-targets", s.handleCreateStorageTarget)
 			r.Get("/storage-targets", s.handleListStorageTargets)
+			r.Patch("/storage-targets/{id}", s.handleRenameStorageTarget)
 			r.Delete("/storage-targets/{id}", s.handleDeleteStorageTarget)
 
 			r.Post("/repositories", s.handleBindRepository)
 			r.Get("/repositories", s.handleListRepositories)
+			r.Delete("/repositories/{id}", s.handleUnbindRepository)
 			r.Get("/repositories/{id}/snapshots", s.handleRepoSnapshots)
 			r.Get("/snapshots/{snapshotID}/tree", s.handleSnapshotTree)
 

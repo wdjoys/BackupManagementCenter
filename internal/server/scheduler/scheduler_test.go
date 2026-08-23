@@ -192,6 +192,7 @@ func (f *fakeStore) GetRepositoryByAgentAndTarget(_ context.Context, _, _ string
 	return nil, store.ErrNotFound
 }
 func (f *fakeStore) ListRepositories(_ context.Context) ([]model.Repository, error)       { return nil, nil }
+func (f *fakeStore) DetachRepository(_ context.Context, _ string) error                   { return nil }
 func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, _, _ string) error          { return nil }
 func (f *fakeStore) MarkRepositoryChecked(_ context.Context, _ string, _ time.Time) error { return nil }
 func (f *fakeStore) CreatePlan(_ context.Context, _ *model.Plan) error                    { return nil }

@@ -258,7 +258,7 @@ export default {
     emptyRepositories: '暂无仓库，请选择一个 Agent 和一个存储目标进行绑定。',
     repositoryHelp: {
       title: '仓库绑定说明',
-      description: '绑定会让 Agent 在所选网盘路径创建或接管一个独立的 Restic 仓库。首次绑定会先检查仓库，再执行初始化，可能需要几十秒；失败后可重新点击绑定重试。',
+      description: '绑定会让 Agent 在所选网盘路径创建或接管一个独立的 Restic 仓库。首次绑定会先检查仓库，再执行初始化，可能需要几十秒；失败后可点击重试。解绑只隐藏 Server 记录，不删除网盘数据，后续可再次绑定接管。',
     },
     repositoryStatus: {
       pending: '初始化中',
@@ -299,6 +299,14 @@ export default {
       imported: '存储目标已导入',
       importFailedCode: '导入失败（代码：{code}）',
     },
+    editDialog: {
+      title: '编辑存储目标',
+      notice: '这里只修改显示名称。连接配置和远端路径保持不变；如需更换凭据，请导入新的存储目标。',
+      name: '名称',
+      namePlaceholder: '请输入存储目标名称',
+      saved: '存储目标已更新',
+      failedCode: '更新失败（代码：{code}）',
+    },
     deleteDialog: {
       title: '删除存储目标',
       confirm: '确定删除存储目标 "{name}" 吗？',
@@ -314,6 +322,16 @@ export default {
       boundSuccessfully: '仓库绑定成功',
       bound: '仓库已绑定',
       bindFailedCode: '绑定失败（代码：{code}）',
+    },
+    repositoryDialog: {
+      unbindTitle: '解绑仓库记录',
+      confirmUnbind: '确定解绑存储目标“{name}”的仓库记录吗？只会删除 Server 中的绑定，不会删除网盘上的备份数据。',
+      unbind: '解绑',
+      unbound: '仓库记录已解绑，远端备份数据已保留',
+      conflict: '无法解绑：仓库仍被计划引用或有任务正在执行',
+      unbindFailedCode: '解绑失败（代码：{code}）',
+      retried: '已重新发起仓库检查/初始化',
+      retryFailedCode: '重试失败（代码：{code}）',
     },
   },
   runs: {

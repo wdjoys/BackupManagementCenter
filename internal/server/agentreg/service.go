@@ -12,10 +12,10 @@ import (
 	"time"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
+	"backupmanagementcenter/internal/logging"
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/secrets"
 	"backupmanagementcenter/internal/server/events"
-	"backupmanagementcenter/internal/server/notification"
 	"backupmanagementcenter/internal/server/store"
 	"backupmanagementcenter/internal/version"
 	"google.golang.org/grpc/codes"
@@ -551,6 +551,7 @@ func (s *Service) handleAgentLogBatch(ctx context.Context, agentID string, entri
 		logs = append(logs, model.SystemLog{
 			SourceSeq: entry.GetSeq(),
 			Timestamp: timestamp,
+			Type:      logging.ClassifyType(entry.GetMessage()),
 			Level:     level,
 			Message:   entry.GetMessage(),
 		})

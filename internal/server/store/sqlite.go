@@ -1272,7 +1272,7 @@ func (s *sqliteStore) AppendServerLogs(ctx context.Context, logs []model.SystemL
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO server_logs (timestamp, level, message) VALUES (?, ?, ?)`,
+		`INSERT INTO server_logs (timestamp, type, level, message) VALUES (?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("append server logs prepare: %w", err)
@@ -1280,7 +1280,11 @@ func (s *sqliteStore) AppendServerLogs(ctx context.Context, logs []model.SystemL
 	defer stmt.Close()
 
 	for _, entry := range logs {
-		if _, err := stmt.ExecContext(ctx, entry.Timestamp.UTC().Format(time.RFC3339Nano), entry.Level, entry.Message); err != nil {
+		logType := entry.Type
+		if logType == "" {
+			logType = "system"
+		}
+		if _, err := stmt.ExecContext(ctx, entry.Timestamp.UTC().Format(time.RFC3339Nano), logType, entry.Level, entry.Message); err != nil {
 			return fmt.Errorf("append server log: %w", err)
 		}
 	}
@@ -1294,32 +1298,19 @@ func (s *sqliteStore) AppendServerLogs(ctx context.Context, logs []model.SystemL
 	return tx.Commit()
 }
 
-func (s *sqliteStore) ListServerLogs(ctx context.Context, beforeID int64, limit int) ([]model.SystemLog, error) {
-	limit = normalizeProcessLogLimit(limit)
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if beforeID > 0 {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, timestamp, level, message
-			 FROM server_logs WHERE id < ?
-			 ORDER BY id DESC LIMIT ?`,
-			beforeID, limit,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, timestamp, level, message
-			 FROM server_logs ORDER BY id DESC LIMIT ?`,
-			limit,
-		)
-	}
+func (s *sqliteStore) ListServerLogs(ctx context.Context, filter ProcessLogFilter) ([]model.SystemLog, error) {
+	filter.Limit = normalizeProcessLogLimit(filter.Limit)
+	where, args := processLogWhere(filter, "")
+	query := `SELECT id, type, timestamp, level, message
+		FROM server_logs WHERE ` + where + ` ORDER BY id DESC LIMIT ?`
+	args = append(args, filter.Limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list server logs: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]model.SystemLog, 0, limit)
+	out := make([]model.SystemLog, 0, filter.Limit)
 	for rows.Next() {
 		entry, err := scanSystemLog(rows, false)
 		if err != nil {
@@ -1344,8 +1335,8 @@ func (s *sqliteStore) AppendAgentLogs(ctx context.Context, agentID string, logs 
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO agent_logs (agent_id, source_seq, timestamp, level, message)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO agent_logs (agent_id, source_seq, timestamp, type, level, message)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("append agent logs prepare: %w", err)
@@ -1353,7 +1344,11 @@ func (s *sqliteStore) AppendAgentLogs(ctx context.Context, agentID string, logs 
 	defer stmt.Close()
 
 	for _, entry := range logs {
-		if _, err := stmt.ExecContext(ctx, agentID, int64(entry.SourceSeq), entry.Timestamp.UTC().Format(time.RFC3339Nano), entry.Level, entry.Message); err != nil {
+		logType := entry.Type
+		if logType == "" {
+			logType = "system"
+		}
+		if _, err := stmt.ExecContext(ctx, agentID, int64(entry.SourceSeq), entry.Timestamp.UTC().Format(time.RFC3339Nano), logType, entry.Level, entry.Message); err != nil {
 			return fmt.Errorf("append agent log: %w", err)
 		}
 	}
@@ -1372,33 +1367,19 @@ func (s *sqliteStore) AppendAgentLogs(ctx context.Context, agentID string, logs 
 	return tx.Commit()
 }
 
-func (s *sqliteStore) ListAgentLogs(ctx context.Context, agentID string, beforeID int64, limit int) ([]model.SystemLog, error) {
-	limit = normalizeProcessLogLimit(limit)
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if beforeID > 0 {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, agent_id, source_seq, timestamp, level, message
-			 FROM agent_logs WHERE agent_id = ? AND id < ?
-			 ORDER BY id DESC LIMIT ?`,
-			agentID, beforeID, limit,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, agent_id, source_seq, timestamp, level, message
-			 FROM agent_logs WHERE agent_id = ?
-			 ORDER BY id DESC LIMIT ?`,
-			agentID, limit,
-		)
-	}
+func (s *sqliteStore) ListAgentLogs(ctx context.Context, agentID string, filter ProcessLogFilter) ([]model.SystemLog, error) {
+	filter.Limit = normalizeProcessLogLimit(filter.Limit)
+	where, args := processLogWhere(filter, agentID)
+	query := `SELECT id, agent_id, source_seq, type, timestamp, level, message
+		FROM agent_logs WHERE ` + where + ` ORDER BY id DESC LIMIT ?`
+	args = append(args, filter.Limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list agent logs: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]model.SystemLog, 0, limit)
+	out := make([]model.SystemLog, 0, filter.Limit)
 	for rows.Next() {
 		entry, err := scanSystemLog(rows, true)
 		if err != nil {
@@ -1407,6 +1388,34 @@ func (s *sqliteStore) ListAgentLogs(ctx context.Context, agentID string, beforeI
 		out = append(out, *entry)
 	}
 	return out, rows.Err()
+}
+
+func processLogWhere(filter ProcessLogFilter, agentID string) (string, []any) {
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 1+len(filter.Levels)+len(filter.Types))
+	if agentID != "" {
+		conditions = append(conditions, "agent_id = ?")
+		args = append(args, agentID)
+	}
+	if filter.BeforeID > 0 {
+		conditions = append(conditions, "id < ?")
+		args = append(args, filter.BeforeID)
+	}
+	appendProcessLogInFilter(&conditions, &args, "level", filter.Levels)
+	appendProcessLogInFilter(&conditions, &args, "type", filter.Types)
+	return strings.Join(conditions, " AND "), args
+}
+
+func appendProcessLogInFilter(conditions *[]string, args *[]any, column string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	placeholders := make([]string, len(values))
+	for i, value := range values {
+		placeholders[i] = "?"
+		*args = append(*args, value)
+	}
+	*conditions = append(*conditions, column+" IN ("+strings.Join(placeholders, ",")+")")
 }
 
 func normalizeProcessLogLimit(limit int) int {
@@ -1773,16 +1782,17 @@ func scanSystemLog(row interface{ Scan(dest ...any) error }, withAgent bool) (*m
 		id        int64
 		agentID   string
 		sourceSeq int64
+		logType   string
 		timestamp string
 		level     string
 		message   string
 	)
 	if withAgent {
-		if err := row.Scan(&id, &agentID, &sourceSeq, &timestamp, &level, &message); err != nil {
+		if err := row.Scan(&id, &agentID, &sourceSeq, &logType, &timestamp, &level, &message); err != nil {
 			return nil, fmt.Errorf("scan agent log: %w", err)
 		}
 	} else {
-		if err := row.Scan(&id, &timestamp, &level, &message); err != nil {
+		if err := row.Scan(&id, &logType, &timestamp, &level, &message); err != nil {
 			return nil, fmt.Errorf("scan server log: %w", err)
 		}
 	}
@@ -1795,6 +1805,7 @@ func scanSystemLog(row interface{ Scan(dest ...any) error }, withAgent bool) (*m
 		AgentID:   agentID,
 		SourceSeq: seq,
 		Timestamp: parseTime(timestamp),
+		Type:      logType,
 		Level:     level,
 		Message:   message,
 	}, nil

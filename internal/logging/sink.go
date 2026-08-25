@@ -12,6 +12,7 @@ import (
 type Entry struct {
 	Seq       uint64
 	Timestamp time.Time
+	Type      string
 	Level     string
 	Message   string
 }
@@ -90,10 +91,11 @@ func (s *Sink) Write(p []byte) (int, error) {
 			continue
 		}
 		s.nextSeq++
-		level, message := parseLine(line)
+		level, logType, message := parseLine(line)
 		entries = append(entries, Entry{
 			Seq:       s.nextSeq,
 			Timestamp: time.Now().UTC(),
+			Type:      logType,
 			Level:     level,
 			Message:   message,
 		})
@@ -142,7 +144,7 @@ func (s *Sink) appendPendingLocked(entries []Entry) {
 	}
 }
 
-func parseLine(line string) (string, string) {
+func parseLine(line string) (string, string, string) {
 	message := strings.TrimSpace(line)
 	level := "info"
 	for _, prefix := range []struct {
@@ -163,13 +165,19 @@ func parseLine(line string) (string, string) {
 	}
 	if level == "info" {
 		lower := strings.ToLower(message)
+		upper := strings.ToUpper(message)
 		switch {
+		case strings.Contains(upper, "] [DEBUG]"):
+			level = "debug"
+		case strings.Contains(upper, "] [WARN]"):
+			level = "warn"
+		case strings.Contains(upper, "] [ERROR]"),
+			strings.Contains(lower, "level=error"):
+			level = "error"
 		case strings.Contains(lower, "level=debug"):
 			level = "debug"
 		case strings.Contains(lower, "level=warn"):
 			level = "warn"
-		case strings.Contains(lower, "level=error"):
-			level = "error"
 		}
 		if level == "info" {
 			switch {
@@ -186,5 +194,39 @@ func parseLine(line string) (string, string) {
 			}
 		}
 	}
-	return level, message
+	return level, ClassifyType(message), message
+}
+
+// ClassifyType根据日志消息识别稳定的日志类型。
+func ClassifyType(message string) string {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	switch {
+	case strings.Contains(lower, "http request"):
+		return "http"
+	case strings.Contains(lower, "scheduler:"):
+		return "scheduler"
+	case strings.Contains(lower, "dispatcher:"):
+		return "dispatcher"
+	case strings.Contains(lower, "notification"):
+		return "notification"
+	case strings.HasPrefix(lower, "[run "),
+		strings.HasPrefix(lower, "run "),
+		strings.Contains(lower, " run "):
+		return "run"
+	case strings.Contains(lower, "execute command"),
+		strings.Contains(lower, "cancel command"):
+		return "command"
+	case strings.Contains(lower, "connected"),
+		strings.Contains(lower, "disconnected"),
+		strings.Contains(lower, "reconnecting"),
+		strings.Contains(lower, "welcome"),
+		strings.Contains(lower, "heartbeat"),
+		strings.Contains(lower, "capabilities"):
+		return "connection"
+	case strings.HasPrefix(lower, "agent "),
+		strings.Contains(lower, " agent "):
+		return "agent"
+	default:
+		return "system"
+	}
 }

@@ -8,19 +8,19 @@ import (
 	"backupmanagementcenter/internal/server/store"
 )
 
-// 查询Server进程日志，支持按ID向前分页。
+// 查询Server进程日志，支持before_id、limit、level和type筛选。
 func (s *Server) handleListServerLogs(w http.ResponseWriter, r *http.Request) {
 	logStore, ok := s.ST.(store.LogStore)
 	if !ok {
 		writeErr(w, http.StatusNotImplemented, "logs_unavailable", "process log storage is unavailable")
 		return
 	}
-	beforeID, valid := logCursor(r)
+	filter, valid := processLogFilter(r)
 	if !valid {
-		writeErr(w, http.StatusBadRequest, "validation_failed", "before_id must be a positive integer")
+		writeErr(w, http.StatusBadRequest, "validation_failed", "invalid log cursor, level, or type")
 		return
 	}
-	logs, err := logStore.ListServerLogs(r.Context(), beforeID, processLogLimit(r))
+	logs, err := logStore.ListServerLogs(r.Context(), filter)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -28,7 +28,7 @@ func (s *Server) handleListServerLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, logs)
 }
 
-// 查询指定Agent进程日志，支持按ID向前分页。
+// 查询指定Agent进程日志，支持before_id、limit、level和type筛选。
 func (s *Server) handleListAgentLogs(w http.ResponseWriter, r *http.Request) {
 	agentID := strings.TrimSpace(pathParam(r, "id"))
 	if agentID == "" {
@@ -46,12 +46,12 @@ func (s *Server) handleListAgentLogs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotImplemented, "logs_unavailable", "process log storage is unavailable")
 		return
 	}
-	beforeID, valid := logCursor(r)
+	filter, valid := processLogFilter(r)
 	if !valid {
-		writeErr(w, http.StatusBadRequest, "validation_failed", "before_id must be a positive integer")
+		writeErr(w, http.StatusBadRequest, "validation_failed", "invalid log cursor, level, or type")
 		return
 	}
-	logs, err := logStore.ListAgentLogs(r.Context(), agentID, beforeID, processLogLimit(r))
+	logs, err := logStore.ListAgentLogs(r.Context(), agentID, filter)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -66,6 +66,72 @@ func processLogLimit(r *http.Request) int {
 	}
 	return limit
 }
+var processLogLevels = map[string]struct{}{
+	"debug": {},
+	"info":  {},
+	"warn":  {},
+	"error": {},
+}
+
+var processLogTypes = map[string]struct{}{
+	"system":       {},
+	"http":         {},
+	"agent":        {},
+	"run":          {},
+	"scheduler":    {},
+	"dispatcher":   {},
+	"connection":  {},
+	"command":     {},
+	"notification": {},
+}
+
+func processLogFilter(r *http.Request) (store.ProcessLogFilter, bool) {
+	beforeID, valid := logCursor(r)
+	if !valid {
+		return store.ProcessLogFilter{}, false
+	}
+	levels, valid := processLogValues(r, "level", processLogLevels)
+	if !valid {
+		return store.ProcessLogFilter{}, false
+	}
+	types, valid := processLogValues(r, "type", processLogTypes)
+	if !valid {
+		return store.ProcessLogFilter{}, false
+	}
+	return store.ProcessLogFilter{
+		BeforeID: beforeID,
+		Limit:    processLogLimit(r),
+		Levels:   levels,
+		Types:    types,
+	}, true
+}
+
+func processLogValues(r *http.Request, name string, allowed map[string]struct{}) ([]string, bool) {
+	values := r.URL.Query()[name]
+	if len(values) == 0 {
+		return nil, true
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		for _, value := range strings.Split(raw, ",") {
+			value = strings.TrimSpace(strings.ToLower(value))
+			if value == "" {
+				continue
+			}
+			if _, ok := allowed[value]; !ok {
+				return nil, false
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out, true
+}
+
 
 func logCursor(r *http.Request) (int64, bool) {
 	value := strings.TrimSpace(r.URL.Query().Get("before_id"))

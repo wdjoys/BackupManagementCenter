@@ -108,6 +108,7 @@ func main() {
 		if err := logStore.AppendServerLogs(ctx, []model.SystemLog{{
 			SourceSeq: entry.Seq,
 			Timestamp: entry.Timestamp,
+			Type:      entry.Type,
 			Level:     entry.Level,
 			Message:   entry.Message,
 		}}); err != nil {

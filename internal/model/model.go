@@ -254,6 +254,7 @@ type SystemLog struct {
 	AgentID   string    `json:"agent_id,omitempty"`
 	SourceSeq uint64    `json:"source_seq,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`  // system|http|agent|run|scheduler|dispatcher|connection|command|notification
 	Level     string    `json:"level"` // debug|info|warn|error
 	Message   string    `json:"message"`
 }

@@ -23,6 +23,9 @@ func TestSinkBuffersAndForwards(t *testing.T) {
 	if len(got) != 2 || got[0].Level != "info" || got[1].Level != "warn" {
 		t.Fatalf("unexpected entries: %+v", got)
 	}
+	if got[0].Type != "system" || got[1].Type != "connection" {
+		t.Fatalf("unexpected types: %+v", got)
+	}
 	if got[0].Seq != 1 || got[1].Seq != 2 {
 		t.Fatalf("unexpected sequence: %+v", got)
 	}

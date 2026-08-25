@@ -140,6 +140,7 @@ export interface SystemLog {
   agent_id?: string
   source_seq?: number
   timestamp: string
+  type: string
   level: 'debug' | 'info' | 'warn' | 'error' | string
   message: string
 }

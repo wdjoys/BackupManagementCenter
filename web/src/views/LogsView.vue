@@ -24,6 +24,38 @@
             :value="agent.id"
           />
         </el-select>
+        <el-select
+          v-model="levelFilter"
+          size="small"
+          clearable
+          :placeholder="t('logs.filters.level')"
+          style="width: 150px"
+          @change="handleFilterChange"
+        >
+          <el-option :label="t('logs.filters.allLevels')" value="" />
+          <el-option
+            v-for="level in LOG_LEVELS"
+            :key="level"
+            :label="t(`logs.levels.${level}`)"
+            :value="level"
+          />
+        </el-select>
+        <el-select
+          v-model="typeFilter"
+          size="small"
+          clearable
+          :placeholder="t('logs.filters.type')"
+          style="width: 170px"
+          @change="handleFilterChange"
+        >
+          <el-option :label="t('logs.filters.allTypes')" value="" />
+          <el-option
+            v-for="type in LOG_TYPES"
+            :key="type"
+            :label="t(`logs.types.${type}`)"
+            :value="type"
+          />
+        </el-select>
         <el-button size="small" :loading="loading" @click="loadLogs(true)">
           <el-icon><Refresh /></el-icon>
           <span>{{ t('common.refresh') }}</span>
@@ -73,6 +105,11 @@
             <code>{{ row.id }}</code>
           </template>
         </el-table-column>
+        <el-table-column :label="t('logs.columns.type')" width="130">
+          <template #default="{ row }">
+            <el-tag size="small" type="info">{{ typeText(row.type) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column v-if="scope === 'agent'" :label="t('logs.columns.sourceSeq')" width="92">
           <template #default="{ row }">
             {{ row.source_seq ?? '-' }}
@@ -102,9 +139,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { apiGet } from '@/api/client'
 import type { Agent, SystemLog } from '@/api/types'
-import { formatDateTime } from '@/i18n'
+import { formatDateTime, translateEnum } from '@/i18n'
 
 const PAGE_SIZE = 500
+const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
+const LOG_TYPES = ['system', 'http', 'agent', 'run', 'scheduler', 'dispatcher', 'connection', 'command', 'notification'] as const
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
@@ -114,6 +153,8 @@ type LogScope = 'server' | 'agent'
 const initialAgentID = typeof route.query.agent_id === 'string' ? route.query.agent_id : ''
 const scope = ref<LogScope>(initialAgentID ? 'agent' : 'server')
 const selectedAgentId = ref(initialAgentID)
+const levelFilter = ref('')
+const typeFilter = ref('')
 const agents = ref<Agent[]>([])
 const logs = ref<SystemLog[]>([])
 const loading = ref(false)
@@ -126,11 +167,15 @@ const currentTitle = computed(() => {
   return agent ? t('logs.agentTitle', { name: agent.name }) : t('logs.agent')
 })
 
-const displayLogs = computed(() => [...logs.value].sort((a, b) => a.id - b.id))
+const displayLogs = computed(() => [...logs.value].sort((a, b) => b.id - a.id))
 
 function formatTime(value: string): string {
   return formatDateTime(value)
 }
+function typeText(type: string): string {
+  return translateEnum('logs.types', type)
+}
+
 
 function levelTagType(level: string): 'info' | 'success' | 'warning' | 'danger' {
   switch (level) {
@@ -170,7 +215,12 @@ async function loadLogs(reset: boolean): Promise<void> {
   error.value = ''
   try {
     const beforeId = reset || logs.value.length === 0 ? undefined : Math.min(...logs.value.map((item) => item.id))
-    const data = await apiGet<SystemLog[]>(path, { limit: PAGE_SIZE, before_id: beforeId })
+    const data = await apiGet<SystemLog[]>(path, {
+      limit: PAGE_SIZE,
+      before_id: beforeId,
+      level: levelFilter.value || undefined,
+      type: typeFilter.value || undefined,
+    })
     const merged = reset ? data : [...data, ...logs.value]
     const byID = new Map<number, SystemLog>()
     for (const entry of merged) byID.set(entry.id, entry)
@@ -181,6 +231,12 @@ async function loadLogs(reset: boolean): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+function handleFilterChange(): void {
+  logs.value = []
+  hasMore.value = false
+  void loadLogs(true)
 }
 
 async function loadMore(): Promise<void> {

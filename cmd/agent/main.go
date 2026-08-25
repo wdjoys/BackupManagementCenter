@@ -72,6 +72,7 @@ func main() {
 	}
 
 	runner := agent.NewRunner(pipeline.Deps{
+		Exec:        agent.OSExecutor{},
 		SourceRoots: cfg.SourceRoots,
 		RestoreRoots: cfg.RestoreRoots,
 		ScratchMinFreeBytes: cfg.ScratchMinFreeBytes,

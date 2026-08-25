@@ -69,6 +69,9 @@ func runFailed(op string, exitCode int, err error, stderrTail string) error {
 
 // ListRemotes runs `rclone listremotes --config <file>` and returns remote names.
 func ListRemotes(ctx context.Context, exec backup.Executor, confPath string) ([]string, error) {
+	if exec == nil {
+		return nil, runFailed("listremotes", -1, errors.New("executor is nil"), "")
+	}
 	args := []string{"listremotes", "--config", confPath}
 	env := []string{"RCLONE_CONFIG=" + confPath}
 	var remotes []string
@@ -88,6 +91,9 @@ func ListRemotes(ctx context.Context, exec backup.Executor, confPath string) ([]
 
 // Lsd runs `rclone lsd <remote>: --config <file>` and returns directory entries.
 func Lsd(ctx context.Context, exec backup.Executor, confPath, remote string) ([]string, error) {
+	if exec == nil {
+		return nil, runFailed("lsd", -1, errors.New("executor is nil"), "")
+	}
 	args := []string{"lsd", remote + ":", "--config", confPath}
 	env := []string{"RCLONE_CONFIG=" + confPath}
 	var entries []string

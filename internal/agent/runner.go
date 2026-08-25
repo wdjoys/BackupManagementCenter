@@ -41,6 +41,9 @@ func NewRunner(deps pipeline.Deps, dataDir string, identity *Identity) *Runner {
 	if deps.Tools == nil {
 		deps.Tools = make(map[string]model.ToolInfo)
 	}
+	if deps.Exec == nil {
+		deps.Exec = OSExecutor{}
+	}
 	r := &Runner{
 		deps:      deps,
 		dataDir:   dataDir,

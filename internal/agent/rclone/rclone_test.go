@@ -35,6 +35,16 @@ func TestListRemotes_ParsesRemoteNames(t *testing.T) {
 		t.Fatalf("unexpected remotes: %v", remotes)
 	}
 }
+func TestListRemotes_NilExecutorReturnsError(t *testing.T) {
+	_, err := ListRemotes(context.Background(), nil, "/tmp/rclone.conf")
+	if err == nil {
+		t.Fatal("expected nil executor error")
+	}
+	if !strings.Contains(err.Error(), "executor is nil") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 
 func TestListRemotes_FailureCarriesStderr(t *testing.T) {
 	exec := &fakeExecutor{exit: 3, stderr: []string{"2026/08/23 10:00:00 Failed to create file system: dial tcp: lookup disk.invalid: no such host"}}

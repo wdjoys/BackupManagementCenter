@@ -114,6 +114,8 @@ message LogEntry {
 }
 
 message RunLogBatch {
+  // run_id非空表示运行日志；run_id为空表示Agent进程日志。
+  // 复用现有包络以兼容未升级的Agent。
   string run_id = 1;
   repeated LogEntry entries = 2;
 }

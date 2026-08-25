@@ -19,6 +19,10 @@
           <el-icon><Monitor /></el-icon>
           <span>{{ t('nav.agents') }}</span>
         </el-menu-item>
+        <el-menu-item index="/logs">
+          <el-icon><Document /></el-icon>
+          <span>{{ t('nav.logs') }}</span>
+        </el-menu-item>
         <el-menu-item index="/storage">
           <el-icon><Folder /></el-icon>
           <span>{{ t('nav.storage') }}</span>
@@ -79,7 +83,7 @@ const activeMenu = computed(() => {
   const menuMap: Record<string, string> = {
     '/dashboard': '/dashboard',
     '/agents': '/agents',
-    '/storage': '/storage',
+    '/logs': '/logs',
     '/plans': '/plans',
     '/runs': '/runs',
     '/snapshots': '/snapshots',

@@ -119,8 +119,17 @@
           {{ formatTime(row.enrolled_at) }}
         </template>
       </el-table-column>
-      <el-table-column :label="t('common.actions')" width="100" fixed="right">
+      <el-table-column :label="t('common.actions')" width="180" fixed="right">
         <template #default="{ row }">
+          <el-button
+            type="primary"
+            text
+            size="small"
+            @click="viewAgentLogs(row.id)"
+          >
+            <el-icon><Document /></el-icon>
+            {{ t('agents.viewLogs') }}
+          </el-button>
           <el-button
             type="danger"
             text
@@ -176,12 +185,15 @@
 <script setup lang="ts">
 import { apiGet, apiPost, apiDelete, apiPatch } from '@/api/client'
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { translateEnum, formatDateTime } from '@/i18n'
 import type { Agent, EnrollmentTokenResponse } from '@/api/types'
 
 const { t } = useI18n()
+const router = useRouter()
+
 
 const loading = ref(false)
 const error = ref('')
@@ -206,6 +218,10 @@ const copying = ref(false)
 function formatTime(iso: string): string {
   return formatDateTime(iso)
 }
+function viewAgentLogs(agentID: string): void {
+  void router.push({ path: '/logs', query: { agent_id: agentID } })
+}
+
 
 async function loadAgents(): Promise<void> {
   loading.value = true

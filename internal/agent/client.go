@@ -17,6 +17,7 @@ import (
 	"time"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
+	"backupmanagementcenter/internal/logging"
 	"backupmanagementcenter/internal/version"
 
 	"google.golang.org/grpc"
@@ -50,7 +51,6 @@ func isRevokedErr(err error) bool {
 	}
 	return strings.Contains(err.Error(), "agent is revoked")
 }
-
 // ConnectClient manages the bidirectional gRPC stream to the server.
 type ConnectClient struct {
 	cfg        ConfigProvider
@@ -58,6 +58,7 @@ type ConnectClient struct {
 	im         *IdentityManager
 	prober     *Prober
 	runner     *Runner
+	logSink    *logging.Sink
 
 	// Reconnection state
 	reconnectCount atomic.Uint64
@@ -95,6 +96,13 @@ func NewConnectClient(cfg ConfigProvider, im *IdentityManager, prober *Prober, r
 		runner:            runner,
 		heartbeatInterval: 30 * time.Second,
 	}
+}
+
+// SetLogSink绑定Agent进程日志转发器；连接重建时会自动切换发送目标。
+func (c *ConnectClient) SetLogSink(sink *logging.Sink) {
+	c.mu.Lock()
+	c.logSink = sink
+	c.mu.Unlock()
 }
 
 // Run starts the connect loop with reconnection.
@@ -220,6 +228,17 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 		return fmt.Errorf("send hello: %w", err)
 	}
 
+	c.mu.Lock()
+	logSink := c.logSink
+	c.mu.Unlock()
+	if logSink != nil {
+		logSink.SetHandler(func(entry logging.Entry) error {
+			return ss.Send(agentProcessLogMessage(entry))
+		})
+		defer logSink.ClearHandler()
+	}
+
+
 	// Start heartbeat goroutine
 	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
 	defer heartbeatCancel()
@@ -255,6 +274,22 @@ func (c *ConnectClient) buildHello() *bmcv1.AgentMessage {
 				Os:       runtime.GOOS,
 				Arch:     runtime.GOARCH,
 				Version:  version.Version,
+			},
+		},
+	}
+}
+
+func agentProcessLogMessage(entry logging.Entry) *bmcv1.AgentMessage {
+	return &bmcv1.AgentMessage{
+		MessageId: newMessageID(),
+		Payload: &bmcv1.AgentMessage_RunLogBatch{
+			RunLogBatch: &bmcv1.RunLogBatch{
+				Entries: []*bmcv1.LogEntry{{
+					Seq:                entry.Seq,
+					TimestampUnixNanos: entry.Timestamp.UnixNano(),
+					Level:              protoLevel(entry.Level),
+					Message:            entry.Message,
+				}},
 			},
 		},
 	}

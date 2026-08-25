@@ -4,9 +4,9 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
+	"backupmanagementcenter/internal/logging"
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/secrets"
 	"backupmanagementcenter/internal/server/agentreg"
@@ -97,6 +98,27 @@ func main() {
 	if err := st.Migrate(ctx); err != nil {
 		log.Fatalf("[FATAL] migrate: %v", err)
 	}
+	logStore, ok := st.(store.LogStore)
+	if !ok {
+		log.Fatalf("[FATAL] process log storage is unavailable")
+	}
+	serverLogSink := logging.NewSink(os.Stderr, 4096)
+	serverLogSink.SetHandler(func(entry logging.Entry) error {
+		if err := logStore.AppendServerLogs(ctx, []model.SystemLog{{
+			SourceSeq: entry.Seq,
+			Timestamp: entry.Timestamp,
+			Level:     entry.Level,
+			Message:   entry.Message,
+		}}); err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] persist server log: %v\n", err)
+		}
+		return nil
+	})
+	log.SetFlags(0)
+	log.SetOutput(serverLogSink)
+	slog.SetDefault(slog.New(slog.NewTextHandler(serverLogSink, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	log.Printf("[INFO] server logging initialized data_dir=%s http=%s grpc=%s metrics=%s", cfg.DataDir, cfg.ListenAddr, cfg.GRPCAddr, cfg.MetricsAddr)
+
 	go periodicSQLiteBackup(dbPath, cfg.DataDir)
 
 	bus := events.New()

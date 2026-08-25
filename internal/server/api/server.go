@@ -1,6 +1,6 @@
 // Package api wires the HTTP surface of the server: setup/auth, agents,
-// storage targets, repositories/snapshots, plans, runs (+WebSocket logs),
-// restores, dashboard, health.
+// process logs, storage targets, repositories/snapshots, plans, runs
+// (+WebSocket logs), restores, dashboard and health.
 package api
 
 import (
@@ -104,6 +104,8 @@ func New(s *Server) http.Handler {
 				return s.requireAuth(next.ServeHTTP)
 			})
 			r.Get("/dashboard", s.handleDashboard)
+			r.Get("/logs/server", s.handleListServerLogs)
+			r.Get("/agents/{id}/logs", s.handleListAgentLogs)
 
 			r.Patch("/agents/{id}", s.handleRenameAgent)
 			r.Get("/agents", s.handleListAgents)
@@ -194,12 +196,19 @@ func queryInt(r *http.Request, name string, def int) int {
 	return n
 }
 
-var errBadRequest = errors.New("bad request")
-
 func requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-		logf("%s %s -> %d", r.Method, r.URL.Path, ww.Status())
+		logf("[INFO] http request request_id=%s method=%s path=%s status=%d duration=%s remote=%s user_agent=%q",
+			middleware.GetReqID(r.Context()),
+			r.Method,
+			r.URL.Path,
+			ww.Status(),
+			time.Since(started).Round(time.Microsecond),
+			r.RemoteAddr,
+			r.UserAgent(),
+		)
 	})
 }

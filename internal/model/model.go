@@ -247,6 +247,17 @@ type RunLog struct {
 	Message   string    `json:"message"`
 }
 
+// SystemLog 是Server和Agent进程日志的统一API/存储形状。
+// ID由Server落库时分配；SourceSeq保留Agent本地序号，便于定位断线与重连。
+type SystemLog struct {
+	ID        int64     `json:"id"`
+	AgentID   string    `json:"agent_id,omitempty"`
+	SourceSeq uint64    `json:"source_seq,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Level     string    `json:"level"` // debug|info|warn|error
+	Message   string    `json:"message"`
+}
+
 type RestoreRequest struct {
 	ID                 string        `json:"id"`
 	RunID              string        `json:"run_id"` // the restore run created for it

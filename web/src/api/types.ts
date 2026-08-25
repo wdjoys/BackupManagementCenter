@@ -135,6 +135,15 @@ export interface RunLog {
   level: string
   message: string
 }
+export interface SystemLog {
+  id: number
+  agent_id?: string
+  source_seq?: number
+  timestamp: string
+  level: 'debug' | 'info' | 'warn' | 'error' | string
+  message: string
+}
+
 
 export interface RestoreRequest {
   id: string

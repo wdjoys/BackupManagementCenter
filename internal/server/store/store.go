@@ -111,6 +111,14 @@ type Store interface {
 	ListAuditEvents(ctx context.Context, limit int) ([]model.AuditEvent, error)
 }
 
+// LogStore是可选的进程日志持久化接口，单独拆出以保持测试替身和扩展Store兼容。
+type LogStore interface {
+	AppendServerLogs(ctx context.Context, logs []model.SystemLog) error
+	ListServerLogs(ctx context.Context, beforeID int64, limit int) ([]model.SystemLog, error)
+	AppendAgentLogs(ctx context.Context, agentID string, logs []model.SystemLog) error
+	ListAgentLogs(ctx context.Context, agentID string, beforeID int64, limit int) ([]model.SystemLog, error)
+}
+
 type RunFilter struct {
 	AgentID   string
 	PlanID    string

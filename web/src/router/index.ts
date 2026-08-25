@@ -34,6 +34,12 @@ const router = createRouter({
           meta: { title: 'nav.agents' },
         },
         {
+          path: 'logs',
+          name: 'Logs',
+          component: () => import('@/views/LogsView.vue'),
+          meta: { title: 'nav.logs' },
+        },
+        {
           path: 'storage',
           name: 'Storage',
           component: () => import('@/views/storage/StorageView.vue'),

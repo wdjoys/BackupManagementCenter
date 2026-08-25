@@ -14,6 +14,7 @@ import (
 	"backupmanagementcenter/internal/agent"
 	"backupmanagementcenter/internal/agent/config"
 	"backupmanagementcenter/internal/agent/pipeline"
+	"backupmanagementcenter/internal/logging"
 	"backupmanagementcenter/internal/version"
 )
 
@@ -24,15 +25,28 @@ func (a cfgAdapter) GetServerGRPCURL() string        { return a.c.ServerGRPCURL 
 func (a cfgAdapter) GetServerTLS() bool              { return a.c.ServerTLS }
 func (a cfgAdapter) GetDevInsecure() bool            { return a.c.DevInsecure }
 func (a cfgAdapter) GetProbeInterval() time.Duration { return time.Duration(a.c.ProbeInterval) * time.Second }
-
 func main() {
+
+	agentLogSink := logging.NewSink(os.Stderr, 4096)
+	log.SetFlags(0)
+	log.SetOutput(agentLogSink)
 	log.Printf("[INFO] bmc-agent starting version=%s", version.Version)
 
 	cfg, err := config.LoadAgent()
 	if err != nil {
 		log.Fatalf("[FATAL] %v", err)
 	}
-
+	log.Printf("[INFO] agent configuration server=%s tls=%t dev_insecure=%t state_dir=%s data_dir=%s source_roots=%v restore_roots=%v probe_interval=%ds max_concurrency=%d",
+		cfg.ServerGRPCURL,
+		cfg.ServerTLS,
+		cfg.DevInsecure,
+		cfg.StateDir,
+		cfg.DataDir,
+		cfg.SourceRoots,
+		cfg.RestoreRoots,
+		cfg.ProbeInterval,
+		cfg.MaxConcurrency,
+	)
 	im := agent.NewIdentityManager(cfg.StateDir)
 	ident, created, err := im.LoadOrCreate(cfg.EnrollToken)
 	if err != nil {
@@ -58,7 +72,6 @@ func main() {
 	}
 
 	runner := agent.NewRunner(pipeline.Deps{
-		Exec: agent.OSExecutor{},
 		SourceRoots: cfg.SourceRoots,
 		RestoreRoots: cfg.RestoreRoots,
 		ScratchMinFreeBytes: cfg.ScratchMinFreeBytes,
@@ -71,6 +84,7 @@ func main() {
 	prober := agent.NewProber()
 	runner.SetProber(prober)
 	client := agent.NewConnectClient(cfgAdapter{cfg}, im, prober, runner)
+	client.SetLogSink(agentLogSink)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

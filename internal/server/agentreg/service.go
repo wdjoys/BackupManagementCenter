@@ -272,6 +272,15 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 	if err := s.store.UpsertAgentOnConnect(stream.Context(), agent); err != nil {
 		log.Printf("failed to upsert agent on connect: %v", err)
 	}
+	log.Printf("[INFO] agent connected id=%s hostname=%s os=%s arch=%s version=%s minor_mismatch=%t",
+		agentID,
+		agent.Hostname,
+		agent.OS,
+		agent.Arch,
+		agent.Version,
+		versionMinorMismatch,
+	)
+
 
 	// Start a goroutine to forward messages from sendCh to the stream
 	errCh := make(chan error, 1)
@@ -471,6 +480,10 @@ func (s *Service) handleRunLogBatch(ctx context.Context, agentID string, batch *
 	if len(entries) == 0 {
 		return nil
 	}
+	// run_id为空表示Agent进程日志；非空仍按运行日志处理。
+	if runID == "" {
+		return s.handleAgentLogBatch(ctx, agentID, entries)
+	}
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil {
 		if err == store.ErrNotFound {
@@ -512,6 +525,39 @@ func (s *Service) handleRunLogBatch(ctx context.Context, agentID string, batch *
 
 	return s.store.AppendRunLogs(ctx, logs)
 }
+func (s *Service) handleAgentLogBatch(ctx context.Context, agentID string, entries []*bmcv1.LogEntry) error {
+	logStore, ok := s.store.(store.LogStore)
+	if !ok {
+		return fmt.Errorf("agent log storage is unavailable")
+	}
+	logs := make([]model.SystemLog, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		level := "info"
+		switch entry.GetLevel() {
+		case bmcv1.LogLevel_DEBUG:
+			level = "debug"
+		case bmcv1.LogLevel_WARN:
+			level = "warn"
+		case bmcv1.LogLevel_ERROR:
+			level = "error"
+		}
+		timestamp := time.Now().UTC()
+		if nanos := entry.GetTimestampUnixNanos(); nanos != 0 {
+			timestamp = time.Unix(0, nanos).UTC()
+		}
+		logs = append(logs, model.SystemLog{
+			SourceSeq: entry.GetSeq(),
+			Timestamp: timestamp,
+			Level:     level,
+			Message:   entry.GetMessage(),
+		})
+	}
+	return logStore.AppendAgentLogs(ctx, agentID, logs)
+}
+
 
 func (s *Service) handleRunResult(ctx context.Context, agentID string, result *bmcv1.RunResult) error {
 	runID := result.GetRunId()
@@ -688,6 +734,7 @@ func isTerminal(status string) bool {
 // ---------------------------------------------------------------------------
 
 func (s *Service) handleDisconnect(agentID string) {
+	log.Printf("[WARN] agent disconnected id=%s", agentID)
 	ctx := context.Background()
 
 	// Set agent offline

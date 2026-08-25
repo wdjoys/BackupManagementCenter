@@ -16,6 +16,7 @@ import (
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/secrets"
 	"backupmanagementcenter/internal/server/events"
+	"backupmanagementcenter/internal/server/notification"
 	"backupmanagementcenter/internal/server/store"
 	"backupmanagementcenter/internal/version"
 	"google.golang.org/grpc/codes"

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -589,54 +588,30 @@ func runSnapshotLs(ctx context.Context, d Deps, tempDir string, params []byte, s
 	if err != nil {
 		return nil, err
 	}
-	entries, roots, err := restic.Ls(ctx, d.Exec, opts, task.SnapshotID)
+	entries, err := restic.Ls(ctx, d.Exec, opts, task.SnapshotID, task.Path)
 	if err != nil {
 		return nil, &PipelineError{Code: "snapshot_ls_failed", Message: "restic ls failed", Cause: err}
 	}
 
-	// Normalize helper: restic node paths look like "/D/tmp/x" on Windows and
-	// "/etc/x" on Linux.
+	// restic filters at the repository, so browsing a directory does not scan
+	// every node in the snapshot before returning its direct children.
 	norm := func(p string) string {
 		p = strings.ReplaceAll(p, "\\", "/")
 		if !strings.HasPrefix(p, "/") {
 			p = "/" + p
 		}
-		// Restic renders Windows drive paths as /D/tmp/... while the
-		// snapshot descriptor retains D:/tmp/.... Normalize both forms.
 		if len(p) >= 3 && p[0] == '/' && p[2] == ':' {
 			p = p[:2] + p[3:]
 		}
 		return strings.TrimSuffix(p, "/")
 	}
-
 	dir := norm(task.Path)
-	var parentDirs []string
-	if dir == "" || dir == "/" {
-		// Snapshot root listing: children of the backup source roots.
-		for _, r := range roots {
-			parentDirs = append(parentDirs, norm(r))
+	filtered := entries[:0]
+	for _, entry := range entries {
+		entry.Path = norm(entry.Path)
+		if entry.Path != dir {
+			filtered = append(filtered, entry)
 		}
-	} else {
-		parentDirs = []string{dir}
-	}
-
-	filtered := make([]restic.SnapshotEntry, 0, len(entries))
-	seen := map[string]bool{}
-	for _, e := range entries {
-		parent := path.Dir(norm(e.Path))
-		ok := false
-		for _, pd := range parentDirs {
-			if parent == pd {
-				ok = true
-				break
-			}
-		}
-		if !ok || seen[e.Path] {
-			continue
-		}
-		seen[e.Path] = true
-		e.Path = norm(e.Path)
-		filtered = append(filtered, e)
 	}
 
 	resultJSON, _ := json.Marshal(map[string]any{

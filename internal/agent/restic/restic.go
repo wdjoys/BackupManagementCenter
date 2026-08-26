@@ -427,12 +427,16 @@ type SnapshotEntry struct {
 	Mtime string `json:"mtime,omitempty"`
 }
 
-// Ls runs `restic ls <snapshot> --json` and returns structured entries.
-func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID string) ([]SnapshotEntry, []string, error) {
+// Ls runs `restic ls <snapshot> <path> --json` and returns that directory and
+// its direct children.
+func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID, snapshotPath string) ([]SnapshotEntry, error) {
 	if opts.Exe == "" {
-		return nil, nil, fmt.Errorf("restic exe not set")
+		return nil, fmt.Errorf("restic exe not set")
 	}
-	args := []string{"ls", snapshotID}
+	if snapshotPath == "" {
+		snapshotPath = "/"
+	}
+	args := []string{"ls", snapshotID, snapshotPath}
 	if opts.RepoPath != "" {
 		args = append(args, "--repo", opts.RepoPath)
 	}
@@ -445,52 +449,25 @@ func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID stri
 	args = append(args, "--json")
 
 	env := buildEnv(opts)
-
 	var entries []SnapshotEntry
-	var roots []string
-	first := true
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
 		func(line string) {
-			// restic ls --json emits the snapshot descriptor first
-			// (struct_type "snapshot", carrying source "paths"), then one
-			// node object per line: {"name":"a.txt","type":"file",
-			// "path":"/src/a.txt","struct_type":"node",...}.
-			var probe struct {
-				StructType string    `json:"struct_type"`
-				Summary    *struct{} `json:"summary"`
-				Paths      []string  `json:"paths"`
-			}
-			if json.Unmarshal([]byte(line), &probe) == nil && probe.Summary != nil {
-				roots = probe.Paths
-				first = false
-				return
-			}
 			var node struct {
-				Name       string `json:"name"`
-				Type       string `json:"type"`
-				Path       string `json:"path"`
-				Size       int64  `json:"size"`
-				StructType string `json:"struct_type"`
-				Mtime      string `json:"mtime"`
+				Name string `json:"name"`
+				Type string `json:"type"`
+				Path string `json:"path"`
+				Size int64 `json:"size"`
+				Mtime string `json:"mtime"`
 			}
-			if json.Unmarshal([]byte(line), &node) != nil || node.Name == "" {
+			if json.Unmarshal([]byte(line), &node) != nil || node.Name == "" || node.Type == "" {
 				return
 			}
-			if first || node.Type == "" {
-				return
-			}
-			entries = append(entries, SnapshotEntry{
-				Name:  node.Name,
-				Type:  node.Type,
-				Path:  node.Path,
-				Size:  node.Size,
-				Mtime: node.Mtime,
-			})
+			entries = append(entries, SnapshotEntry{Name: node.Name, Type: node.Type, Path: node.Path, Size: node.Size, Mtime: node.Mtime})
 		}, func(string) {})
 	if exitCode != 0 {
-		return nil, nil, mapResticError(exitCode, err)
+		return nil, mapResticError(exitCode, err)
 	}
-	return entries, roots, nil
+	return entries, nil
 }
 
 // Init runs `restic init` to create a new repository. Restic does not

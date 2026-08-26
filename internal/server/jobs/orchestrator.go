@@ -32,6 +32,8 @@ import (
 	"backupmanagementcenter/internal/server/store"
 )
 
+const snapshotBrowseWait = 2 * time.Minute
+
 var (
 	ErrForbidden         = errors.New("forbidden")
 	ErrNotFound          = errors.New("not found")
@@ -412,7 +414,7 @@ func (o *Orchestrator) Snapshots(ctx context.Context, repoID string, agentID str
 		return nil, nil, err
 	}
 
-	term, resultJSON, err := o.WaitRunResult(ctx, run.ID, 30*time.Second)
+	term, resultJSON, err := o.WaitRunResult(ctx, run.ID, snapshotBrowseWait)
 	if err != nil {
 		return nil, term, err
 	}
@@ -444,7 +446,7 @@ func (o *Orchestrator) SnapshotTree(ctx context.Context, repoID, agentID, snapsh
 		return nil, nil, err
 	}
 
-	term, resultJSON, err := o.WaitRunResult(ctx, run.ID, 30*time.Second)
+	term, resultJSON, err := o.WaitRunResult(ctx, run.ID, snapshotBrowseWait)
 	if err != nil {
 		return nil, term, err
 	}

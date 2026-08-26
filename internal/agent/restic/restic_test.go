@@ -12,9 +12,13 @@ type checkExecutor struct {
 	stdout string
 	stderr string
 	code   int
+	cmd    *backup.Cmd
 }
 
-func (e checkExecutor) Run(_ context.Context, _ backup.Cmd, onStdout func(string), onStderr func(string)) (int, error) {
+func (e checkExecutor) Run(_ context.Context, cmd backup.Cmd, onStdout func(string), onStderr func(string)) (int, error) {
+	if e.cmd != nil {
+		*e.cmd = cmd
+	}
 	if onStdout != nil && e.stdout != "" {
 		onStdout(e.stdout)
 	}
@@ -22,6 +26,29 @@ func (e checkExecutor) Run(_ context.Context, _ backup.Cmd, onStdout func(string
 		onStderr(e.stderr)
 	}
 	return e.code, nil
+}
+
+func TestLsFiltersByRequestedDirectory(t *testing.T) {
+	var cmd backup.Cmd
+	entries, err := Ls(context.Background(), checkExecutor{
+		stdout: `{"name":"child","type":"dir","path":"/backup/child","size":0,"mtime":"2026-08-26T00:00:00Z"}`,
+		cmd:    &cmd,
+	}, Options{Exe: "restic", RepoPath: "rclone:remote:/repo"}, "snapshot-id", "/backup")
+	if err != nil {
+		t.Fatalf("Ls: %v", err)
+	}
+	wantArgs := []string{"ls", "snapshot-id", "/backup", "--repo", "rclone:remote:/repo", "--json"}
+	if len(cmd.Args) != len(wantArgs) {
+		t.Fatalf("args = %q, want %q", cmd.Args, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if cmd.Args[i] != want {
+			t.Fatalf("args = %q, want %q", cmd.Args, wantArgs)
+		}
+	}
+	if len(entries) != 1 || entries[0].Path != "/backup/child" {
+		t.Fatalf("entries = %#v", entries)
+	}
 }
 
 func TestCheckIncludesCommandOutputOnFailure(t *testing.T) {

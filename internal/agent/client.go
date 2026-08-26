@@ -391,7 +391,7 @@ func (c *ConnectClient) handleServerMessage(ctx context.Context, stream bmcv1.Ag
 
 	case *bmcv1.ServerMessage_ExecuteCommand:
 		cmd := payload.ExecuteCommand
-		log.Printf("[INFO] execute command: command_id=%s run_id=%s operation=%d", cmd.CommandId, cmd.RunId, cmd.Operation)
+		log.Printf("[INFO] execute command: command_id=%s run_id=%s operation=%s", cmd.CommandId, cmd.RunId, operationName(cmd.Operation))
 		c.runner.Execute(ctx, stream, cmd)
 
 	case *bmcv1.ServerMessage_CancelCommand:
@@ -404,6 +404,33 @@ func (c *ConnectClient) handleServerMessage(ctx context.Context, stream bmcv1.Ag
 	}
 	return nil
 }
+func operationName(op bmcv1.ExecuteCommand_Operation) string {
+	switch op {
+	case bmcv1.ExecuteCommand_BACKUP:
+		return "backup"
+	case bmcv1.ExecuteCommand_RESTORE:
+		return "restore"
+	case bmcv1.ExecuteCommand_RESTORE_DRY_RUN:
+		return "restore_dry_run"
+	case bmcv1.ExecuteCommand_CHECK:
+		return "check"
+	case bmcv1.ExecuteCommand_FORGET:
+		return "forget"
+	case bmcv1.ExecuteCommand_SNAPSHOTS:
+		return "snapshots"
+	case bmcv1.ExecuteCommand_SNAPSHOT_LS:
+		return "snapshot_ls"
+	case bmcv1.ExecuteCommand_VERIFY_STORAGE_REMOTE:
+		return "verify_storage_remote"
+	case bmcv1.ExecuteCommand_VALIDATE_PATHS:
+		return "validate_paths"
+	case bmcv1.ExecuteCommand_PROBE_CAPABILITIES:
+		return "probe_capabilities"
+	default:
+		return fmt.Sprintf("unknown(%d)", op)
+	}
+}
+
 
 func (c *ConnectClient) backoff(ctx context.Context) {
 	// Exponential backoff with jitter: 1s base, 60s cap

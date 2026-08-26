@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"backupmanagementcenter/internal/agent/backup"
 	"backupmanagementcenter/internal/model"
@@ -67,9 +68,24 @@ func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []str
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
-
 	var snapshotID string
 	var lastSummary string
+	var outputTail strings.Builder
+	var outputMu sync.Mutex
+	appendOutput := func(line string) {
+		outputMu.Lock()
+		defer outputMu.Unlock()
+		const maxOutput = 4 << 10
+		if outputTail.Len() >= maxOutput {
+			return
+		}
+		remaining := maxOutput - outputTail.Len()
+		if len(line)+1 > remaining {
+			line = line[:remaining-1]
+		}
+		outputTail.WriteString(line)
+		outputTail.WriteByte('\n')
+	}
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env, Dir: opts.WorkingDir},
 		func(line string) {
 			// Parse JSONL output
@@ -93,12 +109,12 @@ func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []str
 						lastSummary = string(msg.Data)
 					}
 				}
+			case "error", "exit_error":
+				appendOutput(line)
 			}
-		}, func(line string) {
-			// stderr logged via Logf
-		})
+		}, appendOutput)
 	if err != nil || exitCode != 0 {
-		return "", "", mapResticError(exitCode, err)
+		return "", "", enriched(mapResticError(exitCode, err), outputTail.String())
 	}
 	return lastSummary, snapshotID, nil
 }

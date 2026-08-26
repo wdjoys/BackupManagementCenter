@@ -201,8 +201,8 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 
 		var runResult *bmcv1.RunResult
 		if err != nil {
-			log.Printf("[ERROR] pipeline execute run %s: %v", runID, err)
 			if runCtx.Err() != nil {
+				log.Printf("[WARN] pipeline cancelled run_id=%s operation=%s error=%v", runID, operationName(cmd.Operation), err)
 				// Context was cancelled — treat as CANCELLED
 				runResult = &bmcv1.RunResult{
 					RunId:        runID,
@@ -227,6 +227,7 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 						msg = pe.Cause.Error()
 					}
 				}
+				log.Printf("[ERROR] pipeline execute run_id=%s operation=%s error_code=%s error=%s", runID, operationName(cmd.Operation), code, msg)
 				runResult = &bmcv1.RunResult{
 					RunId:        runID,
 					Status:       bmcv1.RunResult_FAILED,

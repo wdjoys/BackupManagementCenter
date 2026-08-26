@@ -291,7 +291,13 @@ func (a schedAdapter) SystemRunCheck(ctx context.Context, repositoryID string) (
 	if err != nil {
 		return "", err
 	}
-	run, err := a.o.SystemRun(ctx, repo.AgentID, repositoryID, model.OpCheck, model.CheckTask{}, 30*time.Minute)
+	if repo.RepositoryPath == "" {
+		return "", fmt.Errorf("repository %s has empty repository path", repositoryID)
+	}
+	params := model.CheckTask{
+		Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath},
+	}
+	run, err := a.o.SystemRun(ctx, repo.AgentID, repositoryID, model.OpCheck, params, 30*time.Minute)
 	if err != nil {
 		return "", err
 	}

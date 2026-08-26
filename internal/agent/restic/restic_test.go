@@ -40,3 +40,19 @@ func TestCheckIncludesCommandOutputOnFailure(t *testing.T) {
 		}
 	}
 }
+func TestBackupIncludesCommandOutputOnFailure(t *testing.T) {
+	_, _, err := Backup(context.Background(), checkExecutor{
+		stdout: `{"message_type":"exit_error","code":3,"message":"permission denied: /backup-sources/etc/shadow"}`,
+		stderr: "unable to read source file",
+		code:   3,
+	}, Options{Exe: "restic", RepoPath: "rclone:remote:/repo"}, []string{"/backup-sources"}, "", nil, false, nil)
+	if err == nil {
+		t.Fatal("expected backup failure")
+	}
+	msg := err.Error()
+	for _, want := range []string{"partial_source_read", "permission denied", "unable to read source file"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error %q does not contain %q", msg, want)
+		}
+	}
+}

@@ -170,7 +170,7 @@ export BMC_TLS_KEY_FILE=./secrets/server.key
 
 docker compose -f docker-compose.server.yml up -d --build bmc-server
 
-#### 使用 GitHub Actions 发布的镜像更新
+GitHub Actions 会将 `main` 分支的构建发布为 Docker Hub 的 `server:latest` 与 `agent:latest` 镜像；`develop` 分支也会执行测试、构建并推送带有 `develop` 标签的镜像。
 
 GitHub Actions 会将 `main` 分支的构建发布为 Docker Hub 的 `server:latest` 与 `agent:latest` 镜像。生产机不需要源码，设置镜像变量后执行：
 

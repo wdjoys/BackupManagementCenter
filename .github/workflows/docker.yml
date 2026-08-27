@@ -96,10 +96,10 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
   deploy:
-    name: Update production Server Compose host
+    name: Update develop Compose host
     runs-on: ubuntu-latest
     needs: build
-    # 配置 Actions Variable DEPLOY_ENABLED=true 后才启用。
+    # develop 推送且配置 Actions Variable DEPLOY_ENABLED=true 后启用。
     if: github.ref == 'refs/heads/develop' && vars.DEPLOY_ENABLED == 'true'
     steps:
       - name: Update Server Compose service

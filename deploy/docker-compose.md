@@ -241,7 +241,7 @@ docker compose -f docker-compose.agent.yml --env-file .env.agent up -d --no-buil
 
 ### GitHub Actions 自动更新
 
-如需在镜像推送成功后自动更新 Server 主机，先配置 Actions Variable `DEPLOY_ENABLED=true`，再在 GitHub repository settings → Secrets and variables → Actions 中配置：
+如需在 `develop` 分支镜像推送成功后自动更新测试/开发 Server 主机，先配置 Actions Variable `DEPLOY_ENABLED=true`，再在 GitHub repository settings → Secrets and variables → Actions 中配置：
 
 ```text
 DEPLOY_HOST       Server 主机地址

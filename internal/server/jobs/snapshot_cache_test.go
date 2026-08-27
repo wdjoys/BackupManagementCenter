@@ -26,6 +26,34 @@ func newCacheTestStore() *cacheTestStore {
 	return &cacheTestStore{fakeStore: newFakeStore(), trees: make(map[string]*store.SnapshotTreeCache)}
 }
 
+func (s *cacheTestStore) GetRun(ctx context.Context, id string) (*model.Run, error) {
+	s.fakeStore.mu.Lock()
+	defer s.fakeStore.mu.Unlock()
+	r, ok := s.fakeStore.runs[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	copy := *r
+	if r.StartedAt != nil {
+		at := *r.StartedAt
+		copy.StartedAt = &at
+	}
+	if r.FinishedAt != nil {
+		at := *r.FinishedAt
+		copy.FinishedAt = &at
+	}
+	if r.LeaseExpiresAt != nil {
+		at := *r.LeaseExpiresAt
+		copy.LeaseExpiresAt = &at
+	}
+	if r.ScheduledAt != nil {
+		at := *r.ScheduledAt
+		copy.ScheduledAt = &at
+	}
+	copy.Progress.Sample = append([]string(nil), r.Progress.Sample...)
+	return &copy, nil
+}
+
 func (s *cacheTestStore) GetSnapshotListCache(ctx context.Context, repositoryID string) (*store.SnapshotListCache, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

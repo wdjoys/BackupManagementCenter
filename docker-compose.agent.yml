@@ -8,6 +8,7 @@
 services:
   bmc-agent:
     container_name: bmc-agent
+    user: "0:0"
     build:
       context: .
       dockerfile: Dockerfile.agent

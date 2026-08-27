@@ -7,18 +7,19 @@ import (
 
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/server/jobs"
+	"backupmanagementcenter/internal/server/store"
 )
 
 // ---- Storage targets ----
 
 type storageTargetView struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Type       string    `json:"type"`
-	RemoteName string    `json:"remote_name"`
-	RemotePath string    `json:"remote_path"`
-	CreatedAt  string    `json:"created_at"`
-	UpdatedAt  string    `json:"updated_at"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	RemoteName string `json:"remote_name"`
+	RemotePath string `json:"remote_path"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
 }
 
 func targetView(t *model.StorageTarget) storageTargetView {
@@ -129,16 +130,16 @@ func (s *Server) handleDeleteStorageTarget(w http.ResponseWriter, r *http.Reques
 // ---- Repositories ----
 
 type repositoryView struct {
-	ID               string     `json:"id"`
-	AgentID          string     `json:"agent_id"`
-	AgentName        string     `json:"agent_name,omitempty"`
-	StorageTargetID  string     `json:"storage_target_id"`
-	StorageTargetName string    `json:"storage_target_name,omitempty"`
-	RepositoryPath   string     `json:"repository_path"`
-	Status           string     `json:"status"`
-	LastCheckAt      *string    `json:"last_check_at,omitempty"`
-	CreatedAt        string     `json:"created_at"`
-	UpdatedAt        string     `json:"updated_at"`
+	ID                string  `json:"id"`
+	AgentID           string  `json:"agent_id"`
+	AgentName         string  `json:"agent_name,omitempty"`
+	StorageTargetID   string  `json:"storage_target_id"`
+	StorageTargetName string  `json:"storage_target_name,omitempty"`
+	RepositoryPath    string  `json:"repository_path"`
+	Status            string  `json:"status"`
+	LastCheckAt       *string `json:"last_check_at,omitempty"`
+	CreatedAt         string  `json:"created_at"`
+	UpdatedAt         string  `json:"updated_at"`
 }
 
 // POST /repositories {agent_id, storage_target_id}
@@ -204,7 +205,7 @@ func (s *Server) repoView(r *http.Request, repo *model.Repository) repositoryVie
 	return v
 }
 
-// GET /repositories/{id}/snapshots — synchronous browse run on the agent.
+// GET /repositories/{id}/snapshots — 优先使用缓存的同步浏览。
 func (s *Server) handleRepoSnapshots(w http.ResponseWriter, r *http.Request) {
 	repoID := pathParam(r, "id")
 	repo, err := s.ST.GetRepository(r.Context(), repoID)
@@ -212,19 +213,21 @@ func (s *Server) handleRepoSnapshots(w http.ResponseWriter, r *http.Request) {
 		mapStoreErr(w, err)
 		return
 	}
-	snaps, _, err := s.Jobs.Snapshots(r.Context(), repo.ID, repo.AgentID)
+	refresh := r.URL.Query().Get("refresh") == "1"
+	snaps, _, cacheInfo, err := s.Jobs.SnapshotsWithOptions(r.Context(), repo.ID, repo.AgentID, refresh)
 	if err != nil {
 		s.jobsErr(w, err)
 		return
 	}
+	writeSnapshotCacheHeaders(w, cacheInfo)
 	writeJSON(w, http.StatusOK, snaps)
 }
 
-// GET /snapshots/{snapshotID}/tree?repo=&path=
+// GET /snapshots/{snapshotID}/tree?repo=&path=&refresh=1
 func (s *Server) handleSnapshotTree(w http.ResponseWriter, r *http.Request) {
 	snapshotID := pathParam(r, "snapshotID")
 	repoID := r.URL.Query().Get("repo")
-	path := r.URL.Query().Get("path")
+	cachePath := r.URL.Query().Get("path")
 	if repoID == "" {
 		writeErr(w, http.StatusBadRequest, "validation_failed", "repo query parameter is required")
 		return
@@ -234,17 +237,38 @@ func (s *Server) handleSnapshotTree(w http.ResponseWriter, r *http.Request) {
 		mapStoreErr(w, err)
 		return
 	}
-	tree, _, err := s.Jobs.SnapshotTree(r.Context(), repo.ID, repo.AgentID, snapshotID, path)
+	refresh := r.URL.Query().Get("refresh") == "1"
+	tree, _, cacheInfo, err := s.Jobs.SnapshotTreeWithOptions(r.Context(), repo.ID, repo.AgentID, snapshotID, cachePath, refresh)
 	if err != nil {
 		s.jobsErr(w, err)
 		return
 	}
+	writeSnapshotCacheHeaders(w, cacheInfo)
 	writeJSON(w, http.StatusOK, tree)
+}
+
+func writeSnapshotCacheHeaders(w http.ResponseWriter, info jobs.CacheInfo) {
+	if info.Hit {
+		w.Header().Set("X-BMC-Cache", "HIT")
+	} else {
+		w.Header().Set("X-BMC-Cache", "MISS")
+	}
+	if info.VerifiedAt != nil {
+		w.Header().Set("X-BMC-Verified-At", info.VerifiedAt.UTC().Format(timeRFC3339))
+	}
 }
 
 // jobsErr maps orchestrator errors (incl. stable codes) to HTTP.
 func (s *Server) jobsErr(w http.ResponseWriter, err error) {
 	var mt *jobs.MissingToolsError
+	if errors.Is(err, jobs.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "resource not found")
+		return
+	}
+	if errors.Is(err, store.ErrCacheGenerationChanged) {
+		writeErr(w, http.StatusConflict, "cache_generation_changed", "repository changed while browsing; retry")
+		return
+	}
 	if errors.As(err, &mt) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error": map[string]any{"code": "missing_tools", "message": "agent lacks required tools", "tools": mt.Tools},

@@ -13,9 +13,15 @@ export function getCookie(name: string): string | null {
 /**
  * Thin fetch wrapper with automatic JSON parsing, credentials, and CSRF.
  */
+export interface ApiResponseMeta {
+  cache: string | null
+  verifiedAt: string | null
+}
+
 export async function api<T = unknown>(
   path: string,
   options: RequestInit = {},
+  onMeta?: (meta: ApiResponseMeta) => void,
 ): Promise<T> {
   const url = `${BASE_URL}${path}`
   const headers = new Headers(options.headers)
@@ -40,6 +46,10 @@ export async function api<T = unknown>(
   }
 
   const response = await fetch(url, fetchOptions)
+  onMeta?.({
+    cache: response.headers.get('X-BMC-Cache'),
+    verifiedAt: response.headers.get('X-BMC-Verified-At'),
+  })
 
   // 204 No Content
   if (response.status === 204) {
@@ -83,6 +93,24 @@ export const apiGet = <T>(path: string, params?: Record<string, string | number 
     if (qs) url += `?${qs}`
   }
   return api<T>(url)
+}
+export const apiGetWithMeta = async <T>(
+  path: string,
+  params?: Record<string, string | number | undefined>,
+): Promise<{ data: T; meta: ApiResponseMeta }> => {
+  let url = path
+  if (params) {
+    const qs = Object.entries(params)
+      .filter(([, v]) => v !== undefined && v !== null)
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+      .join('&')
+    if (qs) url += `?${qs}`
+  }
+  let meta: ApiResponseMeta = { cache: null, verifiedAt: null }
+  const data = await api<T>(url, {}, (responseMeta) => {
+    meta = responseMeta
+  })
+  return { data, meta }
 }
 
 export const apiPost = <T>(path: string, body?: unknown) =>

@@ -52,6 +52,7 @@
 - 控制面不承载备份数据流；Agent 直接写入网盘。
 - Server 与 Agent 之间只有一条出站 gRPC 长连接，Agent 不监听端口。
 - 每个 Agent × 存储目标对应独立 Restic 仓库与独立密码。
+- BMC（由 Server 调度 Agent）必须是每个 Restic 仓库的唯一写入方；运维必须禁止在 BMC 之外执行 `backup`、`forget`、`prune`、`tag`、`init` 等写操作，否则无法保证快照缓存的一致性。
 
 ## 部署方式选择
 

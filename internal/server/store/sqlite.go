@@ -37,7 +37,9 @@ type sqliteStore struct {
 // an operator always has a recoverable copy of the control database.
 func BackupSQLite(ctx context.Context, dbPath, backupPath string) error {
 	db, err := sql.Open("sqlite", dbPath)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer db.Close()
 	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", backupPath); err != nil {
 		return fmt.Errorf("sqlite online backup: %w", err)
@@ -504,7 +506,9 @@ func (s *sqliteStore) GetTelegramSettings(ctx context.Context) (*model.TelegramS
 }
 
 func decodeLegacyNoop(data []byte) (string, bool) {
-	if len(data) == 0 { return "", false }
+	if len(data) == 0 {
+		return "", false
+	}
 	raw, err := base64.StdEncoding.DecodeString(string(data))
 	const prefix = "noop:"
 	if err != nil || len(raw) < len(prefix) || string(raw[:len(prefix)]) != prefix {
@@ -559,15 +563,27 @@ func (s *sqliteStore) CreateStorageTarget(ctx context.Context, t *model.StorageT
 }
 
 func (s *sqliteStore) UpdateStorageTarget(ctx context.Context, t *model.StorageTarget) error {
-	_, err := s.db.ExecContext(ctx,
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("update storage target begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE storage_targets SET name=?, remote_name=?, remote_path=?,
-		   encrypted_config=?, updated_at=?
-		 WHERE id=?`,
+		   encrypted_config=?, updated_at=? WHERE id=?`,
 		t.Name, t.RemoteName, t.RemotePath, t.EncryptedConfig,
 		t.UpdatedAt.Format(time.RFC3339), t.ID,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("update storage target: %w", err)
+	}
+	if err := invalidateTargetCaches(ctx, tx, t.ID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("update storage target commit: %w", err)
 	}
 	return nil
 }
@@ -628,7 +644,15 @@ func (s *sqliteStore) ListStorageTargets(ctx context.Context) ([]model.StorageTa
 // ---------------------------------------------------------------------------
 
 func (s *sqliteStore) CreateRepository(ctx context.Context, r *model.Repository) error {
-	_, err := s.db.ExecContext(ctx,
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create repository begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO repositories (id, agent_id, storage_target_id, repository_path,
 		   encrypted_password, status, last_check_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -638,6 +662,14 @@ func (s *sqliteStore) CreateRepository(ctx context.Context, r *model.Repository)
 	)
 	if err != nil {
 		return fmt.Errorf("create repository: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO repository_cache_state (repository_id, generation, updated_at)
+		 VALUES (?, 0, ?)`, r.ID, nowUTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("create repository cache state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create repository commit: %w", err)
 	}
 	return nil
 }
@@ -716,8 +748,13 @@ func (s *sqliteStore) DetachRepository(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("detach repository begin tx: %w", err)
+	}
+	defer tx.Rollback()
 	at := nowUTC().Format(time.RFC3339)
-	result, err := s.db.ExecContext(ctx,
+	result, err := tx.ExecContext(ctx,
 		"UPDATE repositories SET detached_at = ?, updated_at = ? WHERE id = ?",
 		at, at, id)
 	if err != nil {
@@ -727,6 +764,12 @@ func (s *sqliteStore) DetachRepository(ctx context.Context, id string) error {
 		return fmt.Errorf("detach repository rows affected: %w", err)
 	} else if n == 0 {
 		return ErrNotFound
+	}
+	if err := invalidateSnapshotCacheTx(ctx, tx, id, true); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("detach repository commit: %w", err)
 	}
 	return nil
 }
@@ -900,7 +943,14 @@ func (s *sqliteStore) CreateRun(ctx context.Context, r *model.Run) error {
 	planID := nullString(r.PlanID)
 	repoID := nullString(r.RepositoryID)
 
-	_, err := s.db.ExecContext(ctx,
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create run begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO runs (id, plan_id, agent_id, operation, status,
 		   queued_at, started_at, finished_at, progress_json, snapshot_id,
 		   error_code, error_message, repository_id, scheduled_at, attempt, lease_expires_at)
@@ -921,6 +971,15 @@ func (s *sqliteStore) CreateRun(ctx context.Context, r *model.Run) error {
 			return ErrDuplicateRun
 		}
 		return fmt.Errorf("create run: %w", err)
+	}
+	if r.RepositoryID != "" && invalidatesSnapshotCache(r.Operation) {
+		clearTrees := r.Operation == model.OpForget
+		if err := invalidateSnapshotCacheTx(ctx, tx, r.RepositoryID, clearTrees); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create run commit: %w", err)
 	}
 	return nil
 }
@@ -1425,7 +1484,6 @@ func normalizeProcessLogLimit(limit int) int {
 	return limit
 }
 
-
 // ---------------------------------------------------------------------------
 // Restore requests
 // ---------------------------------------------------------------------------
@@ -1485,7 +1543,9 @@ func (s *sqliteStore) ListRestoreRequests(ctx context.Context, limit int) ([]mod
 
 func (s *sqliteStore) UpdateRestorePhase(ctx context.Context, runID, phase string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE restore_requests SET phase=? WHERE run_id=?`, phase, runID)
-	if err != nil { return fmt.Errorf("update restore phase: %w", err) }
+	if err != nil {
+		return fmt.Errorf("update restore phase: %w", err)
+	}
 	return nil
 }
 
@@ -1743,23 +1803,23 @@ func scanRun(row interface{ Scan(dest ...any) error }) (*model.Run, error) {
 	_ = json.Unmarshal([]byte(progressJSON), &prog)
 
 	return &model.Run{
-		ID:           id,
-		PlanID:       planID.String,
-		AgentID:      agentID,
-		Operation:    operation,
-		Status:       status,
-		QueuedAt:     parseTime(queuedAt),
-		StartedAt:    parseTimePtr(startedAt),
-		FinishedAt:   parseTimePtr(finishedAt),
-		Progress:     prog,
-		ProgressJSON: progressJSON,
-		SnapshotID:   snapshotID,
-		ErrorCode:    errorCode.String,
-		ErrorMessage: errorMessage.String,
-		RepositoryID: repositoryID.String,
-		Attempt:      attempt,
+		ID:             id,
+		PlanID:         planID.String,
+		AgentID:        agentID,
+		Operation:      operation,
+		Status:         status,
+		QueuedAt:       parseTime(queuedAt),
+		StartedAt:      parseTimePtr(startedAt),
+		FinishedAt:     parseTimePtr(finishedAt),
+		Progress:       prog,
+		ProgressJSON:   progressJSON,
+		SnapshotID:     snapshotID,
+		ErrorCode:      errorCode.String,
+		ErrorMessage:   errorMessage.String,
+		RepositoryID:   repositoryID.String,
+		Attempt:        attempt,
 		LeaseExpiresAt: parseTimePtr(leaseExpiresAt),
-		ScheduledAt:  parseTimePtr(scheduledAt),
+		ScheduledAt:    parseTimePtr(scheduledAt),
 	}, nil
 }
 
@@ -1811,15 +1871,14 @@ func scanSystemLog(row interface{ Scan(dest ...any) error }, withAgent bool) (*m
 	}, nil
 }
 
-
 func scanRestoreRequest(row interface{ Scan(dest ...any) error }) (*model.RestoreRequest, error) {
 	var (
-		id, runID, snapshotID, restoreKind string
-		targetJSON                         string
-		overwrite                          int
-		confirmationHash                   sql.NullString
+		id, runID, snapshotID, restoreKind         string
+		targetJSON                                 string
+		overwrite                                  int
+		confirmationHash                           sql.NullString
 		preRestoreRunID, rollbackSnapshotID, phase sql.NullString
-		createdAt                          string
+		createdAt                                  string
 	)
 	if err := row.Scan(&id, &runID, &snapshotID, &restoreKind, &targetJSON, &overwrite, &confirmationHash, &preRestoreRunID, &rollbackSnapshotID, &phase, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1832,18 +1891,18 @@ func scanRestoreRequest(row interface{ Scan(dest ...any) error }) (*model.Restor
 	_ = json.Unmarshal([]byte(targetJSON), &target)
 
 	return &model.RestoreRequest{
-		ID:               id,
-		RunID:            runID,
-		SnapshotID:       snapshotID,
-		RestoreKind:      restoreKind,
-		Target:           target,
-		TargetJSON:       targetJSON,
-		Overwrite:        overwrite != 0,
-		ConfirmationHash: confirmationHash.String,
-		PreRestoreRunID: preRestoreRunID.String,
+		ID:                 id,
+		RunID:              runID,
+		SnapshotID:         snapshotID,
+		RestoreKind:        restoreKind,
+		Target:             target,
+		TargetJSON:         targetJSON,
+		Overwrite:          overwrite != 0,
+		ConfirmationHash:   confirmationHash.String,
+		PreRestoreRunID:    preRestoreRunID.String,
 		RollbackSnapshotID: rollbackSnapshotID.String,
-		Phase: phase.String,
-		CreatedAt:        parseTime(createdAt),
+		Phase:              phase.String,
+		CreatedAt:          parseTime(createdAt),
 	}, nil
 }
 
@@ -1865,6 +1924,249 @@ func scanAuditEvent(row interface{ Scan(dest ...any) error }) (*model.AuditEvent
 		ResourceID:   resourceID,
 		DetailJSON:   detailJSON,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// 快照缓存
+// ---------------------------------------------------------------------------
+
+func (s *sqliteStore) GetSnapshotListCache(ctx context.Context, repositoryID string) (*SnapshotListCache, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT l.repository_id, l.generation, l.snapshots_json, l.fingerprint, l.verified_at
+		FROM snapshot_list_cache l
+		JOIN repository_cache_state c ON c.repository_id = l.repository_id
+		WHERE l.repository_id = ? AND c.generation = l.generation
+		  AND c.list_verified_at = l.verified_at`, repositoryID)
+	var out SnapshotListCache
+	var verified string
+	if err := row.Scan(&out.RepositoryID, &out.Generation, &out.SnapshotsJSON, &out.Fingerprint, &verified); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get snapshot list cache: %w", err)
+	}
+	out.VerifiedAt = parseTime(verified)
+	return &out, nil
+}
+
+func (s *sqliteStore) GetSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string) (*SnapshotTreeCache, error) {
+	cachePath = NormalizeSnapshotPath(cachePath)
+	row := s.db.QueryRowContext(ctx, `
+		SELECT t.repository_id, t.snapshot_id, t.path, t.generation, t.tree_json, t.verified_at
+		FROM snapshot_tree_cache t
+		JOIN repository_cache_state c ON c.repository_id = t.repository_id
+		WHERE t.repository_id = ? AND t.snapshot_id = ? AND t.path = ?
+		  AND c.generation = t.generation AND c.list_verified_at IS NOT NULL`, repositoryID, snapshotID, cachePath)
+	var out SnapshotTreeCache
+	var verified string
+	if err := row.Scan(&out.RepositoryID, &out.SnapshotID, &out.Path, &out.Generation, &out.TreeJSON, &verified); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get snapshot tree cache: %w", err)
+	}
+	out.VerifiedAt = parseTime(verified)
+	return &out, nil
+}
+
+func (s *sqliteStore) SnapshotCacheGeneration(ctx context.Context, repositoryID string) (int64, error) {
+	var generation int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT generation FROM repository_cache_state WHERE repository_id = ?", repositoryID,
+	).Scan(&generation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("get snapshot cache generation: %w", err)
+	}
+	return generation, nil
+}
+
+func (s *sqliteStore) SaveSnapshotListCache(ctx context.Context, repositoryID string, generation int64, snapshotsJSON, fingerprint string, verifiedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save snapshot list cache begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := ensureCacheGeneration(ctx, tx, repositoryID, generation); err != nil {
+		return err
+	}
+	verified := verifiedAt.UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO snapshot_list_cache (repository_id, generation, snapshots_json, fingerprint, verified_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(repository_id) DO UPDATE SET generation=excluded.generation,
+		  snapshots_json=excluded.snapshots_json, fingerprint=excluded.fingerprint,
+		  verified_at=excluded.verified_at`,
+		repositoryID, generation, snapshotsJSON, fingerprint, verified); err != nil {
+		return fmt.Errorf("save snapshot list cache: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE repository_cache_state SET list_verified_at=?, list_fingerprint=?, updated_at=?
+		WHERE repository_id=? AND generation=?`,
+		verified, fingerprint, verified, repositoryID, generation); err != nil {
+		return fmt.Errorf("mark snapshot list cache verified: %w", err)
+	}
+	var snaps []model.Snapshot
+	if err := json.Unmarshal([]byte(snapshotsJSON), &snaps); err != nil {
+		return fmt.Errorf("parse snapshot list cache: %w", err)
+	}
+	if len(snaps) == 0 {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM snapshot_tree_cache WHERE repository_id = ?", repositoryID); err != nil {
+			return fmt.Errorf("reconcile snapshot tree cache: %w", err)
+		}
+	} else {
+		placeholders := make([]string, len(snaps))
+		ids := make([]any, len(snaps))
+		for i, snap := range snaps {
+			placeholders[i] = "?"
+			ids[i] = snap.ID
+		}
+		markQuery := "UPDATE snapshot_tree_cache SET generation=? WHERE repository_id=? AND snapshot_id IN (" + strings.Join(placeholders, ",") + ")"
+		markArgs := []any{generation, repositoryID}
+		markArgs = append(markArgs, ids...)
+		if _, err := tx.ExecContext(ctx, markQuery, markArgs...); err != nil {
+			return fmt.Errorf("promote snapshot tree cache: %w", err)
+		}
+		deleteQuery := "DELETE FROM snapshot_tree_cache WHERE repository_id=? AND snapshot_id NOT IN (" + strings.Join(placeholders, ",") + ")"
+		deleteArgs := []any{repositoryID}
+		deleteArgs = append(deleteArgs, ids...)
+		if _, err := tx.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
+			return fmt.Errorf("reconcile snapshot tree cache: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("save snapshot list cache commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) SaveSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string, generation int64, treeJSON string, verifiedAt time.Time) error {
+	cachePath = NormalizeSnapshotPath(cachePath)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save snapshot tree cache begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := ensureCacheGeneration(ctx, tx, repositoryID, generation); err != nil {
+		return err
+	}
+	var verifiedList string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT list_verified_at FROM repository_cache_state WHERE repository_id = ?", repositoryID,
+	).Scan(&verifiedList); err != nil {
+		return fmt.Errorf("check snapshot list cache: %w", err)
+	}
+	if verifiedList == "" {
+		return ErrCacheGenerationChanged
+	}
+	verified := verifiedAt.UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO snapshot_tree_cache (repository_id, snapshot_id, path, generation, tree_json, verified_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(repository_id, snapshot_id, path) DO UPDATE SET generation=excluded.generation,
+		  tree_json=excluded.tree_json, verified_at=excluded.verified_at`,
+		repositoryID, snapshotID, cachePath, generation, treeJSON, verified); err != nil {
+		return fmt.Errorf("save snapshot tree cache: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("save snapshot tree cache commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) InvalidateSnapshotCache(ctx context.Context, repositoryID string, clearTrees bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("invalidate snapshot cache begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := invalidateSnapshotCacheTx(ctx, tx, repositoryID, clearTrees); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("invalidate snapshot cache commit: %w", err)
+	}
+	return nil
+}
+
+func ensureCacheGeneration(ctx context.Context, tx *sql.Tx, repositoryID string, expected int64) error {
+	var actual int64
+	err := tx.QueryRowContext(ctx,
+		"SELECT generation FROM repository_cache_state WHERE repository_id = ?", repositoryID,
+	).Scan(&actual)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read snapshot cache generation: %w", err)
+	}
+	if actual != expected {
+		return ErrCacheGenerationChanged
+	}
+	return nil
+}
+
+func invalidateSnapshotCacheTx(ctx context.Context, tx *sql.Tx, repositoryID string, clearTrees bool) error {
+	now := nowUTC().Format(time.RFC3339)
+	result, err := tx.ExecContext(ctx, `
+		UPDATE repository_cache_state
+		SET generation=generation+1, list_verified_at=NULL, updated_at=?
+		WHERE repository_id=?`, now, repositoryID)
+	if err != nil {
+		return fmt.Errorf("invalidate snapshot cache state: %w", err)
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("invalidate snapshot cache rows affected: %w", err)
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	if clearTrees {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM snapshot_tree_cache WHERE repository_id = ?", repositoryID); err != nil {
+			return fmt.Errorf("clear snapshot tree cache: %w", err)
+		}
+	}
+	return nil
+}
+
+func invalidateTargetCaches(ctx context.Context, tx *sql.Tx, targetID string) error {
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM repositories WHERE storage_target_id = ?", targetID)
+	if err != nil {
+		return fmt.Errorf("list target repositories for cache invalidation: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scan target repository: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("list target repositories: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close target repositories: %w", err)
+	}
+	for _, id := range ids {
+		if err := invalidateSnapshotCacheTx(ctx, tx, id, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func invalidatesSnapshotCache(operation string) bool {
+	return operation == model.OpBackup || operation == model.OpForget
 }
 
 // ---------------------------------------------------------------------------

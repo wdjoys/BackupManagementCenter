@@ -472,6 +472,13 @@ export default {
     selectRepository: '选择仓库',
     repositoryPlaceholder: '选择一个仓库以浏览快照',
     snapshotsCard: '快照列表',
+    refresh: '强制刷新',
+    cache: {
+      hit: '缓存命中',
+      miss: '已远程验证',
+      status: '{status}；验证时间：{time}',
+      unknownTime: '未知',
+    },
     noSnapshots: '暂无快照',
     fileBrowser: '文件浏览',
     snapshotPrefix: '快照 {id}',

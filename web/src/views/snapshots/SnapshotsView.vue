@@ -33,10 +33,12 @@
       <el-col :span="8">
         <el-card shadow="never">
           <template #header>
-            <div style="display: flex; justify-content: space-between; align-items: center">
+            <div style="display: flex; align-items: center; gap: 8px">
               <span style="font-weight: 600">{{ t('snapshots.snapshotsCard') }}</span>
-              <el-button size="small" @click="loadSnapshots">
+              <el-text v-if="snapshotsCacheLabel" size="small" type="info">{{ snapshotsCacheLabel }}</el-text>
+              <el-button size="small" :loading="snapshotsLoading" @click="loadSnapshots(true)">
                 <el-icon><Refresh /></el-icon>
+                <span>{{ t('snapshots.refresh') }}</span>
               </el-button>
             </div>
           </template>
@@ -118,8 +120,18 @@
                 <span v-if="selectedSnapshot" style="font-size: 12px; color: #909399; margin-left: 8px">
                   {{ t('snapshots.snapshotPrefix', { id: shortId(selectedSnapshot.id) }) }}
                 </span>
+                <el-text v-if="treeCacheLabel" size="small" type="info" style="margin-left: 8px">{{ treeCacheLabel }}</el-text>
               </div>
               <div>
+                <el-button
+                  v-if="selectedSnapshot"
+                  size="small"
+                  :loading="treeLoading"
+                  @click="loadTree(true)"
+                >
+                  <el-icon><Refresh /></el-icon>
+                  <span>{{ t('snapshots.refresh') }}</span>
+                </el-button>
                 <el-button
                   v-if="selectedSnapshot"
                   size="small"
@@ -313,7 +325,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { apiGet, apiPost } from '@/api/client'
+import { apiGet, apiGetWithMeta, apiPost } from '@/api/client'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatDateTime } from '@/i18n'
 import type { Repository, Snapshot, TreeEntry, TreeResponse } from '@/api/types'
@@ -351,9 +363,13 @@ const router = useRouter()
 const selectedRepoId = ref<string>('')
 const snapshots = ref<Snapshot[]>([])
 const snapshotsLoading = ref(false)
+const snapshotsCache = ref<string | null>(null)
+const snapshotsVerifiedAt = ref<string | null>(null)
 
 const selectedSnapshot = ref<Snapshot | null>(null)
 const treeLoading = ref(false)
+const treeCache = ref<string | null>(null)
+const treeVerifiedAt = ref<string | null>(null)
 const treeEntries = ref<TreeEntry[]>([])
 const treePath = ref('/')
 const treeSelectedPaths = ref<string[]>([])
@@ -380,6 +396,15 @@ const breadcrumbs = computed<BreadcrumbPart[]>(() => {
   }
   return result
 })
+const snapshotsCacheLabel = computed(() => formatCacheLabel(snapshotsCache.value, snapshotsVerifiedAt.value))
+const treeCacheLabel = computed(() => formatCacheLabel(treeCache.value, treeVerifiedAt.value))
+
+function formatCacheLabel(cache: string | null, verifiedAt: string | null): string {
+  if (!cache) return ''
+  const status = cache === 'HIT' ? t('snapshots.cache.hit') : t('snapshots.cache.miss')
+  const verified = verifiedAt ? formatTime(verifiedAt) : t('snapshots.cache.unknownTime')
+  return t('snapshots.cache.status', { status, time: verified })
+}
 
 const includePathOptions = computed<string[]>(() => {
   return treeEntries.value
@@ -421,19 +446,28 @@ async function loadRepos(): Promise<void> {
   }
 }
 
-async function loadSnapshots(): Promise<void> {
+async function loadSnapshots(refresh = false): Promise<void> {
   if (!selectedRepoId.value) return
   snapshotsLoading.value = true
   selectedSnapshot.value = null
   treeEntries.value = []
   treePath.value = '/'
   treeSelectedPaths.value = []
+  treeCache.value = null
+  treeVerifiedAt.value = null
   try {
-    snapshots.value = await apiGet<Snapshot[]>(`/repositories/${selectedRepoId.value}/snapshots`)
+    const response = await apiGetWithMeta<Snapshot[]>(`/repositories/${selectedRepoId.value}/snapshots`, {
+      refresh: refresh ? 1 : undefined,
+    })
+    snapshots.value = response.data
+    snapshotsCache.value = response.meta.cache
+    snapshotsVerifiedAt.value = response.meta.verifiedAt
   } catch (err: unknown) {
     const e = err as { message?: string; code?: string }
     ElMessage.error(e.message || t('snapshots.messages.loadSnapshotsFailedCode', { code: e.code || 'unknown' }))
     snapshots.value = []
+    snapshotsCache.value = null
+    snapshotsVerifiedAt.value = null
   } finally {
     snapshotsLoading.value = false
   }
@@ -446,19 +480,24 @@ async function handleSelectSnapshot(snapshot: Snapshot): Promise<void> {
   await loadTree()
 }
 
-async function loadTree(): Promise<void> {
+async function loadTree(refresh = false): Promise<void> {
   if (!selectedSnapshot.value || !selectedRepoId.value) return
   treeLoading.value = true
   try {
-    const resp = await apiGet<TreeResponse>('/snapshots/' + selectedSnapshot.value.id + '/tree', {
+    const response = await apiGetWithMeta<TreeResponse>('/snapshots/' + selectedSnapshot.value.id + '/tree', {
       repo: selectedRepoId.value,
       path: treePath.value,
+      refresh: refresh ? 1 : undefined,
     })
-    treeEntries.value = resp.entries || []
-    treePath.value = resp.path || treePath.value
+    treeEntries.value = response.data.entries || []
+    treePath.value = response.data.path || treePath.value
+    treeCache.value = response.meta.cache
+    treeVerifiedAt.value = response.meta.verifiedAt
   } catch (err: unknown) {
     const e = err as { message?: string; code?: string }
     ElMessage.error(e.message || t('snapshots.messages.loadTreeFailedCode', { code: e.code || 'unknown' }))
+    treeCache.value = null
+    treeVerifiedAt.value = null
   } finally {
     treeLoading.value = false
   }

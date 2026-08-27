@@ -472,6 +472,13 @@ export default {
     selectRepository: 'Select Repository',
     repositoryPlaceholder: 'Choose a repository to browse snapshots',
     snapshotsCard: 'Snapshots',
+    refresh: 'Refresh',
+    cache: {
+      hit: 'cache hit',
+      miss: 'verified remotely',
+      status: '{status}; verified at {time}',
+      unknownTime: 'unknown time',
+    },
     noSnapshots: 'No snapshots',
     fileBrowser: 'File Browser',
     snapshotPrefix: 'snapshot {id}',

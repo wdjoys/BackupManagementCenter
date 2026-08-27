@@ -107,6 +107,28 @@ type internalResult struct {
 	ExitCode int    `json:"exit_code"`
 }
 
+// CacheInfo 表示浏览响应是否来自持久化缓存；API 通过响应头暴露该状态。
+type CacheInfo struct {
+	Hit        bool
+	VerifiedAt *time.Time
+}
+
+type snapshotListFlight struct {
+	done  chan struct{}
+	snaps []model.Snapshot
+	run   *model.Run
+	info  CacheInfo
+	err   error
+}
+
+type snapshotTreeFlight struct {
+	done chan struct{}
+	tree *TreeResult
+	run  *model.Run
+	info CacheInfo
+	err  error
+}
+
 // Orchestrator is the server-side run coordinator.
 type Orchestrator struct {
 	Store      store.Store
@@ -115,18 +137,24 @@ type Orchestrator struct {
 	Bus        events.Bus
 	InstanceID string
 
-	mu        sync.RWMutex
-	confStash map[string]stashEntry
+	mu          sync.RWMutex
+	confStash   map[string]stashEntry
+	browseMu    sync.Mutex
+	listFlights map[string]*snapshotListFlight
+	treeFlights map[string]*snapshotTreeFlight
 }
 
 // New constructs a new Orchestrator.
 func New(st store.Store, seal secrets.Sealer, disp dispatch.Dispatcher, bus events.Bus, instanceID string) *Orchestrator {
 	return &Orchestrator{
-		Store:      st,
-		Seal:       seal,
-		Disp:       disp,
-		Bus:        bus,
-		InstanceID: instanceID,
+		Store:       st,
+		Seal:        seal,
+		Disp:        disp,
+		Bus:         bus,
+		InstanceID:  instanceID,
+		confStash:   make(map[string]stashEntry),
+		listFlights: make(map[string]*snapshotListFlight),
+		treeFlights: make(map[string]*snapshotTreeFlight),
 	}
 }
 
@@ -400,65 +428,263 @@ func isTerminal(status string) bool {
 // Snapshots / tree / validate / verify / restore / dry-run
 // ---------------------------------------------------------------------------
 
-// Snapshots returns the list of snapshots for a repository by executing
-// a snapshots run and parsing its result.
+// Snapshots 返回仓库快照列表；缓存未命中时向 Agent 验证并持久化成功结果。
 func (o *Orchestrator) Snapshots(ctx context.Context, repoID string, agentID string) ([]model.Snapshot, *model.Run, error) {
-	repo, err := o.Store.GetRepository(ctx, repoID)
-	if err != nil {
-		return nil, nil, err
+	snaps, run, _, err := o.SnapshotsWithOptions(ctx, repoID, agentID, false)
+	return snaps, run, err
+}
+
+// SnapshotsWithOptions 支持 API 显式绕过缓存执行远程刷新。
+func (o *Orchestrator) SnapshotsWithOptions(ctx context.Context, repoID, agentID string, refresh bool) ([]model.Snapshot, *model.Run, CacheInfo, error) {
+	cs, hasCache := o.Store.(store.SnapshotCacheStore)
+	if hasCache && !refresh {
+		if cached, err := cs.GetSnapshotListCache(ctx, repoID); err == nil {
+			var snaps []model.Snapshot
+			if json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps) == nil &&
+				store.SnapshotFingerprint(snaps) == cached.Fingerprint {
+				at := cached.VerifiedAt
+				return snaps, nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil
+			}
+		}
 	}
 
+	flight, owner := o.acquireListFlight(repoID)
+	if !owner {
+		select {
+		case <-flight.done:
+			return flight.snaps, flight.run, flight.info, flight.err
+		case <-ctx.Done():
+			return nil, nil, CacheInfo{}, ctx.Err()
+		}
+	}
+	defer o.releaseListFlight(repoID, flight)
+
+	// 排在另一个未命中请求后的调用可以复用其结果，无需创建第二个系统运行；
+	// refresh 仍会绕过首次缓存检查。
+	if hasCache && !refresh {
+		if cached, err := cs.GetSnapshotListCache(ctx, repoID); err == nil {
+			var snaps []model.Snapshot
+			if json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps) == nil &&
+				store.SnapshotFingerprint(snaps) == cached.Fingerprint {
+				at := cached.VerifiedAt
+				return o.finishListFlight(flight, snaps, nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil)
+			}
+		}
+	}
+
+	repo, err := o.Store.GetRepository(ctx, repoID)
+	if err != nil {
+		return o.finishListFlight(flight, nil, nil, CacheInfo{}, err)
+	}
+	generation, generationOK := int64(0), false
+	if hasCache {
+		if generation, err = cs.SnapshotCacheGeneration(ctx, repoID); err == nil {
+			generationOK = true
+		}
+	}
 	params := model.SnapshotsTask{Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath}}
 	run, err := o.SystemRun(ctx, agentID, repoID, model.OpSnapshots, params, 0)
 	if err != nil {
-		return nil, nil, err
+		return o.finishListFlight(flight, nil, nil, CacheInfo{}, err)
 	}
-
 	term, resultJSON, err := o.WaitRunResult(ctx, run.ID, snapshotBrowseWait)
 	if err != nil {
-		return nil, term, err
+		return o.finishListFlight(flight, nil, term, CacheInfo{}, err)
+	}
+	if term == nil {
+		return o.finishListFlight(flight, nil, term, CacheInfo{}, errors.New("snapshot list run returned no terminal state"))
+	}
+	if term.Status != model.RunSucceeded {
+		if term.ErrorMessage != "" {
+			return o.finishListFlight(flight, nil, term, CacheInfo{}, fmt.Errorf("snapshot list failed: %s", term.ErrorMessage))
+		}
+		return o.finishListFlight(flight, nil, term, CacheInfo{}, errors.New("snapshot list run failed"))
 	}
 	if resultJSON == nil {
-		return nil, term, nil
+		return o.finishListFlight(flight, nil, term, CacheInfo{}, errors.New("snapshot list returned no result"))
 	}
-
 	var snaps []model.Snapshot
 	if err := json.Unmarshal(resultJSON, &snaps); err != nil {
-		return nil, term, err
+		return o.finishListFlight(flight, nil, term, CacheInfo{}, err)
 	}
-	return snaps, term, nil
+	if hasCache && generationOK {
+		fingerprint := store.SnapshotFingerprint(snaps)
+		if err := cs.SaveSnapshotListCache(ctx, repoID, generation, string(resultJSON), fingerprint, time.Now().UTC()); err != nil {
+			if errors.Is(err, store.ErrCacheGenerationChanged) {
+				if cached, readErr := cs.GetSnapshotListCache(ctx, repoID); readErr == nil {
+					if json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps) == nil &&
+						store.SnapshotFingerprint(snaps) == cached.Fingerprint {
+						at := cached.VerifiedAt
+						return o.finishListFlight(flight, snaps, nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil)
+					}
+				}
+			}
+			return o.finishListFlight(flight, nil, term, CacheInfo{}, err)
+		}
+		at := time.Now().UTC()
+		return o.finishListFlight(flight, snaps, term, CacheInfo{Hit: false, VerifiedAt: &at}, nil)
+	}
+	return o.finishListFlight(flight, snaps, term, CacheInfo{Hit: false}, nil)
 }
 
-// SnapshotTree returns the directory tree inside a snapshot.
-func (o *Orchestrator) SnapshotTree(ctx context.Context, repoID, agentID, snapshotID, path string) (*TreeResult, *model.Run, error) {
-	repo, err := o.Store.GetRepository(ctx, repoID)
-	if err != nil {
-		return nil, nil, err
+// SnapshotTree 返回快照目录树。
+func (o *Orchestrator) SnapshotTree(ctx context.Context, repoID, agentID, snapshotID, cachePath string) (*TreeResult, *model.Run, error) {
+	tree, run, _, err := o.SnapshotTreeWithOptions(ctx, repoID, agentID, snapshotID, cachePath, false)
+	return tree, run, err
+}
+
+// SnapshotTreeWithOptions 在 refresh=true 时同时刷新成员关系和目录；
+// 目录永远不能在列表未验证时返回。
+func (o *Orchestrator) SnapshotTreeWithOptions(ctx context.Context, repoID, agentID, snapshotID, cachePath string, refresh bool) (*TreeResult, *model.Run, CacheInfo, error) {
+	cachePath = store.NormalizeSnapshotPath(cachePath)
+	cs, hasCache := o.Store.(store.SnapshotCacheStore)
+	var snapshots []model.Snapshot
+	var found bool
+	if hasCache {
+		var err error
+		snapshots, _, _, err = o.SnapshotsWithOptions(ctx, repoID, agentID, refresh)
+		if err != nil {
+			return nil, nil, CacheInfo{}, err
+		}
+		for _, snap := range snapshots {
+			if snap.ID == snapshotID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, nil, CacheInfo{}, ErrNotFound
+		}
+		if !refresh {
+			if cached, err := cs.GetSnapshotTreeCache(ctx, repoID, snapshotID, cachePath); err == nil {
+				var tree TreeResult
+				if json.Unmarshal([]byte(cached.TreeJSON), &tree) == nil {
+					at := cached.VerifiedAt
+					return &tree, nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil
+				}
+			}
+		}
 	}
 
+	flight, owner := o.acquireTreeFlight(repoID + "\x00" + snapshotID + "\x00" + cachePath)
+	if !owner {
+		select {
+		case <-flight.done:
+			return flight.tree, flight.run, flight.info, flight.err
+		case <-ctx.Done():
+			return nil, nil, CacheInfo{}, ctx.Err()
+		}
+	}
+	defer o.releaseTreeFlight(repoID+"\x00"+snapshotID+"\x00"+cachePath, flight)
+
+	if hasCache && !refresh {
+		if cached, err := cs.GetSnapshotTreeCache(ctx, repoID, snapshotID, cachePath); err == nil {
+			var tree TreeResult
+			if json.Unmarshal([]byte(cached.TreeJSON), &tree) == nil {
+				at := cached.VerifiedAt
+				return o.finishTreeFlight(flight, &tree, nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil)
+			}
+		}
+	}
+	repo, err := o.Store.GetRepository(ctx, repoID)
+	if err != nil {
+		return o.finishTreeFlight(flight, nil, nil, CacheInfo{}, err)
+	}
+	generation, generationOK := int64(0), false
+	if hasCache {
+		if generation, err = cs.SnapshotCacheGeneration(ctx, repoID); err == nil {
+			generationOK = true
+		}
+	}
 	params := model.SnapshotLsTask{
 		Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath},
 		SnapshotID: snapshotID,
-		Path:       path,
+		Path:       cachePath,
 	}
 	run, err := o.SystemRun(ctx, agentID, repoID, model.OpSnapshotLs, params, 0)
 	if err != nil {
-		return nil, nil, err
+		return o.finishTreeFlight(flight, nil, nil, CacheInfo{}, err)
 	}
-
 	term, resultJSON, err := o.WaitRunResult(ctx, run.ID, snapshotBrowseWait)
 	if err != nil {
-		return nil, term, err
+		return o.finishTreeFlight(flight, nil, term, CacheInfo{}, err)
+	}
+	if term == nil {
+		return o.finishTreeFlight(flight, nil, term, CacheInfo{}, errors.New("snapshot tree run returned no terminal state"))
+	}
+	if term.Status != model.RunSucceeded {
+		if term.ErrorMessage != "" {
+			return o.finishTreeFlight(flight, nil, term, CacheInfo{}, fmt.Errorf("snapshot tree failed: %s", term.ErrorMessage))
+		}
+		return o.finishTreeFlight(flight, nil, term, CacheInfo{}, errors.New("snapshot tree run failed"))
 	}
 	if resultJSON == nil {
-		return nil, term, nil
+		return o.finishTreeFlight(flight, nil, term, CacheInfo{}, errors.New("snapshot tree returned no result"))
 	}
+	var tree TreeResult
+	if err := json.Unmarshal(resultJSON, &tree); err != nil {
+		return o.finishTreeFlight(flight, nil, term, CacheInfo{}, err)
+	}
+	tree.Path = store.NormalizeSnapshotPath(tree.Path)
+	if hasCache && generationOK {
+		treeJSON, _ := json.Marshal(&tree)
+		if err := cs.SaveSnapshotTreeCache(ctx, repoID, snapshotID, cachePath, generation, string(treeJSON), time.Now().UTC()); err != nil {
+			return o.finishTreeFlight(flight, nil, term, CacheInfo{}, err)
+		}
+		at := time.Now().UTC()
+		return o.finishTreeFlight(flight, &tree, term, CacheInfo{Hit: false, VerifiedAt: &at}, nil)
+	}
+	return o.finishTreeFlight(flight, &tree, term, CacheInfo{Hit: false}, nil)
+}
 
-	var tr TreeResult
-	if err := json.Unmarshal(resultJSON, &tr); err != nil {
-		return nil, term, err
+func (o *Orchestrator) acquireListFlight(key string) (*snapshotListFlight, bool) {
+	o.browseMu.Lock()
+	defer o.browseMu.Unlock()
+	if o.listFlights == nil {
+		o.listFlights = make(map[string]*snapshotListFlight)
 	}
-	return &tr, term, nil
+	if f := o.listFlights[key]; f != nil {
+		return f, false
+	}
+	f := &snapshotListFlight{done: make(chan struct{})}
+	o.listFlights[key] = f
+	return f, true
+}
+
+func (o *Orchestrator) releaseListFlight(key string, f *snapshotListFlight) {
+	o.browseMu.Lock()
+	delete(o.listFlights, key)
+	close(f.done)
+	o.browseMu.Unlock()
+}
+
+func (o *Orchestrator) finishListFlight(f *snapshotListFlight, snaps []model.Snapshot, run *model.Run, info CacheInfo, err error) ([]model.Snapshot, *model.Run, CacheInfo, error) {
+	f.snaps, f.run, f.info, f.err = snaps, run, info, err
+	return snaps, run, info, err
+}
+
+func (o *Orchestrator) acquireTreeFlight(key string) (*snapshotTreeFlight, bool) {
+	o.browseMu.Lock()
+	defer o.browseMu.Unlock()
+	if o.treeFlights == nil {
+		o.treeFlights = make(map[string]*snapshotTreeFlight)
+	}
+	if f := o.treeFlights[key]; f != nil {
+		return f, false
+	}
+	f := &snapshotTreeFlight{done: make(chan struct{})}
+	o.treeFlights[key] = f
+	return f, true
+}
+func (o *Orchestrator) releaseTreeFlight(key string, f *snapshotTreeFlight) {
+	o.browseMu.Lock()
+	delete(o.treeFlights, key)
+	close(f.done)
+	o.browseMu.Unlock()
+}
+func (o *Orchestrator) finishTreeFlight(f *snapshotTreeFlight, tree *TreeResult, run *model.Run, info CacheInfo, err error) (*TreeResult, *model.Run, CacheInfo, error) {
+	f.tree, f.run, f.info, f.err = tree, run, info, err
+	return tree, run, info, err
 }
 
 // ValidatePlanSource validates capabilities and, for filesystem plans,

@@ -62,12 +62,21 @@ export function buildPayload(model: PlanFormModel): Record<string, unknown> {
     timezone: model.timezone.trim(),
     source: source as PlanSource,
     repository_id: model.repository_id,
-    retention: { ...model.retention },
+    retention: normalizeRetention(model.retention),
     timeout_seconds: model.timeout_seconds,
   }
 	if (model.id) payload.enabled = model.enabled
 	if (password) payload.credentials = { password }
 	return payload
+}
+
+function normalizeRetention(retention: Retention): Retention {
+  return {
+    keep_last: retention.keep_last ?? 0,
+    keep_daily: retention.keep_daily ?? 0,
+    keep_weekly: retention.keep_weekly ?? 0,
+    keep_monthly: retention.keep_monthly ?? 0,
+  }
 }
 
 /** Payload for POST /plans/validate — never includes the password. */

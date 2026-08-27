@@ -180,6 +180,12 @@ export default {
       timeout: '超时',
     },
     deleted: '计划已删除',
+    backupsDeleted: '计划的历史备份已删除',
+    deleteBackupsDialog: {
+      title: '删除历史备份',
+      confirm: '该计划的历史备份将被永久删除。必须先删除历史备份，才能删除计划。是否继续？',
+      required: '必须先删除该计划的历史备份，才能删除计划。',
+    },
     created: '计划已创建',
     updated: '计划已更新',
     validationFailed: '计划校验未通过',

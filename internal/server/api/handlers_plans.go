@@ -391,6 +391,19 @@ func (s *Server) handleDeletePlan(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// POST /plans/{id}/backups/delete — 删除计划标签下的全部历史备份。
+func (s *Server) handleDeletePlanBackups(w http.ResponseWriter, r *http.Request) {
+  id := pathParam(r, "id")
+  if err := s.Jobs.DeletePlanBackups(r.Context(), id); err != nil {
+    if !mapStoreErr(w, err) {
+      s.jobsErr(w, err)
+    }
+    return
+  }
+  s.Jobs.Audit(r.Context(), "admin", actorID(r), "plan.backups.delete", "plan", id, nil)
+  w.WriteHeader(http.StatusNoContent)
+}
+
 // POST /plans/validate {kind, source, agent_id}
 func (s *Server) handleValidatePlan(w http.ResponseWriter, r *http.Request) {
 	var body struct {

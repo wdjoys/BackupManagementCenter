@@ -1066,6 +1066,39 @@ func (o *Orchestrator) StartRetentionRun(ctx context.Context, repositoryID strin
 	return err
 }
 
+// DeletePlanBackups 删除计划标签下的全部快照及其无引用数据。
+func (o *Orchestrator) DeletePlanBackups(ctx context.Context, planID string) error {
+  plan, err := o.Store.GetPlan(ctx, planID)
+  if err != nil {
+    return err
+  }
+  repo, err := o.Store.GetRepository(ctx, plan.RepositoryID)
+  if err != nil {
+    return err
+  }
+  run, err := o.SystemRun(ctx, repo.AgentID, repo.ID, model.OpForget, model.ForgetTask{
+    PlanID: plan.ID,
+    Kind: plan.Kind,
+    Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath},
+    Tags: []string{"plan:" + plan.ID},
+    DeleteAll: true,
+  }, 30*time.Minute)
+  if err != nil {
+    return err
+  }
+  term, err := o.WaitRun(ctx, run.ID, 30*time.Minute)
+  if err != nil {
+    return err
+  }
+  if term.Status != model.RunSucceeded {
+    return fmt.Errorf("delete plan backups failed: %s %s", term.ErrorCode, term.ErrorMessage)
+  }
+  if cs, ok := o.Store.(store.SnapshotCacheStore); ok {
+    _ = cs.InvalidateSnapshotCache(ctx, repo.ID, true)
+  }
+  return nil
+}
+
 // StartRestore creates a restore request and a restore run. For filesystem
 // restores target_path must be absolute and overwrite_mode ∈ {never,if-changed,always}.
 // For database restores with overwrite=true, input.Confirmation must equal

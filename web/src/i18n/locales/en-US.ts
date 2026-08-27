@@ -180,6 +180,12 @@ export default {
       timeout: 'Timeout',
     },
     deleted: 'Plan deleted',
+    backupsDeleted: 'Historical backups deleted',
+    deleteBackupsDialog: {
+      title: 'Delete historical backups',
+      confirm: 'Historical backups for this plan will be permanently deleted. They must be deleted before the plan. Continue?',
+      required: 'The plan cannot be deleted until its historical backups are deleted.',
+    },
     created: 'Plan created',
     updated: 'Plan updated',
     validationFailed: 'Plan validation failed',

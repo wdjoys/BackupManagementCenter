@@ -129,8 +129,9 @@ func New(s *Server) http.Handler {
 			r.Post("/plans", s.handleCreatePlan)
 			r.Get("/plans/{id}", s.handleGetPlan)
 			r.Put("/plans/{id}", s.handleUpdatePlan)
-			r.Delete("/plans/{id}", s.handleDeletePlan)
-			r.Post("/plans/{id}/run", s.handleRunPlan)
+      r.Delete("/plans/{id}", s.handleDeletePlan)
+      r.Post("/plans/{id}/backups/delete", s.handleDeletePlanBackups)
+      r.Post("/plans/{id}/run", s.handleRunPlan)
 
 			r.Get("/runs", s.handleListRuns)
 			r.Get("/runs/{id}", s.handleGetRun)

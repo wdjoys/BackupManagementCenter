@@ -298,6 +298,22 @@ async function runPlan(row: Plan): Promise<void> {
 async function deletePlan(row: Plan): Promise<void> {
   try {
     await ElMessageBox.confirm(
+      t('plans.deleteBackupsDialog.confirm'),
+      t('plans.deleteBackupsDialog.title'),
+      { type: 'warning', confirmButtonText: t('common.delete'), cancelButtonText: t('common.cancel') },
+    )
+  } catch {
+    return
+  }
+  try {
+    await apiPost(`/plans/${row.id}/backups/delete`)
+    ElMessage.success(t('plans.backupsDeleted'))
+  } catch (err: unknown) {
+    ElMessage.error(errorMessage(err))
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
       t('plans.deleteDialog.confirm', { name: row.name }),
       t('plans.deleteDialog.title'),
       { type: 'warning', confirmButtonText: t('common.delete'), cancelButtonText: t('common.cancel') },

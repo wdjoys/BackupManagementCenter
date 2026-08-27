@@ -46,3 +46,22 @@ func TestBackupIncludesCommandOutputOnFailure(t *testing.T) {
 	if err == nil { t.Fatal("expected backup failure") }; msg := err.Error()
 	for _, want := range []string{"partial_source_read", "permission denied", "unable to read source file"} { if !strings.Contains(msg, want) { t.Fatalf("error %q does not contain %q", msg, want) } }
 }
+
+func TestDeleteByTagsDeletesSnapshotsAndPrunes(t *testing.T) {
+  var cmd backup.Cmd
+  err := DeleteByTags(context.Background(), checkExecutor{cmd: &cmd}, Options{
+    Exe: "restic", RepoPath: "rclone:remote:/repo", CacheDir: "/cache/restic",
+  }, []string{"plan:plan-1"})
+  if err != nil {
+    t.Fatalf("DeleteByTags: %v", err)
+  }
+  want := []string{"forget", "--group-by", "host,tags", "--prune", "--repo", "rclone:remote:/repo", "--cache-dir", "/cache/restic", "--tag", "plan:plan-1", "--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json"}
+  if len(cmd.Args) != len(want) {
+    t.Fatalf("args = %q, want %q", cmd.Args, want)
+  }
+  for i := range want {
+    if cmd.Args[i] != want[i] {
+      t.Fatalf("args = %q, want %q", cmd.Args, want)
+    }
+  }
+}

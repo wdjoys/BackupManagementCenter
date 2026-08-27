@@ -30,7 +30,7 @@
     </el-card>
 
     <el-row :gutter="16" v-if="selectedRepoId">
-      <el-col :span="8">
+      <el-col :span="16">
         <el-card shadow="never">
           <template #header>
             <div style="display: flex; align-items: center; gap: 8px">
@@ -111,7 +111,7 @@
         </el-card>
       </el-col>
 
-      <el-col :span="16">
+      <el-col :span="8">
         <el-card shadow="never" style="height: 580px; display: flex; flex-direction: column">
           <template #header>
             <div style="display: flex; justify-content: space-between; align-items: center">

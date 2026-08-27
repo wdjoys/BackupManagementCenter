@@ -844,25 +844,44 @@ func (s *sqliteStore) UpdatePlan(ctx context.Context, p *model.Plan) error {
 }
 
 func (s *sqliteStore) DeletePlan(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+  s.mu.Lock()
+  defer s.mu.Unlock()
 
-	// Check for runs referencing this plan.
-	var count int
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM runs WHERE plan_id = ?", id,
-	).Scan(&count); err != nil {
-		return fmt.Errorf("delete plan check runs: %w", err)
-	}
-	if count > 0 {
-		return ErrInUse
-	}
+  tx, err := s.db.BeginTx(ctx, nil)
+  if err != nil {
+    return fmt.Errorf("delete plan begin tx: %w", err)
+  }
+  defer tx.Rollback()
 
-	_, err := s.db.ExecContext(ctx, "DELETE FROM backup_plans WHERE id = ?", id)
-	if err != nil {
-		return fmt.Errorf("delete plan: %w", err)
-	}
-	return nil
+  // 活跃运行仍依赖计划配置，删除前必须等待其结束；历史运行则解绑计划后保留。
+  var count int
+  if err := tx.QueryRowContext(ctx,
+    `SELECT COUNT(*) FROM runs
+     WHERE plan_id = ? AND status IN (?, ?, ?)`,
+    id, model.RunQueued, model.RunDispatched, model.RunRunning,
+  ).Scan(&count); err != nil {
+    return fmt.Errorf("delete plan check active runs: %w", err)
+  }
+  if count > 0 {
+    return ErrInUse
+  }
+
+  if _, err := tx.ExecContext(ctx, "UPDATE runs SET plan_id = NULL WHERE plan_id = ?", id); err != nil {
+    return fmt.Errorf("delete plan detach runs: %w", err)
+  }
+  result, err := tx.ExecContext(ctx, "DELETE FROM backup_plans WHERE id = ?", id)
+  if err != nil {
+    return fmt.Errorf("delete plan: %w", err)
+  }
+  if affected, err := result.RowsAffected(); err != nil {
+    return fmt.Errorf("delete plan rows affected: %w", err)
+  } else if affected == 0 {
+    return ErrNotFound
+  }
+  if err := tx.Commit(); err != nil {
+    return fmt.Errorf("delete plan commit: %w", err)
+  }
+  return nil
 }
 
 func (s *sqliteStore) GetPlan(ctx context.Context, id string) (*model.Plan, error) {

@@ -546,19 +546,27 @@ func runForget(ctx context.Context, d Deps, tempDir string, params []byte, secre
 		return &Result{ResultJSON: resultJSON}, nil
 	}
 
-	// Regular ForgetTask (retention pruning)
-	var task model.ForgetTask
-	if err := json.Unmarshal(params, &task); err != nil {
-		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal forget task", Cause: err}
-	}
-	opts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
-	if err != nil {
-		return nil, err
-	}
-	if err := restic.ForgetOnly(ctx, d.Exec, opts, task.Retention, nil); err != nil {
-		return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
-	}
-	return &Result{}, nil
+  // ForgetTask 可由计划删除流程调用，按计划标签删除快照并按需 prune。
+  var task model.ForgetTask
+  if err := json.Unmarshal(params, &task); err != nil {
+    return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal forget task", Cause: err}
+  }
+  opts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
+  if err != nil {
+    return nil, err
+  }
+  if task.DeleteAll {
+    if err := restic.DeleteByTags(ctx, d.Exec, opts, task.Tags); err != nil {
+      return nil, &PipelineError{Code: "forget_failed", Message: "delete plan backups failed", Cause: err}
+    }
+  } else if task.Prune {
+    if err := restic.Forget(ctx, d.Exec, opts, task.Retention, task.Tags); err != nil {
+      return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
+    }
+  } else if err := restic.ForgetOnly(ctx, d.Exec, opts, task.Retention, task.Tags); err != nil {
+    return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
+  }
+  return &Result{}, nil
 }
 
 // runSnapshots runs restic snapshots --json.

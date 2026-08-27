@@ -218,16 +218,16 @@ Agent 镜像内置：`restic 0.18.0`、`rclone 1.69.0`、MongoDB Database Tools 
 
 #### 第 2 步：编写 `.env.agent`
 
-```dotenv
-BMC_SERVER_GRPC_URL=backup.example.com:9090
-BMC_SERVER_TLS=1
-BMC_ENROLLMENT_TOKEN=<粘贴一次性令牌>
-BMC_SOURCE_ETC=/etc
-BMC_SOURCE_SRV=/srv
-BMC_SOURCE_ROOTS=/backup-sources
-BMC_RESTORE_ROOT=/var/lib/bmc-restore
-BMC_RESTORE_ROOTS=/backup-restore
-BMC_AGENT_MAX_CONCURRENCY=2
+ BMC_SERVER_GRPC_URL=backup.example.com:9090
+ BMC_SERVER_TLS=1
+ BMC_ENROLLMENT_TOKEN=<粘贴一次性令牌>
+ BMC_SOURCE_ETC=/etc
+ BMC_SOURCE_SRV=/srv
+ BMC_SOURCE_ROOTS=/backup-sources
+ BMC_RESTORE_ROOT=/var/lib/bmc-restore
+ BMC_RESTORE_ROOTS=/backup-restore
+ BMC_AGENT_MAX_CONCURRENCY=2
+ BMC_RESTIC_CACHE_DIR=/var/lib/bmc-agent/.cache/restic
 ```
 
 #### 第 3 步：启动
@@ -458,8 +458,9 @@ Web UI：**Storage → Repositories → 绑定仓库**
 | `BMC_SERVER_GRPC_URL` | 必填 | Server gRPC 地址 `host:port` |
 | `BMC_SERVER_TLS` | `1` | 是否启用 TLS |
 | `BMC_ENROLLMENT_TOKEN` | 空 | 一次性注册令牌，仅首启 |
-| `BMC_AGENT_STATE_DIR` | `./agent-state` | 身份与缓存目录 |
+| `BMC_AGENT_STATE_DIR` | `./agent-state` | 身份及持久状态根目录 |
 | `BMC_AGENT_DATA_DIR` | `<state>/scratch` | 导出/恢复临时空间 |
+| `BMC_RESTIC_CACHE_DIR` | `<state>/.cache/restic` | 持久化 Restic metadata cache；不得指向 scratch |
 | `BMC_AGENT_PROBE_INTERVAL` | `600` | 能力探测间隔（秒） |
 | `BMC_DEV_INSECURE` | 空 | `1` 时跳过 Server 证书校验 |
 

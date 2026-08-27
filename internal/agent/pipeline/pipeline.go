@@ -46,6 +46,7 @@ type Deps struct {
 	RestoreRoots        []string
 	ScratchMinFreeBytes int64
 	MaxConcurrency      int
+	ResticCacheDir      string
 }
 
 // Result mirrors proto RunResult payload fields produced by successful ops.
@@ -725,6 +726,7 @@ func newResticOpts(d Deps, repoPath, tempDir string, secrets backup.SecretBundle
 		Exe:          toolExe(d, "restic"),
 		RepoPath:     restic.NormalizeRepoPath(repoPath),
 		PasswordFile: pwPath,
+		CacheDir:     d.ResticCacheDir,
 	}
 	if secrets.RcloneConf != "" {
 		confPath, err := rclone.WriteConf(tempDir, secrets.RcloneConf)

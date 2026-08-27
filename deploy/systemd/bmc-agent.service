@@ -16,6 +16,7 @@ LimitNOFILE=4096
 Restart=always
 RestartSec=3
 Environment=BMC_AGENT_STATE_DIR=/var/lib/bmc-agent
+Environment=BMC_RESTIC_CACHE_DIR=/var/lib/bmc-agent/.cache/restic
 # Fill these in via drop-in (systemctl edit bmc-agent):
 # Environment=BMC_SERVER_GRPC_URL=bmc.example.com:9090
 # Environment=BMC_ENROLLMENT_TOKEN=<one-time token, first boot only>

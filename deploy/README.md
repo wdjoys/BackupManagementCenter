@@ -52,6 +52,7 @@
 - 控制面不承载备份数据流；Agent 直接写入网盘。
 - Server 与 Agent 之间只有一条出站 gRPC 长连接，Agent 不监听端口。
 - 每个 Agent × 存储目标对应独立 Restic 仓库与独立密码。
+- BMC（由 Server 调度 Agent）必须是每个 Restic 仓库的唯一写入方；运维必须禁止在 BMC 之外执行 `backup`、`forget`、`prune`、`tag`、`init` 等写操作，否则无法保证快照缓存的一致性。
 
 ## 部署方式选择
 
@@ -217,16 +218,16 @@ Agent 镜像内置：`restic 0.18.0`、`rclone 1.69.0`、MongoDB Database Tools 
 
 #### 第 2 步：编写 `.env.agent`
 
-```dotenv
-BMC_SERVER_GRPC_URL=backup.example.com:9090
-BMC_SERVER_TLS=1
-BMC_ENROLLMENT_TOKEN=<粘贴一次性令牌>
-BMC_SOURCE_ETC=/etc
-BMC_SOURCE_SRV=/srv
-BMC_SOURCE_ROOTS=/backup-sources
-BMC_RESTORE_ROOT=/var/lib/bmc-restore
-BMC_RESTORE_ROOTS=/backup-restore
-BMC_AGENT_MAX_CONCURRENCY=2
+ BMC_SERVER_GRPC_URL=backup.example.com:9090
+ BMC_SERVER_TLS=1
+ BMC_ENROLLMENT_TOKEN=<粘贴一次性令牌>
+ BMC_SOURCE_ETC=/etc
+ BMC_SOURCE_SRV=/srv
+ BMC_SOURCE_ROOTS=/backup-sources
+ BMC_RESTORE_ROOT=/var/lib/bmc-restore
+ BMC_RESTORE_ROOTS=/backup-restore
+ BMC_AGENT_MAX_CONCURRENCY=2
+ BMC_RESTIC_CACHE_DIR=/var/lib/bmc-agent/.cache/restic
 ```
 
 #### 第 3 步：启动
@@ -457,8 +458,9 @@ Web UI：**Storage → Repositories → 绑定仓库**
 | `BMC_SERVER_GRPC_URL` | 必填 | Server gRPC 地址 `host:port` |
 | `BMC_SERVER_TLS` | `1` | 是否启用 TLS |
 | `BMC_ENROLLMENT_TOKEN` | 空 | 一次性注册令牌，仅首启 |
-| `BMC_AGENT_STATE_DIR` | `./agent-state` | 身份与缓存目录 |
+| `BMC_AGENT_STATE_DIR` | `./agent-state` | 身份及持久状态根目录 |
 | `BMC_AGENT_DATA_DIR` | `<state>/scratch` | 导出/恢复临时空间 |
+| `BMC_RESTIC_CACHE_DIR` | `<state>/.cache/restic` | 持久化 Restic metadata cache；不得指向 scratch |
 | `BMC_AGENT_PROBE_INTERVAL` | `600` | 能力探测间隔（秒） |
 | `BMC_DEV_INSECURE` | 空 | `1` 时跳过 Server 证书校验 |
 

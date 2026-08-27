@@ -23,6 +23,7 @@ services:
       BMC_SERVER_TLS: ${BMC_SERVER_TLS:-1}
       BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
       BMC_AGENT_STATE_DIR: /var/lib/bmc-agent
+      BMC_RESTIC_CACHE_DIR: ${BMC_RESTIC_CACHE_DIR:-/var/lib/bmc-agent/.cache/restic}
       BMC_AGENT_DATA_DIR: /var/lib/bmc-agent/scratch
       # Comma-separated paths inside the container. Empty values are only for
       # local development; production deployments must keep these explicit.

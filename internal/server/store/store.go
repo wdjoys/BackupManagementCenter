@@ -2,7 +2,13 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	posixpath "path"
+	"sort"
+	"strings"
 	"time"
 
 	"backupmanagementcenter/internal/model"
@@ -119,6 +125,74 @@ type LogStore interface {
 	ListAgentLogs(ctx context.Context, agentID string, filter ProcessLogFilter) ([]model.SystemLog, error)
 }
 
+// SnapshotCacheStore 是可选的持久化快照缓存接口。保留为窄接口，避免
+// 测试替身和外部 Store 实现必须立即增加缓存方法。
+type SnapshotCacheStore interface {
+	GetSnapshotListCache(ctx context.Context, repositoryID string) (*SnapshotListCache, error)
+	GetSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, path string) (*SnapshotTreeCache, error)
+	SnapshotCacheGeneration(ctx context.Context, repositoryID string) (int64, error)
+	SaveSnapshotListCache(ctx context.Context, repositoryID string, generation int64, snapshotsJSON, fingerprint string, verifiedAt time.Time) error
+	SaveSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, path string, generation int64, treeJSON string, verifiedAt time.Time) error
+	InvalidateSnapshotCache(ctx context.Context, repositoryID string, clearTrees bool) error
+}
+
+type SnapshotListCache struct {
+	RepositoryID  string
+	Generation    int64
+	SnapshotsJSON string
+	Fingerprint   string
+	VerifiedAt    time.Time
+}
+type SnapshotTreeCache struct {
+	RepositoryID string
+	SnapshotID   string
+	Path         string
+	Generation   int64
+	TreeJSON     string
+	VerifiedAt   time.Time
+}
+
+// NormalizeSnapshotPath 统一目录缓存键；空路径和根目录都使用 "/"。
+func NormalizeSnapshotPath(raw string) string {
+	p := strings.TrimSpace(raw)
+	p = strings.ReplaceAll(p, "\\", "/")
+	if p == "" || p == "." || p == "/" {
+		return "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	p = posixpath.Clean(p)
+	if p == "." || p == "" {
+		return "/"
+	}
+	return p
+}
+
+// SnapshotFingerprint 对快照内容计算稳定摘要，不依赖远程返回顺序。
+func SnapshotFingerprint(snaps []model.Snapshot) string {
+	normalized := make([]model.Snapshot, len(snaps))
+	copy(normalized, snaps)
+	for i := range normalized {
+		normalized[i].Tags = append([]string(nil), normalized[i].Tags...)
+		normalized[i].Paths = append([]string(nil), normalized[i].Paths...)
+		sort.Strings(normalized[i].Tags)
+		sort.Strings(normalized[i].Paths)
+	}
+	sort.SliceStable(normalized, func(i, j int) bool {
+		if normalized[i].ID != normalized[j].ID {
+			return normalized[i].ID < normalized[j].ID
+		}
+		if normalized[i].Time != normalized[j].Time {
+			return normalized[i].Time < normalized[j].Time
+		}
+		return normalized[i].Host < normalized[j].Host
+	})
+	data, _ := json.Marshal(normalized)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 // ProcessLogFilter定义进程日志分页及筛选条件。
 type ProcessLogFilter struct {
 	BeforeID int64
@@ -128,20 +202,21 @@ type ProcessLogFilter struct {
 }
 
 type RunFilter struct {
-	AgentID   string
-	PlanID    string
+	AgentID      string
+	PlanID       string
 	RepositoryID string
-	Statuses  []string
-	Operation string
-	Limit     int
-	Offset    int
+	Statuses     []string
+	Operation    string
+	Limit        int
+	Offset       int
 }
 
 var (
-	ErrNotFound          = errors.New("store: not found")
-	ErrDuplicateRun      = errors.New("store: duplicate scheduled run")
-	ErrInvalidTransition = errors.New("store: invalid run transition")
-	ErrTokenInvalid      = errors.New("store: enrollment token invalid")
-	ErrAdminExists       = errors.New("store: admin already exists")
-	ErrInUse             = errors.New("store: resource still referenced")
+	ErrNotFound               = errors.New("store: not found")
+	ErrDuplicateRun           = errors.New("store: duplicate scheduled run")
+	ErrInvalidTransition      = errors.New("store: invalid run transition")
+	ErrTokenInvalid           = errors.New("store: enrollment token invalid")
+	ErrAdminExists            = errors.New("store: admin already exists")
+	ErrInUse                  = errors.New("store: resource still referenced")
+	ErrCacheGenerationChanged = errors.New("store: snapshot cache generation changed")
 )

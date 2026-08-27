@@ -76,6 +76,18 @@
           </el-tooltip>
         </template>
       </el-table-column>
+      <el-table-column :label="t('plans.columns.path')" min-width="220">
+        <template #default="{ row: p }">
+          <el-tooltip :content="sourcePaths(p as Plan)" placement="top">
+            <span class="plan-source-path">{{ sourcePaths(p as Plan) }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('plans.columns.lastRunAt')" width="180">
+        <template #default="{ row: p }">
+          {{ formatDateTime((p as Plan).last_run_at) }}
+        </template>
+      </el-table-column>
       <el-table-column :label="t('plans.columns.timeout')" width="100">
         <template #default="{ row: p }">
           {{ p.timeout_seconds }}s
@@ -168,6 +180,17 @@ const form = reactive<PlanFormModel>(blankForm())
 
 function repositoryFor(p: Plan): Repository | undefined {
   return repositories.value.find((r) => r.id === p.repository_id)
+}
+function sourcePaths(p: Plan): string {
+  if (p.kind === 'filesystem') return p.source.paths?.join(', ') || '-'
+  if (p.kind === 'sqlite') return p.source.path || '-'
+  return [p.source.host, p.source.port, p.source.database].filter((value) => value !== undefined && value !== '').join(':') || '-'
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
 function errorMessage(err: unknown): string {
@@ -273,6 +296,22 @@ async function runPlan(row: Plan): Promise<void> {
 }
 
 async function deletePlan(row: Plan): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      t('plans.deleteBackupsDialog.confirm'),
+      t('plans.deleteBackupsDialog.title'),
+      { type: 'warning', confirmButtonText: t('common.delete'), cancelButtonText: t('common.cancel') },
+    )
+  } catch {
+    return
+  }
+  try {
+    await apiPost(`/plans/${row.id}/backups/delete`)
+    ElMessage.success(t('plans.backupsDeleted'))
+  } catch (err: unknown) {
+    ElMessage.error(errorMessage(err))
+    return
+  }
   try {
     await ElMessageBox.confirm(
       t('plans.deleteDialog.confirm', { name: row.name }),

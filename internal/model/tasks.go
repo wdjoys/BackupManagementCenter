@@ -26,12 +26,16 @@ type CheckTask struct {
 	Repository RepoAccess `json:"repository"`
 }
 
-// ForgetTask drives OPERATION_FORGET (retention pruning).
+// ForgetTask drives OPERATION_FORGET. When Tags is set, only matching snapshots
+// are selected; Prune removes unreferenced repository data after forgetting.
 type ForgetTask struct {
-	PlanID     string     `json:"plan_id"`
-	Kind       string     `json:"kind"`
-	Repository RepoAccess `json:"repository"`
-	Retention  Retention  `json:"retention"`
+  PlanID     string     `json:"plan_id"`
+  Kind       string     `json:"kind"`
+  Repository RepoAccess `json:"repository"`
+  Retention  Retention  `json:"retention"`
+  Tags       []string   `json:"tags,omitempty"`
+  Prune      bool       `json:"prune,omitempty"`
+  DeleteAll  bool       `json:"delete_all,omitempty"`
 }
 
 // RestoreTask drives OPERATION_RESTORE and OPERATION_RESTORE_DRY_RUN.

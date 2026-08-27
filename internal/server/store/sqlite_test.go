@@ -733,24 +733,41 @@ func TestDeletePlanInUse(t *testing.T) {
 		t.Fatalf("expected ErrInUse, got %v", err)
 	}
 
-	// Delete the plan without runs — succeed.
-	_ = ts.CreatePlan(ctx, &model.Plan{
-		ID: "plan-2", Name: "p2", AgentID: "agent-1",
-		Kind: model.KindFilesystem, Schedule: "0 3 * * *",
-		Timezone: "UTC", Enabled: true,
-		SourceJSON:   sourceJSON([]string{"/etc"}),
-		RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
-		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
-	})
+  // 终态运行不应阻止删除，历史记录通过解除 plan_id 继续保留。
+  if err := ts.TransitionRun(ctx, "run-1", model.RunQueued, model.RunFailed, func(r *model.Run) {
+    r.FinishedAt = &now
+  }); err != nil {
+    t.Fatalf("finish run: %v", err)
+  }
+  if err := ts.DeletePlan(ctx, "plan-1"); err != nil {
+    t.Fatalf("DeletePlan with historical run: %v", err)
+  }
+  run, err := ts.GetRun(ctx, "run-1")
+  if err != nil {
+    t.Fatalf("historical run should remain: %v", err)
+  }
+  if run.PlanID != "" {
+    t.Fatalf("expected historical run to be detached, got plan %q", run.PlanID)
+  }
 
-	if err := ts.DeletePlan(ctx, "plan-2"); err != nil {
-		t.Fatalf("DeletePlan without runs: %v", err)
-	}
+  // Delete the plan without runs — succeed.
+  _ = ts.CreatePlan(ctx, &model.Plan{
+    ID: "plan-2", Name: "p2", AgentID: "agent-1",
+    Kind: model.KindFilesystem, Schedule: "0 3 * * *",
+    Timezone: "UTC", Enabled: true,
+    SourceJSON: sourceJSON([]string{"/etc"}),
+    RepositoryID: "repo-1", RetentionJSON: retentionJSON(),
+    TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
+  })
 
-	_, err = ts.GetPlan(ctx, "plan-2")
-	if err == nil || err.Error() != "store: not found" {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
+  if err := ts.DeletePlan(ctx, "plan-2"); err != nil {
+    t.Fatalf("DeletePlan without runs: %v", err)
+  }
+
+  _, err = ts.GetPlan(ctx, "plan-2")
+  if err == nil || err.Error() != "store: not found" {
+    t.Fatalf("expected ErrNotFound, got %v", err)
+  }
 }
 
 func TestCreateRunDuplicateSlot(t *testing.T) {

@@ -36,12 +36,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("[FATAL] %v", err)
 	}
-	log.Printf("[INFO] agent configuration server=%s tls=%t dev_insecure=%t state_dir=%s data_dir=%s source_roots=%v restore_roots=%v probe_interval=%ds max_concurrency=%d",
+ 	log.Printf("[INFO] agent configuration server=%s tls=%t dev_insecure=%t state_dir=%s data_dir=%s restic_cache_dir=%s source_roots=%v restore_roots=%v probe_interval=%ds max_concurrency=%d",
 		cfg.ServerGRPCURL,
 		cfg.ServerTLS,
 		cfg.DevInsecure,
 		cfg.StateDir,
 		cfg.DataDir,
+		cfg.ResticCacheDir,
 		cfg.SourceRoots,
 		cfg.RestoreRoots,
 		cfg.ProbeInterval,
@@ -71,12 +72,13 @@ func main() {
 		log.Printf("[INFO] enrolled as agent %s", agentID)
 	}
 
-	runner := agent.NewRunner(pipeline.Deps{
+ runner := agent.NewRunner(pipeline.Deps{
 		Exec:        agent.OSExecutor{},
 		SourceRoots: cfg.SourceRoots,
 		RestoreRoots: cfg.RestoreRoots,
 		ScratchMinFreeBytes: cfg.ScratchMinFreeBytes,
 		MaxConcurrency: cfg.MaxConcurrency,
+		ResticCacheDir: cfg.ResticCacheDir,
 		Logf: func(level, format string, args ...any) {
 			log.Printf("[%s] "+format, append([]any{level}, args...)...)
 		},

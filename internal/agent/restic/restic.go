@@ -334,7 +334,25 @@ func Forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 // ForgetOnly applies retention without prune. Backups use this path so a
 // long-running prune cannot contend with the next upload.
 func ForgetOnly(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string) error {
-	return forget(ctx, exec, opts, retention, tags, false)
+  return forget(ctx, exec, opts, retention, tags, false)
+}
+
+// DeleteByTags 删除匹配标签的全部快照，并清理不再引用的数据。
+func DeleteByTags(ctx context.Context, exec backup.Executor, opts Options, tags []string) error {
+  if opts.Exe == "" {
+    return fmt.Errorf("restic exe not set")
+  }
+  args := []string{"forget", "--group-by", "host,tags", "--prune"}
+  if opts.RepoPath != "" { args = append(args, "--repo", opts.RepoPath) }
+  if opts.PasswordFile != "" { args = append(args, "--password-file", opts.PasswordFile) }
+  if opts.CacheDir != "" { args = append(args, "--cache-dir", opts.CacheDir) }
+  for _, tag := range tags { args = append(args, "--tag", tag) }
+  args = append(args, "--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json")
+  env := buildEnv(opts)
+  if opts.CacheDir != "" { env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir) }
+  exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(string) {})
+  if err != nil || exitCode != 0 { return mapResticError(exitCode, err) }
+  return nil
 }
 
 func forget(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string, prune bool) error {

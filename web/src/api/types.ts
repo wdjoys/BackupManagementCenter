@@ -99,6 +99,7 @@ export interface Plan {
   repository_id: string
   retention: Retention
   timeout_seconds: number
+  last_run_at: string | null
   created_at: string
   updated_at: string
 }

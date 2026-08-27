@@ -175,6 +175,8 @@ export default {
       timezone: 'Timezone',
       enabled: 'Enabled',
       repository: 'Repository',
+      path: 'Backup Path',
+      lastRunAt: 'Last Run At',
       timeout: 'Timeout',
     },
     deleted: 'Plan deleted',

@@ -175,6 +175,8 @@ export default {
       timezone: '时区',
       enabled: '启用',
       repository: '仓库',
+      path: '备份路径',
+      lastRunAt: '上次执行时间',
       timeout: '超时',
     },
     deleted: '计划已删除',

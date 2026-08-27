@@ -14,7 +14,7 @@ WEB_DIST := internal/server/webui/dist
 
 PLATFORMS ?= linux/amd64
 
-.PHONY: generate web-build build test docker-build docker-build-server docker-build-agent docker-up docker-down dev-server dev-agent clean lint tidy
+.PHONY: generate web-build build test docker-build docker-build-server docker-build-agent docker-up docker-pull docker-update docker-down dev-server dev-agent clean lint tidy
 
 ## generate: regenerate protobuf code (requires protoc + plugins)
 generate:
@@ -49,6 +49,13 @@ docker-build-agent:
 
 docker-up:
 	docker compose up -d --build
+
+docker-pull:
+	docker compose pull
+
+docker-update:
+	docker compose pull
+	docker compose up -d --no-build --remove-orphans
 
 docker-down:
 	docker compose down

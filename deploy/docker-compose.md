@@ -205,13 +205,73 @@ docker compose -f docker-compose.server.yml up -d --force-recreate bmc-server
 
 ## 升级与回滚
 
+### 从 Docker Hub 更新已发布镜像
+
+GitHub Actions 在 `main` 分支推送成功后，会发布以下镜像：
+
+```text
+<DOCKERHUB_USERNAME>/backup-management-center-server:latest
+<DOCKERHUB_USERNAME>/backup-management-center-agent:latest
+```
+
+生产机只需要保存 Compose 文件、`.env` 和 `secrets/`，不需要保存源码或执行本地构建。首次部署或迁移到镜像部署时，可在 `.env` 中显式设置镜像地址：
+
+```dotenv
+BMC_SERVER_IMAGE=your-dockerhub-user/backup-management-center-server:latest
+```
+
+Agent 主机在 `docker-compose.agent.yml` 对应的环境文件中设置：
+
+```dotenv
+BMC_AGENT_IMAGE=your-dockerhub-user/backup-management-center-agent:latest
+```
+
+更新命令会先拉取远端镜像，再以拉取到的镜像重新创建服务；`--no-build` 防止 Compose 因保留的 `build` 配置而在生产机本地构建：
+
+```sh
+# Server 主机
+docker compose pull
+docker compose up -d --no-build --remove-orphans
+curl -fk https://localhost/health/ready
+
+# Agent 主机
+docker compose -f docker-compose.agent.yml --env-file .env.agent pull
+docker compose -f docker-compose.agent.yml --env-file .env.agent up -d --no-build --remove-orphans
+```
+
+### GitHub Actions 自动更新
+
+如需在镜像推送成功后自动更新 Server 主机，先配置 Actions Variable `DEPLOY_ENABLED=true`，再在 GitHub repository settings → Secrets and variables → Actions 中配置：
+
+```text
+DEPLOY_HOST       Server 主机地址
+DEPLOY_PORT       SSH 端口，可选，默认 22
+DEPLOY_USER       SSH 用户
+DEPLOY_SSH_KEY    该用户的私钥
+DEPLOY_PATH       Compose 文件所在绝对路径
+```
+
+工作流只在 `main` 推送、两类镜像均构建成功且 `DEPLOY_ENABLED=true` 时执行 SSH 更新：`docker compose pull`，随后 `docker compose up -d --no-build --remove-orphans`，最后检查 `/health/ready`。不要把私钥或 Docker Hub token 写入仓库文件；Actions Secrets 会被 GitHub 脱敏。
+
+也可以在仓库根目录执行 Server 快捷命令：
+
+```sh
+make docker-update
+```
+
+`pull_policy: always` 会在正常 `docker compose up` 时检查远端镜像。生产升级仍应遵循“先 Server、确认 `/health/ready`、再逐台 Agent”的顺序，并在升级前备份 `bmc-data` volume 与主密钥。
+
+### 回滚
+
+将 `BMC_SERVER_IMAGE` 或 `BMC_AGENT_IMAGE` 改为 GitHub Actions 发布的 `sha-<短 SHA>` 标签，然后重新执行上面的 `pull` 与 `up --no-build` 命令。不要使用 `latest` 进行需要可重复性的回滚。
+
 升级前备份 Server 数据 volume 和主密钥：
 
 ```sh
 docker compose stop
 # 另行备份 bmc-data volume 与 secrets/master.key
-docker compose build --pull
-docker compose up -d
+docker compose pull
+docker compose up -d --no-build
 ```
 
 升级顺序：

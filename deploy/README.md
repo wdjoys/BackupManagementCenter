@@ -169,6 +169,29 @@ export BMC_TLS_CERT_FILE=./secrets/server.crt
 export BMC_TLS_KEY_FILE=./secrets/server.key
 
 docker compose -f docker-compose.server.yml up -d --build bmc-server
+
+#### 使用 GitHub Actions 发布的镜像更新
+
+GitHub Actions 会将 `main` 分支的构建发布为 Docker Hub 的 `server:latest` 与 `agent:latest` 镜像。生产机不需要源码，设置镜像变量后执行：
+
+```dotenv
+BMC_SERVER_IMAGE=your-dockerhub-user/backup-management-center-server:latest
+```
+
+```sh
+docker compose -f docker-compose.server.yml pull
+docker compose -f docker-compose.server.yml up -d --no-build --remove-orphans
+curl -fk https://localhost/health/ready
+```
+
+Agent 主机使用 `BMC_AGENT_IMAGE`，并执行：
+
+```sh
+docker compose -f docker-compose.agent.yml --env-file .env.agent pull
+docker compose -f docker-compose.agent.yml --env-file .env.agent up -d --no-build --remove-orphans
+```
+
+升级顺序固定为先 Server、确认 ready、再逐台 Agent。需要回滚时改用 Actions 发布的 `sha-<短 SHA>` 标签，不要依赖 `latest`。
 ```
 
 端口映射：

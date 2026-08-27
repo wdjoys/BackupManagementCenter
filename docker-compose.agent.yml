@@ -15,8 +15,9 @@ services:
   bmc-agent:
     # 固定容器名称，便于查看日志和执行运维命令。
     container_name: bmc-agent
-    # 默认使用 latest 标签；生产环境建议固定到明确版本标签。
-    image: wdjoys/backup-management-center-agent:latest
+    # 默认拉取 Docker Hub 上的 latest；可通过 BMC_AGENT_IMAGE 覆盖。
+    image: ${BMC_AGENT_IMAGE:-wdjoys/backup-management-center-agent:latest}
+    pull_policy: always
     build:
       # 使用项目根目录作为构建上下文，并通过 Dockerfile.agent 构建 Agent 镜像。
       context: .

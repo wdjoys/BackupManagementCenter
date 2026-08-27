@@ -3,6 +3,8 @@
 # 用法：docker compose -f docker-compose.server.caddy.yml up -d --build
 services:
   bmc-server:
+    image: ${BMC_SERVER_IMAGE:-wdjoys/backup-management-center-server:latest}
+    pull_policy: always
     build:
       context: .
       dockerfile: Dockerfile.server

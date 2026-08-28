@@ -316,6 +316,15 @@ const (
 	TelegramTokenColumn   = "encrypted_token"
 )
 
+// Snapshot 是 Agent 返回的 Restic 快照读模型，不在 Server 数据库中持久化。
+type Snapshot struct {
+	ID    string   `json:"id"`
+	Time  string   `json:"time"`
+	Host  string   `json:"host"`
+	Tags  []string `json:"tags"`
+	Paths []string `json:"paths"`
+}
+
 // SnapshotDeletionSource 标识删除意图来源。
 type SnapshotDeletionSource string
 

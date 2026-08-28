@@ -2184,6 +2184,10 @@ func invalidateTargetCaches(ctx context.Context, tx *sql.Tx, targetID string) er
 	return nil
 }
 
+func invalidatesSnapshotCache(operation string) bool {
+	return operation == model.OpBackup || operation == model.OpForget
+}
+
 // ---------------------------------------------------------------------------
 // 快照删除意图与孤儿扫描
 // ---------------------------------------------------------------------------

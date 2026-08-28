@@ -125,6 +125,33 @@ type LogStore interface {
 	ListAgentLogs(ctx context.Context, agentID string, filter ProcessLogFilter) ([]model.SystemLog, error)
 }
 
+// SnapshotCacheStore 是可选的持久化快照缓存接口。
+type SnapshotCacheStore interface {
+	GetSnapshotListCache(ctx context.Context, repositoryID string) (*SnapshotListCache, error)
+	GetSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string) (*SnapshotTreeCache, error)
+	SnapshotCacheGeneration(ctx context.Context, repositoryID string) (int64, error)
+	SaveSnapshotListCache(ctx context.Context, repositoryID string, generation int64, snapshotsJSON, fingerprint string, verifiedAt time.Time) error
+	SaveSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string, generation int64, treeJSON string, verifiedAt time.Time) error
+	InvalidateSnapshotCache(ctx context.Context, repositoryID string, clearTrees bool) error
+}
+
+type SnapshotListCache struct {
+	RepositoryID string
+	Generation   int64
+	SnapshotsJSON string
+	Fingerprint  string
+	VerifiedAt   time.Time
+}
+
+type SnapshotTreeCache struct {
+	RepositoryID string
+	SnapshotID   string
+	Path         string
+	Generation   int64
+	TreeJSON     string
+	VerifiedAt   time.Time
+}
+
 // SnapshotDeletionStore 是窄接口，仅用于快照删除意图与孤儿扫描状态持久化。
 // 独立于 Store，避免测试替身和外部实现必须立即实现这些方法。
 type SnapshotDeletionStore interface {

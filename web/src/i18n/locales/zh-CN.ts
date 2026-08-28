@@ -192,6 +192,7 @@ export default {
     deleteDialog: {
       title: '删除计划',
       confirm: '确定删除计划 "{name}" 吗？此操作不可撤销。',
+      snapshotsRequired: '该计划仍存在快照，请先删除快照后再删除计划。',
     },
     form: {
       name: '名称',
@@ -502,6 +503,7 @@ export default {
       action: '删除',
       title: '删除快照',
       message: '此快照将立即从列表中隐藏，并在后台回收空间。请输入完整快照 ID 以确认删除。',
+      snapshotId: '请确认快照 ID：{id}',
       confirm: '删除快照',
       inputPlaceholder: '输入完整快照 ID',
       inputMismatch: '请输入完整且匹配的快照 ID',

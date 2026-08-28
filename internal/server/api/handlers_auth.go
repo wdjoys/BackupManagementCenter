@@ -160,6 +160,8 @@ func mapStoreErr(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, store.ErrPlanHasSnapshots):
+		writeErr(w, http.StatusConflict, "plan_has_snapshots", "plan still has snapshots")
 	case errors.Is(err, store.ErrInUse):
 		writeErr(w, http.StatusConflict, "conflict", "resource still referenced")
 	case errors.Is(err, store.ErrDuplicateRun):

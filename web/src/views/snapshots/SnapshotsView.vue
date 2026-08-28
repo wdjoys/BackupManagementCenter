@@ -527,7 +527,7 @@ async function handleDeleteSnapshot(snapshot: Snapshot): Promise<void> {
   if (!selectedRepoId.value) return
   try {
     const { value } = await ElMessageBox.prompt(
-      t('snapshots.delete.message'),
+      `${t('snapshots.delete.message')}\n\n${t('snapshots.delete.snapshotId', { id: snapshot.id })}`,
       t('snapshots.delete.title'),
       {
         confirmButtonText: t('snapshots.delete.confirm'),

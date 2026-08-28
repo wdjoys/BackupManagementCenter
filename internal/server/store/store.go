@@ -136,11 +136,11 @@ type SnapshotCacheStore interface {
 }
 
 type SnapshotListCache struct {
-	RepositoryID string
-	Generation   int64
+	RepositoryID  string
+	Generation    int64
 	SnapshotsJSON string
-	Fingerprint  string
-	VerifiedAt   time.Time
+	Fingerprint   string
+	VerifiedAt    time.Time
 }
 
 type SnapshotTreeCache struct {
@@ -247,5 +247,6 @@ var (
 	ErrTokenInvalid           = errors.New("store: enrollment token invalid")
 	ErrAdminExists            = errors.New("store: admin already exists")
 	ErrInUse                  = errors.New("store: resource still referenced")
+	ErrPlanHasSnapshots       = errors.New("store: plan still has snapshots")
 	ErrCacheGenerationChanged = errors.New("store: snapshot cache generation changed")
 )

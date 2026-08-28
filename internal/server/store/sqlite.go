@@ -844,44 +844,56 @@ func (s *sqliteStore) UpdatePlan(ctx context.Context, p *model.Plan) error {
 }
 
 func (s *sqliteStore) DeletePlan(ctx context.Context, id string) error {
-  s.mu.Lock()
-  defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-  tx, err := s.db.BeginTx(ctx, nil)
-  if err != nil {
-    return fmt.Errorf("delete plan begin tx: %w", err)
-  }
-  defer tx.Rollback()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete plan begin tx: %w", err)
+	}
+	defer tx.Rollback()
 
-  // 活跃运行仍依赖计划配置，删除前必须等待其结束；历史运行则解绑计划后保留。
-  var count int
-  if err := tx.QueryRowContext(ctx,
-    `SELECT COUNT(*) FROM runs
+	// 活跃运行和已有快照都依赖计划配置，删除前必须先处理完毕；历史运行则可解绑计划后保留。
+	var count int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM runs
      WHERE plan_id = ? AND status IN (?, ?, ?)`,
-    id, model.RunQueued, model.RunDispatched, model.RunRunning,
-  ).Scan(&count); err != nil {
-    return fmt.Errorf("delete plan check active runs: %w", err)
-  }
-  if count > 0 {
-    return ErrInUse
-  }
+		id, model.RunQueued, model.RunDispatched, model.RunRunning,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("delete plan check active runs: %w", err)
+	}
+	if count > 0 {
+		return ErrInUse
+	}
 
-  if _, err := tx.ExecContext(ctx, "UPDATE runs SET plan_id = NULL WHERE plan_id = ?", id); err != nil {
-    return fmt.Errorf("delete plan detach runs: %w", err)
-  }
-  result, err := tx.ExecContext(ctx, "DELETE FROM backup_plans WHERE id = ?", id)
-  if err != nil {
-    return fmt.Errorf("delete plan: %w", err)
-  }
-  if affected, err := result.RowsAffected(); err != nil {
-    return fmt.Errorf("delete plan rows affected: %w", err)
-  } else if affected == 0 {
-    return ErrNotFound
-  }
-  if err := tx.Commit(); err != nil {
-    return fmt.Errorf("delete plan commit: %w", err)
-  }
-  return nil
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM runs
+     WHERE plan_id = ? AND snapshot_id IS NOT NULL AND snapshot_id <> ''`,
+		id,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("delete plan check snapshots: %w", err)
+	}
+	if count > 0 {
+		return ErrPlanHasSnapshots
+	}
+
+	if _, err := tx.ExecContext(ctx, "UPDATE runs SET plan_id = NULL WHERE plan_id = ?", id); err != nil {
+		return fmt.Errorf("delete plan detach runs: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, "DELETE FROM backup_plans WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete plan: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("delete plan rows affected: %w", err)
+	} else if affected == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete plan commit: %w", err)
+	}
+	return nil
 }
 
 func (s *sqliteStore) GetPlan(ctx context.Context, id string) (*model.Plan, error) {
@@ -2512,7 +2524,7 @@ func (s *sqliteStore) RetrySnapshotDeletion(ctx context.Context, deletionID, err
 func (s *sqliteStore) GetSnapshotCleanupState(ctx context.Context, repositoryID string) (*model.SnapshotCleanupState, error) {
 	var (
 		scanRunID, lastStarted, lastCompleted sql.NullString
-		updated                                string
+		updated                               string
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT repository_id, scan_run_id, last_scan_started_at, last_scan_completed_at, updated_at
@@ -2532,7 +2544,6 @@ func (s *sqliteStore) GetSnapshotCleanupState(ctx context.Context, repositoryID 
 		UpdatedAt:           parseTime(updated),
 	}, nil
 }
-
 
 func (s *sqliteStore) FinishSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, snapshots []model.Snapshot, completedAt time.Time) error {
 	s.mu.Lock()

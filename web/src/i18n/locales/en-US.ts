@@ -192,6 +192,7 @@ export default {
     deleteDialog: {
       title: 'Delete plan',
       confirm: 'Delete plan "{name}"? This cannot be undone.',
+      snapshotsRequired: 'This plan still has snapshots. Delete the snapshots before deleting the plan.',
     },
     form: {
       name: 'Name',
@@ -502,6 +503,7 @@ export default {
       action: 'Delete',
       title: 'Delete Snapshot',
       message: 'The snapshot will immediately be hidden from the list and its space reclaimed in the background. Type the full snapshot ID to confirm deletion.',
+      snapshotId: 'Confirm snapshot ID: {id}',
       confirm: 'Delete Snapshot',
       inputPlaceholder: 'Type the full snapshot ID',
       inputMismatch: 'Enter the complete matching snapshot ID',

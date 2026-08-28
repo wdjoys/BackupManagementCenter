@@ -48,7 +48,7 @@ type Store interface {
 	// Agents
 	UpsertAgentOnConnect(ctx context.Context, a *model.Agent) error // by ID; updates host/os/arch/version/last_seen/status
 	SetAgentStatus(ctx context.Context, agentID string, st model.AgentStatus, at time.Time) error
-	SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, at time.Time) error
+	SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, mappings []model.PathMapping, at time.Time) error
 	GetAgent(ctx context.Context, id string) (*model.Agent, error)
 	GetAgentBySecretHash(ctx context.Context, tokenHash string) (*model.Agent, error)
 	ListAgents(ctx context.Context) ([]model.Agent, error)

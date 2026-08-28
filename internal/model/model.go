@@ -88,19 +88,27 @@ const (
 )
 
 type Agent struct {
-	ID               string      `json:"id"`
-	Name             string      `json:"name"`
-	Hostname         string      `json:"hostname"`
-	OS               string      `json:"os"`
-	Arch             string      `json:"arch"`
-	Version          string      `json:"version"`
-	Status           AgentStatus `json:"status"`
-	LastSeenAt       *time.Time  `json:"last_seen_at,omitempty"`
-	EnrolledAt       time.Time   `json:"enrolled_at"`
-	TokenHash        string      `json:"-"` // SHA-256 hex of the agent secret
-	Capabilities     []ToolInfo  `json:"capabilities"`
-	CapabilitiesJSON string      `json:"-"`
-	Revoked          bool        `json:"revoked"`
+	ID                 string        `json:"id"`
+	Name               string        `json:"name"`
+	Hostname           string        `json:"hostname"`
+	OS                 string        `json:"os"`
+	Arch               string        `json:"arch"`
+	Version            string        `json:"version"`
+	Status             AgentStatus   `json:"status"`
+	LastSeenAt         *time.Time    `json:"last_seen_at,omitempty"`
+	EnrolledAt         time.Time     `json:"enrolled_at"`
+	TokenHash          string        `json:"-"` // SHA-256 hex of the agent secret
+	Capabilities       []ToolInfo    `json:"capabilities"`
+	SourcePathMappings []PathMapping `json:"source_path_mappings"`
+	CapabilitiesJSON   string        `json:"-"`
+	Revoked            bool          `json:"revoked"`
+}
+
+// PathMapping 描述宿主机路径到 Agent 运行环境路径的映射。
+type PathMapping struct {
+	HostPath    string `json:"host_path"`
+	RuntimePath string `json:"runtime_path"`
+	ReadOnly    bool   `json:"read_only"`
 }
 
 // ToolInfo mirrors the proto message for REST exposure.
@@ -345,25 +353,25 @@ const (
 
 // SnapshotDeletion 记录一次快照删除意图与执行状态。
 type SnapshotDeletion struct {
-	ID               string                 `json:"id"`
-	RepositoryID     string                 `json:"repository_id"`
-	AgentID          string                 `json:"agent_id"`
-	SnapshotID       string                 `json:"snapshot_id"`
-	Source           SnapshotDeletionSource `json:"source"`
-	State            SnapshotDeletionState  `json:"state"`
-	FirstSeenAt      time.Time              `json:"first_seen_at"`
-	LastSeenAt       time.Time              `json:"last_seen_at"`
-	SeenCount        int                    `json:"seen_count"`
-	NextAttemptAt    *time.Time             `json:"next_attempt_at,omitempty"`
-	Attempt          int                    `json:"attempt"`
-	RunID            string                 `json:"run_id,omitempty"`
-	LeaseExpiresAt   *time.Time             `json:"lease_expires_at,omitempty"`
-	ErrorCode        string                 `json:"error_code,omitempty"`
-	ErrorMessage     string                 `json:"error_message,omitempty"`
-	RequestedBy      string                 `json:"requested_by,omitempty"`
-	CreatedAt        time.Time              `json:"created_at"`
-	UpdatedAt        time.Time              `json:"updated_at"`
-	CompletedAt      *time.Time             `json:"completed_at,omitempty"`
+	ID             string                 `json:"id"`
+	RepositoryID   string                 `json:"repository_id"`
+	AgentID        string                 `json:"agent_id"`
+	SnapshotID     string                 `json:"snapshot_id"`
+	Source         SnapshotDeletionSource `json:"source"`
+	State          SnapshotDeletionState  `json:"state"`
+	FirstSeenAt    time.Time              `json:"first_seen_at"`
+	LastSeenAt     time.Time              `json:"last_seen_at"`
+	SeenCount      int                    `json:"seen_count"`
+	NextAttemptAt  *time.Time             `json:"next_attempt_at,omitempty"`
+	Attempt        int                    `json:"attempt"`
+	RunID          string                 `json:"run_id,omitempty"`
+	LeaseExpiresAt *time.Time             `json:"lease_expires_at,omitempty"`
+	ErrorCode      string                 `json:"error_code,omitempty"`
+	ErrorMessage   string                 `json:"error_message,omitempty"`
+	RequestedBy    string                 `json:"requested_by,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+	CompletedAt    *time.Time             `json:"completed_at,omitempty"`
 }
 
 // SnapshotCleanupState 记录每仓库的孤儿扫描进度。

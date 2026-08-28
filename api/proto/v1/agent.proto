@@ -139,13 +139,20 @@ message RunResult {
 }
 
 message ToolInfo {
-  string name = 1;   // restic, rclone, pg_dump, pg_restore, psql, mysqldump, mysql, mongodump, mongorestore, sqlite3
-  string path = 2;   // absolute path, empty when missing
-  string version = 3; // --version first line, empty when missing
+	string name = 1;
+	string path = 2;
+	string version = 3;
+}
+
+message PathMapping {
+	string host_path = 1;
+	string runtime_path = 2;
+	bool read_only = 3;
 }
 
 message CapabilitiesReport {
-  repeated ToolInfo tools = 1;
+	repeated ToolInfo tools = 1;
+	repeated PathMapping source_path_mappings = 2;
 }
 
 message ExecuteCommand {

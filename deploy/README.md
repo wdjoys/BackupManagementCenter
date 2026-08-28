@@ -270,41 +270,52 @@ docker compose -f docker-compose.agent.yml up -d
 
 #### 源路径映射规则
 
-Agent 容器内的路径 ≠ 主机路径。当前模板挂载：
+Agent Compose 默认使用两组显式只读挂载：
 
 ```text
-主机 /etc → 容器 /backup-sources/etc（只读）
-主机 /srv → 容器 /backup-sources/srv（只读）
+宿主机 /etc → 容器 /backup-sources/etc
+宿主机 /srv → 容器 /backup-sources/srv
 ```
 
-因此计划中的源路径必须写容器路径：
+`.env.agent` 中配置与挂载一一对应的 JSON 映射：
+
+```dotenv
+BMC_SOURCE_PATH_MAPPINGS={"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv"}
+```
+
+计划统一填写宿主机原始路径，Agent 执行时自动转换为容器路径；用户无需填写 `/backup-sources`：
 
 ```json
-{"paths": ["/backup-sources/etc", "/backup-sources/srv/myapp"]}
+{"paths": ["/etc", "/srv/myapp"]}
 ```
 
-新增其他源目录时，编辑 `docker-compose.agent.yml` 增加只读挂载：
+`BMC_SOURCE_ROOTS` 仍然是容器内 runtime allowlist，只允许访问列出的运行时根目录，不会自动创建挂载或映射宿主目录。未配置映射的旧 Agent 保持当前恒等路径行为。
+
+新增源目录时，必须同时增加显式只读挂载和映射：
 
 ```yaml
     volumes:
       - /var/lib/myapp:/backup-sources/var-lib-myapp:ro
 ```
 
-例如备份宿主机 `/root/nginx` 时，必须增加精确挂载（`BMC_SOURCE_ROOTS`
-只是容器内 allowlist，不会自动创建或映射宿主目录）：
+```dotenv
+BMC_SOURCE_PATH_MAPPINGS={"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv","/var/lib/myapp":"/backup-sources/var-lib-myapp"}
+```
+
+计划填写 `/var/lib/myapp`。安全边界始终是显式只读挂载；不得挂载宿主机 `/` 或 `/var/run/docker.sock`，也不能通过 allowlist 绕过挂载限制。
+
+例如备份宿主机 `/root/nginx`：
 
 ```yaml
     volumes:
       - /root/nginx:/backup-sources/root/nginx:ro
 ```
 
-计划使用 `/backup-sources/root/nginx`。Agent 以 UID 65532 非 root 用户运行；
-如果宿主机 `/root` 或该目录是 `0700`，请只对需要的路径授权：
-
-```sh
-sudo setfacl -m u:65532:--x /root
-sudo setfacl -R -m u:65532:rX /root/nginx
+```dotenv
+BMC_SOURCE_PATH_MAPPINGS={"/root/nginx":"/backup-sources/root/nginx"}
 ```
+
+计划填写 `/root/nginx`。Compose 模板实际以 root（UID 0）运行，以便读取宿主机 bind mount；不要将此配置改为非 root，否则可能无法读取权限为 `0700` 的宿主目录。
 
 安全红线：
 
@@ -486,6 +497,9 @@ Web UI：**Storage → Repositories → 绑定仓库**
 | `BMC_RESTIC_CACHE_DIR` | `<state>/.cache/restic` | 持久化 Restic metadata cache；不得指向 scratch |
 | `BMC_AGENT_PROBE_INTERVAL` | `600` | 能力探测间隔（秒） |
 | `BMC_DEV_INSECURE` | 空 | `1` 时跳过 Server 证书校验 |
+| `BMC_SOURCE_PATH_MAPPINGS` | 空 | JSON object，宿主机源路径到容器 runtime 路径的映射；应与显式只读挂载一一对应。未设置时旧 Agent 保持恒等路径行为 |
+| `BMC_SOURCE_ROOTS` | `/backup-sources`（Compose） | 容器内源路径 runtime allowlist，不负责挂载宿主目录 |
+| `BMC_RESTORE_ROOTS` | `/backup-restore`（Compose） | 容器内恢复目标 allowlist |
 
 ## 健康检查与监控
 
@@ -504,13 +518,10 @@ Web UI：**Storage → Repositories → 绑定仓库**
 - `bmc_repository_last_check_timestamp`
 - `bmc_agent_grpc_reconnects_total`
 
-## 升级与回滚
-
-- 主版本不同：Agent 拒绝连接。
-- 次版本不同：允许连接，UI 显示告警。
-- 升级顺序固定：**先 Server，后逐台 Agent**。
-- Server 启动时自动执行增量 SQLite migration；本版本新增 `0011_snapshot_deletions.sql`，只创建快照删除意图和扫描状态表，不会立即修改远端 Restic 数据。
-- 升级前必须完成 SQLite backup；migration 失败时 Server 拒绝继续启动。重复启动安全，不会重复创建表或丢失既有计划、运行记录、Repository、快照缓存。
+- 路径映射配置使用 JSON object；升级前保持 `BMC_SOURCE_PATH_MAPPINGS` 与 Compose 显式只读挂载一一对应，计划继续填写宿主机原始路径。
+- 新 Agent 配置映射后，旧 Agent 或未配置映射时仍按恒等路径处理，便于分批升级。
+- 回滚到不支持映射的旧 Agent 时保留旧环境变量和只读 volumes，并暂时将计划路径改回该 Agent 可见的容器路径。
+- 映射只转换已显式只读挂载的路径，不能扩大 `BMC_SOURCE_ROOTS` allowlist，也不能替代挂载。
 
 ### Docker Compose 升级
 

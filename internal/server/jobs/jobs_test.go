@@ -236,7 +236,7 @@ func (s *fakeStore) UpsertAgentOnConnect(ctx context.Context, a *model.Agent) er
 func (s *fakeStore) SetAgentStatus(ctx context.Context, agentID string, st model.AgentStatus, at time.Time) error {
 	return nil
 }
-func (s *fakeStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, at time.Time) error {
+func (s *fakeStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, mappings []model.PathMapping, at time.Time) error {
 	return nil
 }
 func (s *fakeStore) GetAgentBySecretHash(ctx context.Context, h string) (*model.Agent, error) {

@@ -125,6 +125,29 @@
 
     <el-divider content-position="left">{{ t('plans.form.source') }}</el-divider>
 
+    <el-alert
+      v-if="isPathBasedKind && selectedAgent && sourcePathMappings.length > 0"
+      :title="t('plans.form.availableHostPaths')"
+      type="info"
+      :closable="false"
+      show-icon
+      class="source-path-alert"
+    >
+      <div class="source-path-roots">
+        <el-tag v-for="mapping in sourcePathMappings" :key="mapping.host_path" size="small" effect="plain">
+          {{ mapping.host_path }}
+        </el-tag>
+      </div>
+    </el-alert>
+    <el-alert
+      v-else-if="isPathBasedKind && selectedAgent"
+      :title="t('plans.form.pathMappingCompatibilityHint')"
+      type="info"
+      :closable="false"
+      show-icon
+      class="source-path-alert"
+    />
+
     <template v-if="props.model.kind === 'filesystem'">
       <el-row :gutter="16">
         <el-col :span="24">
@@ -133,7 +156,7 @@
           </el-form-item>
         </el-col>
         <el-col :span="24">
-          <el-form-item :label="t('plans.form.excludes')">
+          <el-form-item :label="t('plans.form.excludes')" prop="source.excludes">
             <TagInput v-model="props.model.source.excludes" :placeholder="t('plans.form.excludesPlaceholder')" />
           </el-form-item>
         </el-col>
@@ -299,6 +322,14 @@ const filteredRepos = computed(() =>
   props.repositories.filter((r) => r.agent_id === props.model.agent_id),
 )
 
+const selectedAgent = computed(() =>
+  props.agents.find((agent) => agent.id === props.model.agent_id),
+)
+const sourcePathMappings = computed(() => selectedAgent.value?.source_path_mappings ?? [])
+const isPathBasedKind = computed(() =>
+  props.model.kind === 'filesystem' || props.model.kind === 'sqlite',
+)
+
 function onKindChange(kind: PlanKind): void {
   props.model.source = defaultSource(kind)
 }
@@ -307,6 +338,7 @@ function onAgentChange(): void {
   if (repo && repo.agent_id !== props.model.agent_id) {
     props.model.repository_id = ''
   }
+  void formRef.value?.validateField(['source.paths', 'source.path', 'source.excludes'])
 }
 
 function cronValidator(_rule: unknown, value: unknown, callback: (error?: string | Error) => void, ..._rest: unknown[]): void {
@@ -325,17 +357,37 @@ function portValidator(_rule: unknown, value: unknown, callback: (error?: string
   if (!Number.isFinite(n) || n < 1 || n > 65535) callback(new Error(t('plans.rules.portRange')))
   else callback()
 }
+function isAbsolutePath(value: string): boolean {
+  return value.startsWith('/')
+}
+function isWithinMappedRoot(path: string): boolean {
+  if (sourcePathMappings.value.length === 0) return true
+  return sourcePathMappings.value.some(({ host_path }) => {
+    const root = host_path.replace(/\/+$/, '') || '/'
+    return root === '/' ? path.startsWith('/') : path === root || path.startsWith(`${root}/`)
+  })
+}
 function absolutePathValidator(_rule: unknown, value: unknown, callback: (error?: string | Error) => void, ..._rest: unknown[]): void {
   const p = typeof value === 'string' ? value.trim() : ''
   if (!p) callback(new Error(t('plans.rules.pathRequired')))
-  else if (!p.startsWith('/')) callback(new Error(t('plans.rules.absolutePath')))
+  else if (!isAbsolutePath(p)) callback(new Error(t('plans.rules.absolutePath')))
+  else if (!isWithinMappedRoot(p)) callback(new Error(t('plans.rules.pathOutsideAllowedRoots')))
   else callback()
 }
 function pathsValidator(_rule: unknown, value: unknown, callback: (error?: string | Error) => void, ..._rest: unknown[]): void {
   const items: unknown[] = Array.isArray(value) ? value : []
   const paths: string[] = items.filter((p): p is string => typeof p === 'string')
   if (paths.length === 0) callback(new Error(t('plans.rules.pathsRequired')))
-  else if (paths.some((p) => !p.startsWith('/'))) callback(new Error(t('plans.rules.pathsAbsolute')))
+  else if (paths.some((p) => !isAbsolutePath(p))) callback(new Error(t('plans.rules.pathsAbsolute')))
+  else if (paths.some((p) => !isWithinMappedRoot(p))) callback(new Error(t('plans.rules.pathsOutsideAllowedRoots')))
+  else callback()
+}
+function excludesValidator(_rule: unknown, value: unknown, callback: (error?: string | Error) => void, ..._rest: unknown[]): void {
+  const excludes: unknown[] = Array.isArray(value) ? value : []
+  const invalid = excludes.some((exclude) =>
+    typeof exclude === 'string' && isAbsolutePath(exclude) && !isWithinMappedRoot(exclude),
+  )
+  if (invalid) callback(new Error(t('plans.rules.excludesOutsideAllowedRoots')))
   else callback()
 }
 
@@ -355,6 +407,7 @@ const rules = computed<FormRules>(() => ({
     estimated_dump_bytes: [{ validator: positiveNumberValidator, message: t('plans.rules.dumpBytesPositive'), trigger: 'change' }],
     path: [{ validator: absolutePathValidator, trigger: 'blur' }],
     paths: [{ validator: pathsValidator, trigger: 'change' }],
+    excludes: [{ validator: excludesValidator, trigger: 'change' }],
   },
 }))
 
@@ -402,5 +455,14 @@ async function handleSubmit(): Promise<void> {
   margin-top: 4px;
   font-size: 12px;
   color: #999;
+}
+.source-path-alert {
+  margin-bottom: 16px;
+}
+.source-path-roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
 }
 </style>

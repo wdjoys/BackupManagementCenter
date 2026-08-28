@@ -106,10 +106,57 @@ BMC_SERVER_TLS=1
 BMC_ENROLLMENT_TOKEN=<一次性注册令牌>
 BMC_SOURCE_ETC=/etc
 BMC_SOURCE_SRV=/srv
+# 计划统一填写宿主机原始路径；此 JSON 必须与 Compose 中的只读 volumes 一一对应。
+BMC_SOURCE_PATH_MAPPINGS={"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv"}
+# 仍然只允许 Agent 访问显式列出的容器运行时根目录。
 BMC_SOURCE_ROOTS=/backup-sources
 BMC_RESTORE_ROOTS=/backup-restore
 BMC_SCRATCH_MIN_FREE_BYTES=0
 ```
+
+Agent Compose 默认挂载（宿主机路径由 `BMC_SOURCE_ETC`、`BMC_SOURCE_SRV` 提供）：
+
+```text
+主机 /etc → 容器 /backup-sources/etc，只读
+主机 /srv → 容器 /backup-sources/srv，只读
+```
+
+计划中的源路径统一填写宿主机原始路径，Agent 根据 `BMC_SOURCE_PATH_MAPPINGS` 自动转换为容器运行时路径；用户无需在计划中填写 `/backup-sources`：
+
+```json
+{"paths":["/etc","/srv"]}
+```
+
+`BMC_SOURCE_ROOTS` 仍是容器内 runtime allowlist，不负责创建挂载或映射宿主目录。未配置 `BMC_SOURCE_PATH_MAPPINGS` 的旧 Agent 保持原有恒等路径行为。
+
+不要直接挂载整个主机根目录，也不要挂载 `/var/run/docker.sock`。如果必须备份其他目录，必须同时增加一组宿主机到容器的显式只读挂载和映射：
+
+```dotenv
+BMC_SOURCE_APP=/srv/myapp
+BMC_SOURCE_PATH_MAPPINGS={"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv","/srv/myapp":"/backup-sources/app"}
+```
+
+```yaml
+- ${BMC_SOURCE_APP}:/backup-sources/app:ro
+```
+
+然后计划使用 `/srv/myapp`。安全边界始终是显式只读挂载；映射不能绕过 `BMC_SOURCE_ROOTS`。
+
+例如要备份宿主机 `/root/nginx`，必须显式挂载并增加映射；不能只修改 allowlist：
+
+```dotenv
+BMC_SOURCE_PATH_MAPPINGS={"/root/nginx":"/backup-sources/root/nginx"}
+```
+
+```yaml
+- /root/nginx:/backup-sources/root/nginx:ro
+```
+
+然后计划使用 `/root/nginx`。
+
+Agent Compose 模板实际以 root（UID 0）运行，以便读取宿主机 bind mount；这不改变只读挂载和禁止 Docker Socket、主机根目录的安全边界。
+
+## Agent 启动与状态、临时空间和权限
 
 启动 Agent：
 
@@ -124,63 +171,13 @@ sed -i '/^BMC_ENROLLMENT_TOKEN=/d' .env.agent
 docker compose -f docker-compose.agent.yml up -d
 ```
 
-Agent Compose 默认挂载：
-
-```text
-主机 /etc → 容器 /backup-sources/etc，只读
-主机 /srv → 容器 /backup-sources/srv，只读
-```
-
-因此，计划中的源路径必须使用容器路径，例如：
-
-```json
-{"paths":["/backup-sources/etc","/backup-sources/srv"]}
-```
-
-不要直接挂载整个主机根目录，也不要挂载 `/var/run/docker.sock`。如果必须备份其他目录，显式增加只读挂载：
-
-```dotenv
-BMC_SOURCE_APP=/srv/myapp
-```
-
-并在 Compose 文件中增加：
-
-```yaml
-- ${BMC_SOURCE_APP}:/backup-sources/app:ro
-```
-
-然后计划使用 `/backup-sources/app`。
-
-例如要备份宿主机 `/root/nginx`，不能只把 `BMC_SOURCE_ROOTS` 写成
-`/backup-sources/root`；必须同时显式挂载目录，并在计划中使用挂载后的容器路径：
-
-```dotenv
-BMC_SOURCE_NGINX=/root/nginx
-```
-
-```yaml
-- ${BMC_SOURCE_NGINX}:/backup-sources/root/nginx:ro
-```
-
-```json
-{"paths":["/backup-sources/root/nginx"]}
-```
-
-Agent 容器固定以 UID 65532 的非 root 用户运行。若宿主目录是 `0700`（例如
-`/root`），即使 Docker 已完成 bind mount，Agent 仍会收到 `permission denied`。
-仅给实际需要的目录授予遍历/读取 ACL，不要把 Agent 改成 root：
-
-```sh
-sudo setfacl -m u:65532:--x /root
-sudo setfacl -R -m u:65532:rX /root/nginx
-```
 
 ## Agent 状态、临时空间与权限
 
 - `bmc-agent-state` 保存 `identity.json`，不能删除或在多台 Agent 间共享。
-- 临时导出和恢复使用 `/var/lib/bmc-agent/scratch` 独立持久卷（不再使用 10GB tmpfs），并由镜像内非 root 用户（UID/GID 65532）访问。生产环境必须设置 `BMC_SOURCE_ROOTS`、`BMC_RESTORE_ROOTS`，且两类挂载分别保持只读/读写隔离。
+- 临时导出和恢复使用 `/var/lib/bmc-agent/scratch` 独立持久卷（不再使用 10GB tmpfs）。生产环境必须设置 `BMC_SOURCE_ROOTS`、`BMC_RESTORE_ROOTS`，且源目录与恢复目录分别保持只读/读写隔离。
 - `bmc-agent-scratch` 持久卷应按最大逻辑数据库导出大小预留至少 1.3 倍空间；空间不足时任务会失败并返回 `insufficient_temp_space`。
-- 容器以非 root 用户运行，并启用 `no-new-privileges`。
+- Compose 模板以 root（UID 0）运行，以便读取宿主机 bind mount，并启用 `no-new-privileges`。
 - 只读源目录仍可能包含敏感数据，应限制 Docker 主机访问权限并保护宿主机 Docker 权限。
 
 ## 故障排查：Agent 报 name resolver error: produced zero addresses

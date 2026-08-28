@@ -1,8 +1,8 @@
 package agent
 
 import (
-	crand "crypto/rand"
 	"context"
+	crand "crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
@@ -18,6 +18,7 @@ import (
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/logging"
+	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/version"
 
 	"google.golang.org/grpc"
@@ -51,14 +52,15 @@ func isRevokedErr(err error) bool {
 	}
 	return strings.Contains(err.Error(), "agent is revoked")
 }
+
 // ConnectClient manages the bidirectional gRPC stream to the server.
 type ConnectClient struct {
-	cfg        ConfigProvider
-	identity   *Identity
-	im         *IdentityManager
-	prober     *Prober
-	runner     *Runner
-	logSink    *logging.Sink
+	cfg      ConfigProvider
+	identity *Identity
+	im       *IdentityManager
+	prober   *Prober
+	runner   *Runner
+	logSink  *logging.Sink
 
 	// Reconnection state
 	reconnectCount atomic.Uint64
@@ -79,6 +81,7 @@ type ConfigProvider interface {
 	GetServerTLS() bool
 	GetDevInsecure() bool
 	GetProbeInterval() time.Duration
+	GetSourcePathMappings() []model.PathMapping
 }
 
 // NewConnectClient assembles the control-stream client. The identity must
@@ -238,7 +241,6 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 		defer logSink.ClearHandler()
 	}
 
-
 	// Start heartbeat goroutine
 	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
 	defer heartbeatCancel()
@@ -315,7 +317,7 @@ func (c *ConnectClient) heartbeatLoop(ctx context.Context, stream bmcv1.AgentCon
 				MessageId: newMessageID(),
 				Payload: &bmcv1.AgentMessage_Heartbeat{
 					Heartbeat: &bmcv1.Heartbeat{
-						UnixNanos:    time.Now().UnixNano(),
+						UnixNanos:     time.Now().UnixNano(),
 						UptimeSeconds: uptime,
 					},
 				},
@@ -355,18 +357,28 @@ func (c *ConnectClient) sendCapabilities(ctx context.Context, stream bmcv1.Agent
 	}
 	tools := c.prober.Probe(ctx)
 	protoTools := make([]*bmcv1.ToolInfo, 0, len(tools))
-	for _, t := range tools {
+	for _, tool := range tools {
 		protoTools = append(protoTools, &bmcv1.ToolInfo{
-			Name:    t.Name,
-			Path:    t.Path,
-			Version: t.Version,
+			Name:    tool.Name,
+			Path:    tool.Path,
+			Version: tool.Version,
+		})
+	}
+	mappings := c.cfg.GetSourcePathMappings()
+	protoMappings := make([]*bmcv1.PathMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		protoMappings = append(protoMappings, &bmcv1.PathMapping{
+			HostPath:    mapping.HostPath,
+			RuntimePath: mapping.RuntimePath,
+			ReadOnly:    mapping.ReadOnly,
 		})
 	}
 	msg := &bmcv1.AgentMessage{
 		MessageId: newMessageID(),
 		Payload: &bmcv1.AgentMessage_CapabilitiesReport{
 			CapabilitiesReport: &bmcv1.CapabilitiesReport{
-				Tools: protoTools,
+				Tools:              protoTools,
+				SourcePathMappings: protoMappings,
 			},
 		},
 	}
@@ -430,7 +442,6 @@ func operationName(op bmcv1.ExecuteCommand_Operation) string {
 		return fmt.Sprintf("unknown(%d)", op)
 	}
 }
-
 
 func (c *ConnectClient) backoff(ctx context.Context) {
 	// Exponential backoff with jitter: 1s base, 60s cap

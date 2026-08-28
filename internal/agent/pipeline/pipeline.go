@@ -6,6 +6,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,7 @@ type Deps struct {
 	Progress            func(model.Progress)
 	SourceRoots         []string
 	RestoreRoots        []string
+	SourcePathMappings  []model.PathMapping
 	ScratchMinFreeBytes int64
 	MaxConcurrency      int
 	ResticCacheDir      string
@@ -102,6 +104,9 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal backup task", Cause: err}
 	}
+	if err := mapBackupSource(&task, d.SourcePathMappings); err != nil {
+		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path mapping failed", Cause: err}
+	}
 
 	adapter, ok := backup.For(task.Kind)
 	if !ok {
@@ -116,7 +121,6 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 			return nil, &PipelineError{Code: "path_not_allowed", Message: "source path is outside configured allowlist", Cause: err}
 		}
 	}
-
 	spec := backup.PlanSpec{Kind: task.Kind, Source: task.Source, AgentID: ""}
 	if err := adapter.Validate(ctx, spec); err != nil {
 		return nil, &PipelineError{Code: "invalid_plan", Message: "validation failed", Cause: err}
@@ -370,6 +374,70 @@ func findRestoredManifest(root string) (manifestPath, artifactRoot string, err e
 	return found, filepath.Dir(found), nil
 }
 
+func mapBackupSource(task *model.BackupTask, mappings []model.PathMapping) error {
+	if len(mappings) == 0 {
+		return nil
+	}
+	mapOne := func(p string) (string, error) {
+		clean := filepath.Clean(p)
+		var best model.PathMapping
+		bestHost := ""
+		for _, mapping := range mappings {
+			host := filepath.Clean(mapping.HostPath)
+			rel, err := filepath.Rel(host, clean)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+				continue
+			}
+			if bestHost == "" || len(host) > len(bestHost) {
+				best = mapping
+				bestHost = host
+			}
+		}
+		if bestHost == "" {
+			return "", fmt.Errorf("path %q is not covered by a source path mapping", p)
+		}
+		rel, err := filepath.Rel(bestHost, clean)
+		if err != nil {
+			return "", err
+		}
+		if rel == "." {
+			rel = ""
+		}
+		runtimeRoot := filepath.Clean(best.RuntimePath)
+		runtimePath := filepath.Clean(filepath.Join(runtimeRoot, rel))
+		runtimeRel, err := filepath.Rel(runtimeRoot, runtimePath)
+		if err != nil || runtimeRel == ".." || strings.HasPrefix(runtimeRel, ".."+string(filepath.Separator)) || filepath.IsAbs(runtimeRel) {
+			return "", fmt.Errorf("mapped path %q escapes runtime root", p)
+		}
+		return runtimePath, nil
+	}
+	for i, path := range task.Source.Paths {
+		mapped, err := mapOne(path)
+		if err != nil {
+			return err
+		}
+		task.Source.Paths[i] = mapped
+	}
+	for i, path := range task.Source.Excludes {
+		if !filepath.IsAbs(path) && !strings.HasPrefix(path, "/") {
+			continue
+		}
+		mapped, err := mapOne(path)
+		if err != nil {
+			return err
+		}
+		task.Source.Excludes[i] = mapped
+	}
+	if task.Kind == model.KindSQLite {
+		mapped, err := mapOne(task.Source.Path)
+		if err != nil {
+			return err
+		}
+		task.Source.Path = mapped
+	}
+	return nil
+}
+
 // validateAllowedPaths rejects paths that escape the explicitly configured
 // source/restore roots. An empty allowlist preserves local-development
 // compatibility; production Docker deployments must configure both lists.
@@ -546,38 +614,38 @@ func runForget(ctx context.Context, d Deps, tempDir string, params []byte, secre
 		return &Result{ResultJSON: resultJSON}, nil
 	}
 
-  // ForgetTask 可由计划删除流程调用，按计划标签删除快照并按需 prune。
-  var task model.ForgetTask
-  if err := json.Unmarshal(params, &task); err != nil {
-    return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal forget task", Cause: err}
-  }
-  opts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
-  if err != nil {
-    return nil, err
-  }
-  // SnapshotIDs 分支：手动/自动删除单个快照，按完整 snapshot ID 精确 forget。
-  // 互斥校验：SnapshotIDs 非空时不得同时携带 Tags、DeleteAll 或 retention 规则。
-  if len(task.SnapshotIDs) > 0 {
-    if len(task.Tags) > 0 || task.DeleteAll || task.Retention.KeepLast > 0 || task.Retention.KeepDaily > 0 || task.Retention.KeepWeekly > 0 || task.Retention.KeepMonthly > 0 {
-      return nil, &PipelineError{Code: "invalid_params", Message: "snapshot_ids cannot be combined with tags/delete_all/retention", Cause: nil}
-    }
-    if err := restic.DeleteSnapshots(ctx, d.Exec, opts, task.SnapshotIDs, task.Prune); err != nil {
-      return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
-    }
-    return &Result{}, nil
-  }
-  if task.DeleteAll {
-    if err := restic.DeleteByTags(ctx, d.Exec, opts, task.Tags); err != nil {
-      return nil, &PipelineError{Code: "forget_failed", Message: "delete plan backups failed", Cause: err}
-    }
-  } else if task.Prune {
-    if err := restic.Forget(ctx, d.Exec, opts, task.Retention, task.Tags); err != nil {
-      return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
-    }
-  } else if err := restic.ForgetOnly(ctx, d.Exec, opts, task.Retention, task.Tags); err != nil {
-    return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
-  }
-  return &Result{}, nil
+	// ForgetTask 可由计划删除流程调用，按计划标签删除快照并按需 prune。
+	var task model.ForgetTask
+	if err := json.Unmarshal(params, &task); err != nil {
+		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal forget task", Cause: err}
+	}
+	opts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
+	if err != nil {
+		return nil, err
+	}
+	// SnapshotIDs 分支：手动/自动删除单个快照，按完整 snapshot ID 精确 forget。
+	// 互斥校验：SnapshotIDs 非空时不得同时携带 Tags、DeleteAll 或 retention 规则。
+	if len(task.SnapshotIDs) > 0 {
+		if len(task.Tags) > 0 || task.DeleteAll || task.Retention.KeepLast > 0 || task.Retention.KeepDaily > 0 || task.Retention.KeepWeekly > 0 || task.Retention.KeepMonthly > 0 {
+			return nil, &PipelineError{Code: "invalid_params", Message: "snapshot_ids cannot be combined with tags/delete_all/retention", Cause: nil}
+		}
+		if err := restic.DeleteSnapshots(ctx, d.Exec, opts, task.SnapshotIDs, task.Prune); err != nil {
+			return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
+		}
+		return &Result{}, nil
+	}
+	if task.DeleteAll {
+		if err := restic.DeleteByTags(ctx, d.Exec, opts, task.Tags); err != nil {
+			return nil, &PipelineError{Code: "forget_failed", Message: "delete plan backups failed", Cause: err}
+		}
+	} else if task.Prune {
+		if err := restic.Forget(ctx, d.Exec, opts, task.Retention, task.Tags); err != nil {
+			return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
+		}
+	} else if err := restic.ForgetOnly(ctx, d.Exec, opts, task.Retention, task.Tags); err != nil {
+		return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
+	}
+	return &Result{}, nil
 }
 
 // runSnapshots runs restic snapshots --json.
@@ -686,10 +754,7 @@ func runVerifyRemote(ctx context.Context, d Deps, tempDir string, params []byte,
 	if err != nil {
 		return nil, &PipelineError{Code: "storage_remote_unreachable", Message: "lsd failed", Cause: err}
 	}
-	resultJSON, _ := json.Marshal(map[string]any{
-		"remote_type": remoteType,
-		"entries":     len(entries),
-	})
+	resultJSON, _ := json.Marshal(map[string]any{"remote_type": remoteType, "entries": len(entries)})
 	return &Result{ResultJSON: resultJSON}, nil
 }
 
@@ -699,40 +764,34 @@ func runValidatePaths(ctx context.Context, d Deps, tempDir string, params []byte
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal validate paths task", Cause: err}
 	}
-	if err := validateAllowedPaths(task.Paths, d.SourceRoots, false); err != nil {
+	backupTask := model.BackupTask{Kind: model.KindFilesystem, Source: model.PlanSource{Paths: task.Paths, Excludes: task.Excludes}}
+	if err := mapBackupSource(&backupTask, d.SourcePathMappings); err != nil {
+		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path mapping failed", Cause: err}
+	}
+	if err := validateAllowedPaths(backupTask.Source.Paths, d.SourceRoots, false); err != nil {
 		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path is outside configured allowlist", Cause: err}
 	}
-	adapter, ok := backup.For("filesystem")
+	adapter, ok := backup.For(model.KindFilesystem)
 	if !ok {
 		return nil, &PipelineError{Code: "invalid_plan", Message: "filesystem adapter not found"}
 	}
-	spec := backup.PlanSpec{
-		Kind: "filesystem",
-		Source: model.PlanSource{
-			Paths:    task.Paths,
-			Excludes: task.Excludes,
-		},
-	}
-	if err := adapter.Validate(ctx, spec); err != nil {
+	if err := adapter.Validate(ctx, backup.PlanSpec{Kind: model.KindFilesystem, Source: backupTask.Source}); err != nil {
 		return nil, &PipelineError{Code: "path_validation_failed", Message: "path validation failed", Cause: err}
 	}
 	return &Result{}, nil
 }
 
+// ErrUnsupportedOperation is returned for ops without an adapter.
+var ErrUnsupportedOperation = errors.New("unsupported operation")
+
 // runProbeCapabilities returns the current tool info.
-func runProbeCapabilities(ctx context.Context, d Deps, tempDir string, params []byte, secrets backup.SecretBundle) (*Result, error) {
-	resultJSON, _ := json.Marshal(d.Tools)
+func runProbeCapabilities(_ context.Context, d Deps, _ string, _ []byte, _ backup.SecretBundle) (*Result, error) {
+	resultJSON, err := json.Marshal(d.Tools)
+	if err != nil {
+		return nil, &PipelineError{Code: "internal", Message: "marshal capabilities", Cause: err}
+	}
 	return &Result{ResultJSON: resultJSON}, nil
 }
-
-type unsupportedError struct{}
-
-func (unsupportedError) Error() string { return "pipeline: unsupported operation" }
-
-func unsupportedOpErr() error { return unsupportedError{} }
-
-// ErrUnsupportedOperation is returned for ops without an adapter.
-var ErrUnsupportedOperation = unsupportedOpErr()
 
 // newResticOpts writes the per-run secret files (restic password and, when
 // provided, the rclone config) into tempDir and returns ready-to-use options.

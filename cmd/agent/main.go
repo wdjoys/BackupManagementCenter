@@ -15,16 +15,20 @@ import (
 	"backupmanagementcenter/internal/agent/config"
 	"backupmanagementcenter/internal/agent/pipeline"
 	"backupmanagementcenter/internal/logging"
+	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/version"
 )
 
 // cfgAdapter adapts config.Agent to agent.ConfigProvider.
 type cfgAdapter struct{ c config.Agent }
 
-func (a cfgAdapter) GetServerGRPCURL() string        { return a.c.ServerGRPCURL }
-func (a cfgAdapter) GetServerTLS() bool              { return a.c.ServerTLS }
-func (a cfgAdapter) GetDevInsecure() bool            { return a.c.DevInsecure }
-func (a cfgAdapter) GetProbeInterval() time.Duration { return time.Duration(a.c.ProbeInterval) * time.Second }
+func (a cfgAdapter) GetServerGRPCURL() string { return a.c.ServerGRPCURL }
+func (a cfgAdapter) GetServerTLS() bool       { return a.c.ServerTLS }
+func (a cfgAdapter) GetDevInsecure() bool     { return a.c.DevInsecure }
+func (a cfgAdapter) GetProbeInterval() time.Duration {
+	return time.Duration(a.c.ProbeInterval) * time.Second
+}
+func (a cfgAdapter) GetSourcePathMappings() []model.PathMapping { return a.c.SourcePathMappings }
 func main() {
 
 	agentLogSink := logging.NewSink(os.Stderr, 4096)
@@ -36,18 +40,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("[FATAL] %v", err)
 	}
- 	log.Printf("[INFO] agent configuration server=%s tls=%t dev_insecure=%t state_dir=%s data_dir=%s restic_cache_dir=%s source_roots=%v restore_roots=%v probe_interval=%ds max_concurrency=%d",
-		cfg.ServerGRPCURL,
-		cfg.ServerTLS,
-		cfg.DevInsecure,
-		cfg.StateDir,
-		cfg.DataDir,
-		cfg.ResticCacheDir,
-		cfg.SourceRoots,
-		cfg.RestoreRoots,
-		cfg.ProbeInterval,
-		cfg.MaxConcurrency,
-	)
+	log.Printf("[INFO] agent configuration server=%s tls=%t dev_insecure=%t state_dir=%s data_dir=%s restic_cache_dir=%s source_roots=%v restore_roots=%v source_path_mappings=%v probe_interval=%ds max_concurrency=%d",
+		cfg.ServerGRPCURL, cfg.ServerTLS, cfg.DevInsecure, cfg.StateDir, cfg.DataDir, cfg.ResticCacheDir, cfg.SourceRoots, cfg.RestoreRoots, cfg.SourcePathMappings, cfg.ProbeInterval, cfg.MaxConcurrency)
 	im := agent.NewIdentityManager(cfg.StateDir)
 	ident, created, err := im.LoadOrCreate(cfg.EnrollToken)
 	if err != nil {
@@ -72,13 +66,14 @@ func main() {
 		log.Printf("[INFO] enrolled as agent %s", agentID)
 	}
 
- runner := agent.NewRunner(pipeline.Deps{
-		Exec:        agent.OSExecutor{},
-		SourceRoots: cfg.SourceRoots,
-		RestoreRoots: cfg.RestoreRoots,
+	runner := agent.NewRunner(pipeline.Deps{
+		Exec:                agent.OSExecutor{},
+		SourceRoots:         cfg.SourceRoots,
+		RestoreRoots:        cfg.RestoreRoots,
+		SourcePathMappings:  cfg.SourcePathMappings,
 		ScratchMinFreeBytes: cfg.ScratchMinFreeBytes,
-		MaxConcurrency: cfg.MaxConcurrency,
-		ResticCacheDir: cfg.ResticCacheDir,
+		MaxConcurrency:      cfg.MaxConcurrency,
+		ResticCacheDir:      cfg.ResticCacheDir,
 		Logf: func(level, format string, args ...any) {
 			log.Printf("[%s] "+format, append([]any{level}, args...)...)
 		},

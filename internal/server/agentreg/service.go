@@ -282,7 +282,6 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 		versionMinorMismatch,
 	)
 
-
 	// Start a goroutine to forward messages from sendCh to the stream
 	errCh := make(chan error, 1)
 	go s.sendLoop(streamCtx, stream, sendCh, errCh)
@@ -389,13 +388,13 @@ func (s *Service) handleHeartbeat(ctx context.Context, agentID string, hb *bmcv1
 func (s *Service) handleCapabilities(ctx context.Context, agentID string, report *bmcv1.CapabilitiesReport) error {
 	tools := make([]model.ToolInfo, 0, len(report.GetTools()))
 	for _, t := range report.GetTools() {
-		tools = append(tools, model.ToolInfo{
-			Name:    t.GetName(),
-			Path:    t.GetPath(),
-			Version: t.GetVersion(),
-		})
+		tools = append(tools, model.ToolInfo{Name: t.GetName(), Path: t.GetPath(), Version: t.GetVersion()})
 	}
-	return s.store.SaveAgentCapabilities(ctx, agentID, tools, time.Now().UTC())
+	mappings := make([]model.PathMapping, 0, len(report.GetSourcePathMappings()))
+	for _, m := range report.GetSourcePathMappings() {
+		mappings = append(mappings, model.PathMapping{HostPath: m.GetHostPath(), RuntimePath: m.GetRuntimePath(), ReadOnly: m.GetReadOnly()})
+	}
+	return s.store.SaveAgentCapabilities(ctx, agentID, tools, mappings, time.Now().UTC())
 }
 
 func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca *bmcv1.CommandAccepted) error {
@@ -559,7 +558,6 @@ func (s *Service) handleAgentLogBatch(ctx context.Context, agentID string, entri
 	}
 	return logStore.AppendAgentLogs(ctx, agentID, logs)
 }
-
 
 func (s *Service) handleRunResult(ctx context.Context, agentID string, result *bmcv1.RunResult) error {
 	runID := result.GetRunId()

@@ -3,6 +3,12 @@ export interface ApiError {
   message: string
 }
 
+export interface PathMapping {
+  host_path: string
+  runtime_path: string
+  read_only: boolean
+}
+
 export interface Agent {
   id: string
   name: string
@@ -15,6 +21,7 @@ export interface Agent {
   last_seen_at: string
   enrolled_at: string
   capabilities: ToolCapability[]
+  source_path_mappings: PathMapping[]
 }
 
 export interface ToolCapability {

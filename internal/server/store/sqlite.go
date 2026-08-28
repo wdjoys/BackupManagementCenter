@@ -395,8 +395,11 @@ func (s *sqliteStore) SetAgentStatus(ctx context.Context, agentID string, st mod
 	return nil
 }
 
-func (s *sqliteStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, at time.Time) error {
-	data, err := json.Marshal(tools)
+func (s *sqliteStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, mappings []model.PathMapping, at time.Time) error {
+	data, err := json.Marshal(struct {
+		Tools              []model.ToolInfo    `json:"tools"`
+		SourcePathMappings []model.PathMapping `json:"source_path_mappings"`
+	}{Tools: tools, SourcePathMappings: mappings})
 	if err != nil {
 		return fmt.Errorf("marshal capabilities: %w", err)
 	}
@@ -1684,27 +1687,40 @@ func scanAgent(row interface{ Scan(dest ...any) error }) (*model.Agent, error) {
 	}
 
 	var tools []model.ToolInfo
+	var mappings []model.PathMapping
 	if capsJSON != "" && capsJSON != "[]" {
-		_ = json.Unmarshal([]byte(capsJSON), &tools)
+		if strings.HasPrefix(strings.TrimSpace(capsJSON), "[") {
+			_ = json.Unmarshal([]byte(capsJSON), &tools)
+		} else {
+			var caps struct {
+				Tools              []model.ToolInfo    `json:"tools"`
+				SourcePathMappings []model.PathMapping `json:"source_path_mappings"`
+			}
+			_ = json.Unmarshal([]byte(capsJSON), &caps)
+			tools, mappings = caps.Tools, caps.SourcePathMappings
+		}
 	}
 	if tools == nil {
 		tools = []model.ToolInfo{}
 	}
+	if mappings == nil {
+		mappings = []model.PathMapping{}
+	}
 
 	return &model.Agent{
-		ID:               id,
-		Name:             name,
-		Hostname:         hostname,
-		OS:               os,
-		Arch:             arch,
-		Version:          version,
-		Status:           model.AgentStatus(status),
-		LastSeenAt:       parseTimePtr(lastSeenNull),
-		EnrolledAt:       parseTime(enrolledAt),
-		TokenHash:        tokenHash,
-		Capabilities:     tools,
-		CapabilitiesJSON: capsJSON,
-		Revoked:          revoked != 0,
+		ID:                 id,
+		Name:               name,
+		Hostname:           hostname,
+		OS:                 os,
+		Arch:               arch,
+		Version:            version,
+		Status:             model.AgentStatus(status),
+		LastSeenAt:         parseTimePtr(lastSeenNull),
+		TokenHash:          tokenHash,
+		Capabilities:       tools,
+		SourcePathMappings: mappings,
+		CapabilitiesJSON:   capsJSON,
+		Revoked:            revoked != 0,
 	}, nil
 }
 

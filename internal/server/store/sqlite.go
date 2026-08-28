@@ -2529,23 +2529,6 @@ func (s *sqliteStore) GetSnapshotCleanupState(ctx context.Context, repositoryID 
 	}, nil
 }
 
-	// compare-and-set：首次无状态行时插入；仅当无活跃扫描或 run_id 相同（重启恢复）时更新。
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO snapshot_cleanup_state (repository_id, scan_run_id, last_scan_started_at, updated_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(repository_id) DO UPDATE SET
-		   scan_run_id = excluded.scan_run_id,
-		   last_scan_started_at = excluded.last_scan_started_at,
-		   updated_at = excluded.updated_at
-		 WHERE snapshot_cleanup_state.scan_run_id IS NULL OR snapshot_cleanup_state.scan_run_id = excluded.scan_run_id`,
-		repositoryID, runID, startedStr, startedStr); err != nil {
-		return fmt.Errorf("start cleanup scan update: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("start cleanup scan commit: %w", err)
-	}
-	return nil
-}
 
 func (s *sqliteStore) FinishSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, snapshots []model.Snapshot, completedAt time.Time) error {
 	s.mu.Lock()

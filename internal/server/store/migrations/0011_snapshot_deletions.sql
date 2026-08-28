@@ -27,7 +27,7 @@ CREATE INDEX idx_snapshot_deletions_due ON snapshot_deletions(state, next_attemp
 
 CREATE TABLE snapshot_cleanup_state (
     repository_id           TEXT PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
-    scan_run_id             TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    scan_run_id             TEXT,
     last_scan_started_at    TEXT,
     last_scan_completed_at  TEXT,
     updated_at              TEXT NOT NULL

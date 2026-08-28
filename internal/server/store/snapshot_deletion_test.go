@@ -461,7 +461,7 @@ func TestSnapshotDeletionCleanupScanWithAuthorityMatch(t *testing.T) {
 		ID:         "run-r1",
 		AgentID:    repo.AgentID,
 		Operation:  model.OpBackup,
-		Status:     model.RunSucceeded,
+		Status:     model.RunQueued,
 		QueuedAt:   now.Add(-time.Hour),
 		ProgressJSON: "{}",
 		SnapshotID: "snap-matched",
@@ -470,8 +470,14 @@ func TestSnapshotDeletionCleanupScanWithAuthorityMatch(t *testing.T) {
 	if err := ts.CreateRun(ctx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	if _, err := ts.TransitionRun(ctx, "run-r1", model.RunQueued, model.RunSucceeded, nil); err != nil {
-		t.Fatalf("transition run: %v", err)
+	if err := ts.TransitionRun(ctx, "run-r1", model.RunQueued, model.RunDispatched, nil); err != nil {
+		t.Fatalf("transition run dispatched: %v", err)
+	}
+	if err := ts.TransitionRun(ctx, "run-r1", model.RunDispatched, model.RunRunning, nil); err != nil {
+		t.Fatalf("transition run running: %v", err)
+	}
+	if err := ts.TransitionRun(ctx, "run-r1", model.RunRunning, model.RunSucceeded, nil); err != nil {
+		t.Fatalf("transition run succeeded: %v", err)
 	}
 
 	snapshots := []model.Snapshot{
@@ -571,13 +577,11 @@ func TestSnapshotDeletionCleanupScanClearScanOnFailure(t *testing.T) {
 	ctx := context.Background()
 	store := ts.Store.(SnapshotDeletionStore)
 	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-
-	snapshots := []model.Snapshot{
-		{ID: "snap-orphan", Time: "2026-08-01T00:00:00Z", Tags: []string{"plan:p1", "kind:filesystem", "run:r1"}},
+	runID := model.NewUUIDv7()
+	if err := store.StartSnapshotCleanupScan(ctx, repo.ID, runID, now); err != nil {
+		t.Fatalf("start scan: %v", err)
 	}
-
-	store.StartSnapshotCleanupScan(ctx, repo.ID, model.NewUUIDv7(), now)
-	if err := store.ClearSnapshotCleanupScan(ctx, repo.ID, "", now.Add(time.Hour)); err != nil {
+	if err := store.ClearSnapshotCleanupScan(ctx, repo.ID, runID, now.Add(time.Hour)); err != nil {
 		t.Fatalf("clear scan: %v", err)
 	}
 
@@ -608,7 +612,6 @@ func TestSnapshotDeletionHistoryRunWithNullPlanID(t *testing.T) {
 		Operation:  model.OpBackup,
 		Status:     model.RunQueued,
 		QueuedAt:   now.Add(-time.Hour),
-		ProgressJSON: "{}",
 		SnapshotID: "snap-historical",
 		RepositoryID: repo.ID,
 		PlanID:     "", // 无 plan
@@ -616,8 +619,14 @@ func TestSnapshotDeletionHistoryRunWithNullPlanID(t *testing.T) {
 	if err := ts.CreateRun(ctx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	if _, err := ts.TransitionRun(ctx, "run-historical", model.RunQueued, model.RunSucceeded, nil); err != nil {
-		t.Fatalf("transition run: %v", err)
+	if err := ts.TransitionRun(ctx, "run-historical", model.RunQueued, model.RunDispatched, nil); err != nil {
+		t.Fatalf("transition run dispatched: %v", err)
+	}
+	if err := ts.TransitionRun(ctx, "run-historical", model.RunDispatched, model.RunRunning, nil); err != nil {
+		t.Fatalf("transition run running: %v", err)
+	}
+	if err := ts.TransitionRun(ctx, "run-historical", model.RunRunning, model.RunSucceeded, nil); err != nil {
+		t.Fatalf("transition run succeeded: %v", err)
 	}
 
 	snapshots := []model.Snapshot{
@@ -642,6 +651,7 @@ func TestSnapshotDeletionHistoryRunWithNullPlanID(t *testing.T) {
 // is idempotent when the DB is reopened.
 func TestSnapshotDeletionMigrateRepeatability(t *testing.T) {
 	ts := newTestStore(t)
+	defer ts.Close(t)
 	ctx := context.Background()
 	s := ts.Store
 

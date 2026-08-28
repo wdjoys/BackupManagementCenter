@@ -891,7 +891,7 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 	if err := randRead(pwBytes); err != nil {
 		return nil, err
 	}
-	repoPw := hexEncode(pwBytes)
+	repoPw := hex.EncodeToString(pwBytes)
 
 	repoPath := buildRepoPath(target, o.InstanceID, agentID)
 

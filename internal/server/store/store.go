@@ -160,6 +160,8 @@ type SnapshotDeletionStore interface {
 	QueueManualSnapshotDeletion(ctx context.Context, repositoryID, agentID, snapshotID, actorID string, now time.Time) (*model.SnapshotDeletion, bool, error)
 	// HiddenSnapshotIDs 返回当前 repository 中应被前端隐藏的 snapshotID 集合。
 	HiddenSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error)
+	// ListDueSnapshotDeletions 返回到期的 pending 删除意图。
+	ListDueSnapshotDeletions(ctx context.Context, now time.Time, limit int) ([]model.SnapshotDeletion, error)
 	// ListRunningSnapshotDeletions 返回 state='running' 的删除意图，
 	// 供 TickSnapshotCleanup 对照关联 run 终态做完成或 fresh scan 确认。
 	ListRunningSnapshotDeletions(ctx context.Context) ([]model.SnapshotDeletion, error)

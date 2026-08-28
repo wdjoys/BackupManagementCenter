@@ -2544,17 +2544,26 @@ func (s *sqliteStore) FinishSnapshotCleanupScan(ctx context.Context, repositoryI
 	}
 	defer tx.Rollback()
 
-	// 校验 run_id 仍为当前活跃扫描，防止旧 run 覆盖新 scan。
+	// 空 runID 仅用于存储层直接 reconciliation；后台路径始终传入真实 run ID。
 	var currentRunID string
 	if err := tx.QueryRowContext(ctx,
 		"SELECT scan_run_id FROM snapshot_cleanup_state WHERE repository_id = ?", repositoryID,
 	).Scan(&currentRunID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
+			if runID != "" {
+				return ErrNotFound
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO snapshot_cleanup_state (repository_id, updated_at) VALUES (?, ?)`,
+				repositoryID, completedAt.UTC().Format(time.RFC3339)); err != nil {
+				return fmt.Errorf("create cleanup scan state: %w", err)
+			}
+			currentRunID = ""
+		} else {
+			return fmt.Errorf("finish cleanup scan read run: %w", err)
 		}
-		return fmt.Errorf("finish cleanup scan read run: %w", err)
 	}
-	if currentRunID != runID {
+	if runID != "" && currentRunID != runID {
 		return ErrInvalidTransition
 	}
 
@@ -2626,6 +2635,9 @@ func (s *sqliteStore) StartSnapshotCleanupScan(ctx context.Context, repositoryID
 	}
 	defer tx.Rollback()
 
+	if runID == "" {
+		return ErrInvalidTransition
+	}
 	startedStr := startedAt.UTC().Format(time.RFC3339)
 	// compare-and-set：首次无状态行时插入；仅当无活跃扫描或 run_id 相同（重启恢复）时更新。
 	if _, err := tx.ExecContext(ctx,
@@ -2738,7 +2750,11 @@ func upsertOrphanCandidateTx(ctx context.Context, tx *sql.Tx, repositoryID, snap
 		repositoryID, snapshotID,
 	).Scan(&id, &source, &state, &firstSeen, &seenCount)
 	if errors.Is(err, sql.ErrNoRows) {
-		// 首次发现：写 candidate、seen_count=1。
+		// 孤儿记录仍绑定仓库所属 Agent，避免 snapshot_deletions.agent_id 的外键为空。
+		var agentID string
+		if err := tx.QueryRowContext(ctx, "SELECT agent_id FROM repositories WHERE id = ?", repositoryID).Scan(&agentID); err != nil {
+			return fmt.Errorf("find repository agent: %w", err)
+		}
 		newID := model.NewUUIDv7()
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO snapshot_deletions
@@ -2746,9 +2762,9 @@ func upsertOrphanCandidateTx(ctx context.Context, tx *sql.Tx, repositoryID, snap
 			    first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
 			    run_id, lease_expires_at, error_code, error_message, requested_by,
 			    created_at, updated_at, completed_at)
-			 VALUES (?, ?, '', ?, 'orphan', 'candidate', ?, ?, 1, NULL, 0,
+			 VALUES (?, ?, ?, ?, 'orphan', 'candidate', ?, ?, 1, NULL, 0,
 			         NULL, NULL, NULL, NULL, '', ?, ?, NULL)`,
-			newID, repositoryID, snapshotID, nowStr, nowStr, nowStr, nowStr); err != nil {
+			newID, repositoryID, agentID, snapshotID, nowStr, nowStr, nowStr, nowStr); err != nil {
 			return fmt.Errorf("insert orphan candidate: %w", err)
 		}
 		return nil

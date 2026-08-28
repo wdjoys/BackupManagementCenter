@@ -18,21 +18,21 @@ import (
 const planKinds = "filesystem|postgresql|mysql|mongodb|sqlite"
 
 type planView struct {
-  ID             string              `json:"id"`
-  Name           string              `json:"name"`
-  AgentID        string              `json:"agent_id"`
-  Kind           string              `json:"kind"`
-  Schedule       string              `json:"schedule"`
-  Timezone       string              `json:"timezone"`
-  Enabled        bool                `json:"enabled"`
-  Source         json.RawMessage     `json:"source"`
-  Credentials    planCredentialsView `json:"credentials"`
-  RepositoryID   string              `json:"repository_id"`
-  Retention      model.Retention     `json:"retention"`
-  TimeoutSeconds int                 `json:"timeout_seconds"`
-  LastRunAt      *string             `json:"last_run_at"`
-  CreatedAt      string              `json:"created_at"`
-  UpdatedAt      string              `json:"updated_at"`
+	ID             string              `json:"id"`
+	Name           string              `json:"name"`
+	AgentID        string              `json:"agent_id"`
+	Kind           string              `json:"kind"`
+	Schedule       string              `json:"schedule"`
+	Timezone       string              `json:"timezone"`
+	Enabled        bool                `json:"enabled"`
+	Source         json.RawMessage     `json:"source"`
+	Credentials    planCredentialsView `json:"credentials"`
+	RepositoryID   string              `json:"repository_id"`
+	Retention      model.Retention     `json:"retention"`
+	TimeoutSeconds int                 `json:"timeout_seconds"`
+	LastRunAt      *string             `json:"last_run_at"`
+	CreatedAt      string              `json:"created_at"`
+	UpdatedAt      string              `json:"updated_at"`
 }
 
 type planCredentialsView struct {
@@ -55,26 +55,26 @@ func planToView(p *model.Plan, passwordSet bool) planView {
 }
 
 func (s *Server) planView(ctx context.Context, p *model.Plan) planView {
-  passwordSet := false
-  if ps, ok := s.ST.(interface {
-    HasPlanDBPassword(context.Context, string) bool
-  }); ok {
-    passwordSet = ps.HasPlanDBPassword(ctx, p.ID)
-  }
-  view := planToView(p, passwordSet)
-  runs, err := s.ST.ListRuns(ctx, store.RunFilter{PlanID: p.ID, Operation: model.OpBackup, Limit: 1})
-  if err == nil && len(runs) > 0 {
-    run := runs[0]
-    at := run.FinishedAt
-    if at == nil {
-      at = run.StartedAt
-    }
-    if at != nil {
-      formatted := at.Format(timeRFC3339)
-      view.LastRunAt = &formatted
-    }
-  }
-  return view
+	passwordSet := false
+	if ps, ok := s.ST.(interface {
+		HasPlanDBPassword(context.Context, string) bool
+	}); ok {
+		passwordSet = ps.HasPlanDBPassword(ctx, p.ID)
+	}
+	view := planToView(p, passwordSet)
+	runs, err := s.ST.ListRuns(ctx, store.RunFilter{PlanID: p.ID, Operation: model.OpBackup, Limit: 1})
+	if err == nil && len(runs) > 0 {
+		run := runs[0]
+		at := run.FinishedAt
+		if at == nil {
+			at = run.StartedAt
+		}
+		if at != nil {
+			formatted := at.Format(timeRFC3339)
+			view.LastRunAt = &formatted
+		}
+	}
+	return view
 }
 
 type planSourceWire struct {
@@ -378,9 +378,31 @@ func (s *Server) handleUpdatePlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.planView(r.Context(), existing))
 }
 
-// DELETE /plans/{id} — rejected while runs exist.
+// DELETE /plans/{id} — 有活跃运行或远端快照时拒绝删除。
 func (s *Server) handleDeletePlan(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
+	plan, err := s.ST.GetPlan(r.Context(), id)
+	if err != nil {
+		if !mapStoreErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		}
+		return
+	}
+
+	snapshots, _, _, err := s.Jobs.SnapshotsWithOptions(r.Context(), plan.RepositoryID, plan.AgentID, true)
+	if err != nil {
+		s.jobsErr(w, err)
+		return
+	}
+	for _, snapshot := range snapshots {
+		for _, tag := range snapshot.Tags {
+			if tag == "plan:"+id {
+				writeErr(w, http.StatusConflict, "plan_has_snapshots", "plan still has snapshots")
+				return
+			}
+		}
+	}
+
 	if err := s.ST.DeletePlan(r.Context(), id); err != nil {
 		if !mapStoreErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -393,15 +415,15 @@ func (s *Server) handleDeletePlan(w http.ResponseWriter, r *http.Request) {
 
 // POST /plans/{id}/backups/delete — 删除计划标签下的全部历史备份。
 func (s *Server) handleDeletePlanBackups(w http.ResponseWriter, r *http.Request) {
-  id := pathParam(r, "id")
-  if err := s.Jobs.DeletePlanBackups(r.Context(), id); err != nil {
-    if !mapStoreErr(w, err) {
-      s.jobsErr(w, err)
-    }
-    return
-  }
-  s.Jobs.Audit(r.Context(), "admin", actorID(r), "plan.backups.delete", "plan", id, nil)
-  w.WriteHeader(http.StatusNoContent)
+	id := pathParam(r, "id")
+	if err := s.Jobs.DeletePlanBackups(r.Context(), id); err != nil {
+		if !mapStoreErr(w, err) {
+			s.jobsErr(w, err)
+		}
+		return
+	}
+	s.Jobs.Audit(r.Context(), "admin", actorID(r), "plan.backups.delete", "plan", id, nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // POST /plans/validate {kind, source, agent_id}

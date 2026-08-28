@@ -311,7 +311,7 @@ async function deletePlan(row: Plan): Promise<void> {
     await loadPlans()
   } catch (err: unknown) {
     const e = err as { code?: string; message?: string }
-    if (e.code === 'conflict') {
+    if (e.code === 'plan_has_snapshots' || e.code === 'conflict') {
       ElMessage.warning(t('plans.deleteDialog.snapshotsRequired'))
       return
     }

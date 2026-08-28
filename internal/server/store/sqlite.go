@@ -867,8 +867,14 @@ func (s *sqliteStore) DeletePlan(ctx context.Context, id string) error {
 	}
 
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM runs
-     WHERE plan_id = ? AND snapshot_id IS NOT NULL AND snapshot_id <> ''`,
+		`SELECT COUNT(*) FROM runs r
+     WHERE r.plan_id = ? AND r.snapshot_id IS NOT NULL AND r.snapshot_id <> ''
+       AND NOT EXISTS (
+         SELECT 1 FROM snapshot_deletions d
+         WHERE d.repository_id = r.repository_id
+           AND d.snapshot_id = r.snapshot_id
+           AND d.state = 'succeeded'
+       )`,
 		id,
 	).Scan(&count); err != nil {
 		return fmt.Errorf("delete plan check snapshots: %w", err)

@@ -251,7 +251,7 @@ DEPLOY_SSH_KEY    该用户的私钥
 DEPLOY_PATH       Compose 文件所在绝对路径
 ```
 
-工作流只在 `main` 推送、两类镜像均构建成功且 `DEPLOY_ENABLED=true` 时执行 SSH 更新：`docker compose pull`，随后 `docker compose up -d --no-build --remove-orphans`，最后检查 `/health/ready`。不要把私钥或 Docker Hub token 写入仓库文件；Actions Secrets 会被 GitHub 脱敏。
+工作流只在 `main` 或 `develop` 推送涉及对应镜像的文件时构建并推送该镜像；`develop` 分支上，只有至少一个镜像更新成功且 `DEPLOY_ENABLED=true` 时才执行 SSH 更新：`docker compose pull`，随后 `docker compose up -d --no-build --remove-orphans`，最后检查 `/health/ready`。未涉及镜像的提交不会触发构建、推送或部署。不要把私钥或 Docker Hub token 写入仓库文件；Actions Secrets 会被 GitHub 脱敏。
 
 也可以在仓库根目录执行 Server 快捷命令：
 

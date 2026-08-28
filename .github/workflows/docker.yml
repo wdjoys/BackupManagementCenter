@@ -1,9 +1,20 @@
 name: Build and Push Docker Images
 
-# 推送 main / develop 分支时构建 server 与 agent 镜像并推送至 Docker Hub
+# 仅在镜像相关文件变动时构建并推送对应镜像。
 on:
   push:
     branches: [main, develop]
+    paths:
+      - '.dockerignore'
+      - 'Dockerfile.server'
+      - 'Dockerfile.agent'
+      - 'go.mod'
+      - 'go.sum'
+      - 'cmd/server/**'
+      - 'cmd/agent/**'
+      - 'internal/**'
+      - 'api/**'
+      - 'web/**'
 
 permissions:
   contents: read
@@ -17,9 +28,67 @@ env:
   REGISTRY_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/backup-management-center
 
 jobs:
+  changes:
+    name: Detect image changes
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.filter.outputs.server }}
+      agent: ${{ steps.filter.outputs.agent }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Detect changed image paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            server:
+              - '.dockerignore'
+              - 'Dockerfile.server'
+              - 'go.mod'
+              - 'go.sum'
+              - 'cmd/server/**'
+              - 'internal/server/**'
+              - 'internal/logging/**'
+              - 'internal/model/**'
+              - 'internal/secrets/**'
+              - 'internal/version/**'
+              - 'api/**'
+              - 'web/**'
+            agent:
+              - '.dockerignore'
+              - 'Dockerfile.agent'
+              - 'go.mod'
+              - 'go.sum'
+              - 'cmd/agent/**'
+              - 'internal/agent/**'
+              - 'internal/logging/**'
+              - 'internal/model/**'
+              - 'internal/version/**'
+              - 'api/**'
+      - name: Build changed image matrix
+        id: matrix
+        env:
+          SERVER_CHANGED: ${{ steps.filter.outputs.server }}
+          AGENT_CHANGED: ${{ steps.filter.outputs.agent }}
+        run: |
+          images='[]'
+          if [ "$SERVER_CHANGED" = 'true' ]; then
+            images=$(jq -c '. + [{"image":"server","dockerfile":"Dockerfile.server"}]' <<< "$images")
+          fi
+          if [ "$AGENT_CHANGED" = 'true' ]; then
+            images=$(jq -c '. + [{"image":"agent","dockerfile":"Dockerfile.agent"}]' <<< "$images")
+          fi
+          echo "matrix=$(jq -cn --argjson include "$images" '{include: $include}')" >> "$GITHUB_OUTPUT"
+
   test:
     name: Go, race and frontend checks
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.server == 'true' || needs.changes.outputs.agent == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -33,31 +102,29 @@ jobs:
       - name: Go race tests
         run: go test -race ./...
       - name: Set up pnpm
+        if: needs.changes.outputs.server == 'true'
         uses: pnpm/action-setup@v4.4.0
         with:
           version: 10
       - name: Set up Node
+        if: needs.changes.outputs.server == 'true'
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - name: Frontend typecheck and production build
+        if: needs.changes.outputs.server == 'true'
         working-directory: web
         run: pnpm --ignore-workspace install --frozen-lockfile && pnpm --ignore-workspace run build
 
   build:
     name: Build and push ${{ matrix.image }}
     runs-on: ubuntu-latest
-    needs: test
+    needs: [changes, test]
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - image: server
-            dockerfile: Dockerfile.server
-          - image: agent
-            dockerfile: Dockerfile.agent
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -87,7 +154,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.${{ matrix.image }}
+          file: ./${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -98,11 +165,15 @@ jobs:
   deploy:
     name: Update develop Compose host
     runs-on: ubuntu-latest
-    needs: build
-    # develop 推送且配置 Actions Variable DEPLOY_ENABLED=true 后启用。
-    if: github.ref == 'refs/heads/develop' && vars.DEPLOY_ENABLED == 'true'
+    needs: [changes, test, build]
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/develop' &&
+      vars.DEPLOY_ENABLED == 'true' &&
+      (needs.build.result == 'success') &&
+      (needs.changes.outputs.server == 'true' || needs.changes.outputs.agent == 'true')
     steps:
-      - name: Update Server Compose service
+      - name: Update Compose services
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.DEPLOY_HOST }}

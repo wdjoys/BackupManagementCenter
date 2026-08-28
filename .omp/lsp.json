@@ -1,0 +1,64 @@
+{
+  "servers": {
+    "gopls": {
+      "command": "gopls",
+      "fileTypes": [
+        ".go"
+      ],
+      "rootMarkers": [
+        "go.mod"
+      ],
+      "settings": {
+        "gopls": {
+          "gofumpt": true,
+          "staticcheck": true,
+          "usePlaceholders": true
+        }
+      }
+    },
+    "typescript-language-server": {
+      "rootMarkers": [
+        "pnpm-workspace.yaml"
+      ],
+      "initOptions": {
+        "tsserver": {
+          "path": "web/node_modules/typescript/lib"
+        }
+      }
+    },
+    "vue-language-server": {
+      "rootMarkers": [
+        "pnpm-workspace.yaml"
+      ]
+    },
+    "dockerls": {
+      "command": "docker-langserver",
+      "args": [
+        "--stdio"
+      ],
+      "fileTypes": [
+        "Dockerfile",
+        "Dockerfile.server",
+        "Dockerfile.agent"
+      ],
+      "rootMarkers": [
+        "Dockerfile.server",
+        "Dockerfile.agent"
+      ]
+    },
+    "yamlls": {
+      "command": "yaml-language-server",
+      "args": [
+        "--stdio"
+      ],
+      "fileTypes": [
+        ".yaml",
+        ".yml"
+      ],
+      "rootMarkers": [
+        "pnpm-workspace.yaml"
+      ]
+    }
+  },
+  "idleTimeoutMs": 600000
+}

@@ -186,3 +186,11 @@ BMC_SERVER_TLS=0 BMC_ENROLLMENT_TOKEN=<token> make dev-agent
 - 现有 Go 测试集中在：`internal/server/store/sqlite_test.go`（迁移和 CRUD）、`internal/server/jobs/jobs_test.go`（运行/命令/恢复）、`internal/server/scheduler/scheduler_test.go`（cron、超时和 weekly check）、`internal/server/auth/auth_test.go`（密码、CSRF、错误响应）、`internal/agent/*_test.go`（runner 幂等、执行、身份和工具探测）。测试使用标准库 `testing`，并大量使用临时目录和 fake 依赖。
 - 没有发现前端测试脚本、覆盖率配置或仓库级 CI workflow；改动 Vue 时至少运行 `cd web && pnpm run build`，改动 Go 业务或协议时运行 `make test`，改动完整构建链时再运行 `make build`。
 - 运行时 smoke check 可使用 `/health/live` 和 `/health/ready`；`/health/ready` 反映 Server 初始化完成状态。部署改动还应确认 Server 先升级、`/health/ready` 正常后再滚动升级 Agent。
+
+## 完成功能后的自动交付规则
+
+- 功能实现并通过适用的验证后，必须自动创建 Git commit 并推送到当前远端分支。
+- commit message 必须遵循 Conventional Commit，描述使用简体中文。
+- 推送完成后，必须拉取最新 GitHub Actions 执行结果。
+- 若 Action 执行失败，必须根据失败日志继续修复；修复后重新验证、提交、推送，并再次拉取最新 Action 结果。
+- 只有在最新 Action 执行成功，或明确记录外部基础设施导致的阻塞原因后，功能交付流程才算完成。

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -221,6 +222,67 @@ func (s *Server) handleRepoSnapshots(w http.ResponseWriter, r *http.Request) {
 	}
 	writeSnapshotCacheHeaders(w, cacheInfo)
 	writeJSON(w, http.StatusOK, snaps)
+}
+
+// DELETE /repositories/{id}/snapshots/{snapshotID} 请求手动删除单个快照。
+// HTTP 层不等待 Agent，也不直接调用 restic；后台由 scheduler 按仓库 FIFO
+// 处理真正的 forget + prune。响应 202 后立即从列表隐藏。
+func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	repoID := pathParam(r, "id")
+	snapshotID := pathParam(r, "snapshotID")
+
+	repo, err := s.ST.GetRepository(r.Context(), repoID)
+	if err != nil {
+		mapStoreErr(w, err)
+		return
+	}
+
+	// 要求当前 repository 存在有效的快照列表缓存，并确认该 snapshotID 在缓存中；
+	// 避免对任意 ID 发起破坏性命令。
+	cs, hasCache := s.ST.(store.SnapshotCacheStore)
+	if !hasCache {
+		writeErr(w, http.StatusConflict, "snapshot_list_refresh_required",
+			"snapshot list cache unavailable; refresh the list first")
+		return
+	}
+	cached, err := cs.GetSnapshotListCache(r.Context(), repoID)
+	if err != nil {
+		writeErr(w, http.StatusConflict, "snapshot_list_refresh_required",
+			"snapshot list cache is missing or stale; refresh the list first")
+		return
+	}
+	var snaps []model.Snapshot
+	if json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps) != nil {
+		writeErr(w, http.StatusConflict, "snapshot_list_refresh_required",
+			"snapshot list cache is corrupt; refresh the list first")
+		return
+	}
+	if store.SnapshotFingerprint(snaps) != cached.Fingerprint {
+		writeErr(w, http.StatusConflict, "snapshot_list_refresh_required",
+			"snapshot list cache fingerprint mismatch; refresh the list first")
+		return
+	}
+	found := false
+	for _, snap := range snaps {
+		if snap.ID == snapshotID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, "not_found", "snapshot not found in repository")
+		return
+	}
+
+	del, _, err := s.Jobs.QueueSnapshotDeletion(r.Context(), actorID(r), repo.ID, snapshotID)
+	if err != nil {
+		s.jobsErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"deletion_id": del.ID,
+		"status":      string(del.State),
+	})
 }
 
 // GET /snapshots/{snapshotID}/tree?repo=&path=&refresh=1

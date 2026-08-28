@@ -555,6 +555,17 @@ func runForget(ctx context.Context, d Deps, tempDir string, params []byte, secre
   if err != nil {
     return nil, err
   }
+  // SnapshotIDs 分支：手动/自动删除单个快照，按完整 snapshot ID 精确 forget。
+  // 互斥校验：SnapshotIDs 非空时不得同时携带 Tags、DeleteAll 或 retention 规则。
+  if len(task.SnapshotIDs) > 0 {
+    if len(task.Tags) > 0 || task.DeleteAll || task.Retention.KeepLast > 0 || task.Retention.KeepDaily > 0 || task.Retention.KeepWeekly > 0 || task.Retention.KeepMonthly > 0 {
+      return nil, &PipelineError{Code: "invalid_params", Message: "snapshot_ids cannot be combined with tags/delete_all/retention", Cause: nil}
+    }
+    if err := restic.DeleteSnapshots(ctx, d.Exec, opts, task.SnapshotIDs, task.Prune); err != nil {
+      return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
+    }
+    return &Result{}, nil
+  }
   if task.DeleteAll {
     if err := restic.DeleteByTags(ctx, d.Exec, opts, task.Tags); err != nil {
       return nil, &PipelineError{Code: "forget_failed", Message: "delete plan backups failed", Cause: err}

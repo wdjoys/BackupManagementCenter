@@ -2184,8 +2184,650 @@ func invalidateTargetCaches(ctx context.Context, tx *sql.Tx, targetID string) er
 	return nil
 }
 
-func invalidatesSnapshotCache(operation string) bool {
-	return operation == model.OpBackup || operation == model.OpForget
+// ---------------------------------------------------------------------------
+// 快照删除意图与孤儿扫描
+// ---------------------------------------------------------------------------
+
+func scanSnapshotDeletion(row interface{ Scan(dest ...any) error }) (*model.SnapshotDeletion, error) {
+	var (
+		id, repositoryID, agentID, snapshotID, source, state string
+		firstSeenAt, lastSeenAt, createdAt, updatedAt        string
+		nextAttemptAt, leaseExpiresAt, completedAt           sql.NullString
+		runID, errorCode, errorMessage, requestedBy          sql.NullString
+		seenCount, attempt                                   int
+	)
+	if err := row.Scan(&id, &repositoryID, &agentID, &snapshotID, &source, &state,
+		&firstSeenAt, &lastSeenAt, &seenCount, &nextAttemptAt, &attempt,
+		&runID, &leaseExpiresAt, &errorCode, &errorMessage, &requestedBy,
+		&createdAt, &updatedAt, &completedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("scan snapshot deletion: %w", err)
+	}
+	return &model.SnapshotDeletion{
+		ID:             id,
+		RepositoryID:   repositoryID,
+		AgentID:        agentID,
+		SnapshotID:     snapshotID,
+		Source:         model.SnapshotDeletionSource(source),
+		State:          model.SnapshotDeletionState(state),
+		FirstSeenAt:    parseTime(firstSeenAt),
+		LastSeenAt:     parseTime(lastSeenAt),
+		SeenCount:      seenCount,
+		NextAttemptAt:  parseTimePtr(nextAttemptAt),
+		Attempt:        attempt,
+		RunID:          runID.String,
+		LeaseExpiresAt: parseTimePtr(leaseExpiresAt),
+		ErrorCode:      errorCode.String,
+		ErrorMessage:   errorMessage.String,
+		RequestedBy:    requestedBy.String,
+		CreatedAt:      parseTime(createdAt),
+		UpdatedAt:      parseTime(updatedAt),
+		CompletedAt:    parseTimePtr(completedAt),
+	}, nil
+}
+
+func (s *sqliteStore) QueueManualSnapshotDeletion(ctx context.Context, repositoryID, agentID, snapshotID, actorID string, now time.Time) (*model.SnapshotDeletion, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("queue manual deletion begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 读取既有意图。
+	var existing *model.SnapshotDeletion
+	row := tx.QueryRowContext(ctx,
+		`SELECT id, repository_id, agent_id, snapshot_id, source, state,
+		        first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+		        run_id, lease_expires_at, error_code, error_message, requested_by,
+		        created_at, updated_at, completed_at
+		 FROM snapshot_deletions WHERE repository_id = ? AND snapshot_id = ?`,
+		repositoryID, snapshotID,
+	)
+	existing, err = scanSnapshotDeletion(row)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, false, fmt.Errorf("queue manual deletion read: %w", err)
+	}
+
+	nowStr := now.UTC().Format(time.RFC3339)
+
+	// 已进入 pending|running|succeeded 的意图直接返回原记录，不重复创建。
+	if existing != nil {
+		switch existing.State {
+		case model.SnapshotDeletionPending, model.SnapshotDeletionRunning, model.SnapshotDeletionSucceeded:
+			return existing, false, nil
+		}
+		// candidate 原子升级为 manual/pending。
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE snapshot_deletions
+			 SET source='manual', state='pending', agent_id=?, requested_by=?,
+			     next_attempt_at=NULL, error_code=NULL, error_message=NULL,
+			     updated_at=?
+			 WHERE id=?`,
+			agentID, actorID, nowStr, existing.ID); err != nil {
+			return nil, false, fmt.Errorf("upgrade manual deletion: %w", err)
+		}
+		existing.Source = model.SnapshotDeletionManual
+		existing.State = model.SnapshotDeletionPending
+		existing.AgentID = agentID
+		existing.RequestedBy = actorID
+		existing.NextAttemptAt = nil
+		existing.ErrorCode = ""
+		existing.ErrorMessage = ""
+		existing.UpdatedAt = now.UTC()
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("upgrade manual deletion commit: %w", err)
+		}
+		return existing, true, nil
+	}
+
+	// 新建 manual/pending 意图。
+	id := model.NewUUIDv7()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO snapshot_deletions
+		   (id, repository_id, agent_id, snapshot_id, source, state,
+		    first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+		    run_id, lease_expires_at, error_code, error_message, requested_by,
+		    created_at, updated_at, completed_at)
+		 VALUES (?, ?, ?, ?, 'manual', 'pending', ?, ?, 1, NULL, 0,
+		         NULL, NULL, NULL, NULL, ?, ?, ?, NULL)`,
+		id, repositoryID, agentID, snapshotID, nowStr, nowStr, actorID, nowStr, nowStr); err != nil {
+		return nil, false, fmt.Errorf("insert manual deletion: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("insert manual deletion commit: %w", err)
+	}
+	return &model.SnapshotDeletion{
+		ID:           id,
+		RepositoryID: repositoryID,
+		AgentID:      agentID,
+		SnapshotID:   snapshotID,
+		Source:       model.SnapshotDeletionManual,
+		State:        model.SnapshotDeletionPending,
+		FirstSeenAt:  now.UTC(),
+		LastSeenAt:   now.UTC(),
+		SeenCount:    1,
+		RequestedBy:  actorID,
+		CreatedAt:    now.UTC(),
+		UpdatedAt:    now.UTC(),
+	}, true, nil
+}
+
+func (s *sqliteStore) HiddenSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT snapshot_id FROM snapshot_deletions
+		 WHERE repository_id = ?
+		   AND (
+		     (source = 'manual' AND state IN ('pending', 'running', 'succeeded'))
+		     OR (source = 'orphan' AND state IN ('pending', 'running', 'succeeded'))
+		   )`,
+		repositoryID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("hidden snapshot ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan hidden snapshot id: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) ListRunningSnapshotDeletions(ctx context.Context) ([]model.SnapshotDeletion, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, repository_id, agent_id, snapshot_id, source, state,
+		        first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+		        run_id, lease_expires_at, error_code, error_message, requested_by,
+		        created_at, updated_at, completed_at
+		 FROM snapshot_deletions
+		 WHERE state = 'running'
+		 ORDER BY updated_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list running snapshot deletions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []model.SnapshotDeletion
+	for rows.Next() {
+		d, err := scanSnapshotDeletion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) ListDueSnapshotDeletions(ctx context.Context, now time.Time, limit int) ([]model.SnapshotDeletion, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	nowStr := now.UTC().Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, repository_id, agent_id, snapshot_id, source, state,
+		        first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+		        run_id, lease_expires_at, error_code, error_message, requested_by,
+		        created_at, updated_at, completed_at
+		 FROM snapshot_deletions
+		 WHERE state = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+		 ORDER BY next_attempt_at ASC NULLS FIRST, updated_at ASC
+		 LIMIT ?`,
+		nowStr, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list due snapshot deletions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []model.SnapshotDeletion
+	for rows.Next() {
+		d, err := scanSnapshotDeletion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) ClaimSnapshotDeletionRun(ctx context.Context, deletionID string, run *model.Run, leaseUntil time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("claim deletion run begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 读取意图，确认仍为 pending。
+	var state string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT state FROM snapshot_deletions WHERE id = ?", deletionID,
+	).Scan(&state); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("claim deletion read state: %w", err)
+	}
+	if state != string(model.SnapshotDeletionPending) {
+		return ErrInvalidTransition
+	}
+
+	// 插入 queued run。
+	planID := nullString(run.PlanID)
+	repoID := nullString(run.RepositoryID)
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO runs (id, plan_id, agent_id, operation, status,
+		   queued_at, started_at, finished_at, progress_json, snapshot_id,
+		   error_code, error_message, repository_id, scheduled_at, attempt, lease_expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.ID, planID, run.AgentID, run.Operation, run.Status,
+		run.QueuedAt.Format(time.RFC3339),
+		nullTime(run.StartedAt),
+		nullTime(run.FinishedAt),
+		run.ProgressJSON, run.SnapshotID,
+		run.ErrorCode, run.ErrorMessage,
+		repoID,
+		nullTime(run.ScheduledAt),
+		run.Attempt,
+		nullTime(run.LeaseExpiresAt),
+	); err != nil {
+		return fmt.Errorf("claim deletion insert run: %w", err)
+	}
+
+	// 意图置 running 并绑定 run_id/lease_expires_at。
+	leaseStr := leaseUntil.UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE snapshot_deletions
+		 SET state='running', run_id=?, lease_expires_at=?, attempt=attempt+1,
+		     error_code=NULL, error_message=NULL, updated_at=?
+		 WHERE id=?`,
+		run.ID, leaseStr, nowUTC().Format(time.RFC3339), deletionID); err != nil {
+		return fmt.Errorf("claim deletion set running: %w", err)
+	}
+
+	// 删除 run 创建即失效快照缓存（clearTrees）。
+	if run.RepositoryID != "" {
+		if err := invalidateSnapshotCacheTx(ctx, tx, run.RepositoryID, true); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("claim deletion run commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) CompleteSnapshotDeletion(ctx context.Context, deletionID string, now time.Time) error {
+	nowStr := now.UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE snapshot_deletions
+		 SET state='succeeded', completed_at=?, error_code=NULL, error_message=NULL,
+		     next_attempt_at=NULL, updated_at=?
+		 WHERE id=?`,
+		nowStr, nowStr, deletionID)
+	if err != nil {
+		return fmt.Errorf("complete snapshot deletion: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sqliteStore) RetrySnapshotDeletion(ctx context.Context, deletionID, errorCode, errorMessage string, nextAttemptAt time.Time) error {
+	nextStr := nextAttemptAt.UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE snapshot_deletions
+		 SET state='pending', run_id=NULL, lease_expires_at=NULL,
+		     error_code=?, error_message=?, next_attempt_at=?, updated_at=?
+		 WHERE id=?`,
+		errorCode, errorMessage, nextStr, nowUTC().Format(time.RFC3339), deletionID)
+	if err != nil {
+		return fmt.Errorf("retry snapshot deletion: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sqliteStore) GetSnapshotCleanupState(ctx context.Context, repositoryID string) (*model.SnapshotCleanupState, error) {
+	var (
+		scanRunID, lastStarted, lastCompleted sql.NullString
+		updated                                string
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT repository_id, scan_run_id, last_scan_started_at, last_scan_completed_at, updated_at
+		 FROM snapshot_cleanup_state WHERE repository_id = ?`, repositoryID,
+	).Scan(&repositoryID, &scanRunID, &lastStarted, &lastCompleted, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get snapshot cleanup state: %w", err)
+	}
+	return &model.SnapshotCleanupState{
+		RepositoryID:        repositoryID,
+		ScanRunID:           scanRunID.String,
+		LastScanStartedAt:   parseTimePtr(lastStarted),
+		LastScanCompletedAt: parseTimePtr(lastCompleted),
+		UpdatedAt:           parseTime(updated),
+	}, nil
+}
+
+	// compare-and-set：首次无状态行时插入；仅当无活跃扫描或 run_id 相同（重启恢复）时更新。
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO snapshot_cleanup_state (repository_id, scan_run_id, last_scan_started_at, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(repository_id) DO UPDATE SET
+		   scan_run_id = excluded.scan_run_id,
+		   last_scan_started_at = excluded.last_scan_started_at,
+		   updated_at = excluded.updated_at
+		 WHERE snapshot_cleanup_state.scan_run_id IS NULL OR snapshot_cleanup_state.scan_run_id = excluded.scan_run_id`,
+		repositoryID, runID, startedStr, startedStr); err != nil {
+		return fmt.Errorf("start cleanup scan update: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("start cleanup scan commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) FinishSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, snapshots []model.Snapshot, completedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("finish cleanup scan begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 校验 run_id 仍为当前活跃扫描，防止旧 run 覆盖新 scan。
+	var currentRunID string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT scan_run_id FROM snapshot_cleanup_state WHERE repository_id = ?", repositoryID,
+	).Scan(&currentRunID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("finish cleanup scan read run: %w", err)
+	}
+	if currentRunID != runID {
+		return ErrInvalidTransition
+	}
+
+	completedStr := completedAt.UTC().Format(time.RFC3339)
+
+	// 孤儿 reconciliation：对每个远端快照，若标签完整且无权威匹配 run，则写/递增 candidate。
+	for _, snap := range snapshots {
+		planID, kind, runTag, ok := parseSnapshotTags(snap.Tags)
+		if !ok {
+			continue // 标签不完整或异常，跳过
+		}
+		_ = planID
+		_ = kind
+		_ = runTag
+		// 权威匹配：runs.id = run: 标签、operation='backup'、status='succeeded'、
+		// repository_id 一致、snapshot_id 一致。
+		var matched int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM runs
+			 WHERE id = ? AND operation = 'backup' AND status = 'succeeded'
+			   AND repository_id = ? AND snapshot_id = ?`,
+			runTag, repositoryID, snap.ID,
+		).Scan(&matched); err != nil {
+			return fmt.Errorf("finish cleanup scan match run: %w", err)
+		}
+		if matched > 0 {
+			// 有权威匹配：删除候选记录（若存在）。
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM snapshot_deletions
+				 WHERE repository_id = ? AND snapshot_id = ? AND source = 'orphan' AND state = 'candidate'`,
+				repositoryID, snap.ID); err != nil {
+				return fmt.Errorf("finish cleanup scan clear candidate: %w", err)
+			}
+			continue
+		}
+		// 无权威匹配：写 candidate 或递增 seen_count。
+		if err := upsertOrphanCandidateTx(ctx, tx, repositoryID, snap.ID, completedAt); err != nil {
+			return err
+		}
+	}
+
+	// 已从远端消失的候选记录删除。
+	if err := deleteAbsentCandidatesTx(ctx, tx, repositoryID, snapshots); err != nil {
+		return err
+	}
+
+	// 写完成时间并清活跃扫描。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE snapshot_cleanup_state
+		 SET scan_run_id=NULL, last_scan_completed_at=?, updated_at=?
+		 WHERE repository_id=?`,
+		completedStr, completedStr, repositoryID); err != nil {
+		return fmt.Errorf("finish cleanup scan complete: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("finish cleanup scan commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) StartSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, startedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("start cleanup scan begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	startedStr := startedAt.UTC().Format(time.RFC3339)
+	// compare-and-set：首次无状态行时插入；仅当无活跃扫描或 run_id 相同（重启恢复）时更新。
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO snapshot_cleanup_state (repository_id, scan_run_id, last_scan_started_at, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(repository_id) DO UPDATE SET
+		   scan_run_id = excluded.scan_run_id,
+		   last_scan_started_at = excluded.last_scan_started_at,
+		   updated_at = excluded.updated_at
+		 WHERE snapshot_cleanup_state.scan_run_id IS NULL
+		    OR snapshot_cleanup_state.scan_run_id = excluded.scan_run_id`,
+		repositoryID, runID, startedStr, startedStr); err != nil {
+		return fmt.Errorf("start cleanup scan upsert: %w", err)
+	}
+	// 校验：若被另一 run 抢占（活跃扫描且 run_id 不同），返回冲突。
+	var finalRunID sql.NullString
+	if err := tx.QueryRowContext(ctx,
+		"SELECT scan_run_id FROM snapshot_cleanup_state WHERE repository_id = ?", repositoryID,
+	).Scan(&finalRunID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("start cleanup scan verify: %w", err)
+	}
+	if finalRunID.Valid && finalRunID.String != runID {
+		return ErrInvalidTransition
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("start cleanup scan commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) ClearSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, nextAttemptAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("clear cleanup scan begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var currentRunID string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT scan_run_id FROM snapshot_cleanup_state WHERE repository_id = ?", repositoryID,
+	).Scan(&currentRunID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("clear cleanup scan read run: %w", err)
+	}
+	if currentRunID != runID {
+		return ErrInvalidTransition
+	}
+
+	// 失败只清活跃扫描，保留候选原状态，不增加 seen_count。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE snapshot_cleanup_state
+		 SET scan_run_id=NULL, updated_at=?
+		 WHERE repository_id=?`,
+		nowUTC().Format(time.RFC3339), repositoryID); err != nil {
+		return fmt.Errorf("clear cleanup scan update: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("clear cleanup scan commit: %w", err)
+	}
+	return nil
+}
+
+// parseSnapshotTags 校验快照标签：必须同时且各自恰好包含一个 plan:<id>、kind:<kind>、run:<id>。
+// 返回 (planID, kind, runID, ok)。重复同前缀标签、多个计划标签、缺失任一标签均视为不完整。
+func parseSnapshotTags(tags []string) (planID, kind, runID string, ok bool) {
+	var planCount, kindCount, runCount int
+	for _, tag := range tags {
+		switch {
+		case strings.HasPrefix(tag, "plan:"):
+			planCount++
+			planID = strings.TrimPrefix(tag, "plan:")
+		case strings.HasPrefix(tag, "kind:"):
+			kindCount++
+			kind = strings.TrimPrefix(tag, "kind:")
+		case strings.HasPrefix(tag, "run:"):
+			runCount++
+			runID = strings.TrimPrefix(tag, "run:")
+		}
+	}
+	if planCount != 1 || kindCount != 1 || runCount != 1 {
+		return "", "", "", false
+	}
+	if planID == "" || kind == "" || runID == "" {
+		return "", "", "", false
+	}
+	return planID, kind, runID, true
+}
+
+// upsertOrphanCandidateTx 写入或递增孤儿候选。仅当 seen_count>=2 且 now-first_seen_at>=7*24h 时转 pending。
+func upsertOrphanCandidateTx(ctx context.Context, tx *sql.Tx, repositoryID, snapshotID string, now time.Time) error {
+	nowStr := now.UTC().Format(time.RFC3339)
+	var (
+		id        string
+		source    string
+		state     string
+		firstSeen string
+		seenCount int
+	)
+	err := tx.QueryRowContext(ctx,
+		`SELECT id, source, state, first_seen_at, seen_count FROM snapshot_deletions
+		 WHERE repository_id = ? AND snapshot_id = ?`,
+		repositoryID, snapshotID,
+	).Scan(&id, &source, &state, &firstSeen, &seenCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 首次发现：写 candidate、seen_count=1。
+		newID := model.NewUUIDv7()
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO snapshot_deletions
+			   (id, repository_id, agent_id, snapshot_id, source, state,
+			    first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+			    run_id, lease_expires_at, error_code, error_message, requested_by,
+			    created_at, updated_at, completed_at)
+			 VALUES (?, ?, '', ?, 'orphan', 'candidate', ?, ?, 1, NULL, 0,
+			         NULL, NULL, NULL, NULL, '', ?, ?, NULL)`,
+			newID, repositoryID, snapshotID, nowStr, nowStr, nowStr, nowStr); err != nil {
+			return fmt.Errorf("insert orphan candidate: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read orphan candidate: %w", err)
+	}
+	// 已有 manual 意图或已进入删除流程的记录不被扫描回退或修改。
+	if source == string(model.SnapshotDeletionManual) || state != string(model.SnapshotDeletionCandidate) {
+		return nil
+	}
+	// 递增 seen_count，保留最初 first_seen_at。
+	seenCount++
+	nextState := string(model.SnapshotDeletionCandidate)
+	if seenCount >= 2 && now.Sub(parseTime(firstSeen)) >= 7*24*time.Hour {
+		nextState = string(model.SnapshotDeletionPending)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE snapshot_deletions
+		 SET seen_count=?, state=?, last_seen_at=?, updated_at=?
+		 WHERE id=?`,
+		seenCount, nextState, nowStr, nowStr, id); err != nil {
+		return fmt.Errorf("update orphan candidate: %w", err)
+	}
+	return nil
+}
+
+// deleteAbsentCandidatesTx 删除已从远端消失的候选记录。
+func deleteAbsentCandidatesTx(ctx context.Context, tx *sql.Tx, repositoryID string, snapshots []model.Snapshot) error {
+	// 收集远端存在的 snapshotID。
+	present := map[string]struct{}{}
+	for _, snap := range snapshots {
+		present[snap.ID] = struct{}{}
+	}
+	rows, err := tx.QueryContext(ctx,
+		`SELECT snapshot_id FROM snapshot_deletions
+		 WHERE repository_id = ? AND source = 'orphan' AND state = 'candidate'`,
+		repositoryID)
+	if err != nil {
+		return fmt.Errorf("list orphan candidates: %w", err)
+	}
+	var absent []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan orphan candidate: %w", err)
+		}
+		if _, ok := present[id]; !ok {
+			absent = append(absent, id)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close orphan candidates: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("list orphan candidates: %w", err)
+	}
+	for _, id := range absent {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM snapshot_deletions WHERE repository_id = ? AND snapshot_id = ? AND source = 'orphan' AND state = 'candidate'`,
+			repositoryID, id); err != nil {
+			return fmt.Errorf("delete absent orphan candidate: %w", err)
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,10 @@ type maintenanceStarter interface {
 	StartRetentionRun(ctx context.Context, repositoryID string) error
 }
 
+type snapshotCleanupStarter interface {
+	TickSnapshotCleanup(ctx context.Context, now time.Time) error
+}
+
 const (
 	tickInterval    = 15 * time.Second
 	repoCheckWindow = 7 * 24 * time.Hour
@@ -109,6 +113,19 @@ func (s *Scheduler) runTick(ctx context.Context, now time.Time) {
 	s.tickStaleQueued(ctx, now)
 	s.tickWeeklyRepoCheck(ctx, now)
 	s.tickMaintenance(ctx, now)
+	s.tickSnapshotCleanup(ctx, now)
+}
+
+// tickSnapshotCleanup 触发每 tick 一次删除状态机与孤儿扫描。失败不阻断
+// 其他阶段，也不等待远端 I/O——远端操作全部通过 dispatcher FIFO 异步执行。
+func (s *Scheduler) tickSnapshotCleanup(ctx context.Context, now time.Time) {
+	cs, ok := s.starter.(snapshotCleanupStarter)
+	if !ok {
+		return
+	}
+	if err := cs.TickSnapshotCleanup(ctx, now); err != nil {
+		slog.Error("scheduler: TickSnapshotCleanup", "error", err)
+	}
 }
 
 // tickMaintenance schedules forget (without prune) at most once per day per

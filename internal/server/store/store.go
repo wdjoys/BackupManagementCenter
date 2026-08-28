@@ -125,31 +125,31 @@ type LogStore interface {
 	ListAgentLogs(ctx context.Context, agentID string, filter ProcessLogFilter) ([]model.SystemLog, error)
 }
 
-// SnapshotCacheStore 是可选的持久化快照缓存接口。保留为窄接口，避免
-// 测试替身和外部 Store 实现必须立即增加缓存方法。
-type SnapshotCacheStore interface {
-	GetSnapshotListCache(ctx context.Context, repositoryID string) (*SnapshotListCache, error)
-	GetSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, path string) (*SnapshotTreeCache, error)
-	SnapshotCacheGeneration(ctx context.Context, repositoryID string) (int64, error)
-	SaveSnapshotListCache(ctx context.Context, repositoryID string, generation int64, snapshotsJSON, fingerprint string, verifiedAt time.Time) error
-	SaveSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, path string, generation int64, treeJSON string, verifiedAt time.Time) error
-	InvalidateSnapshotCache(ctx context.Context, repositoryID string, clearTrees bool) error
-}
-
-type SnapshotListCache struct {
-	RepositoryID  string
-	Generation    int64
-	SnapshotsJSON string
-	Fingerprint   string
-	VerifiedAt    time.Time
-}
-type SnapshotTreeCache struct {
-	RepositoryID string
-	SnapshotID   string
-	Path         string
-	Generation   int64
-	TreeJSON     string
-	VerifiedAt   time.Time
+// SnapshotDeletionStore 是窄接口，仅用于快照删除意图与孤儿扫描状态持久化。
+// 独立于 Store，避免测试替身和外部实现必须立即实现这些方法。
+type SnapshotDeletionStore interface {
+	// QueueManualSnapshotDeletion 创建或升级 manual 删除意图。
+	// 返回：记录、是否新建/升级、错误。
+	QueueManualSnapshotDeletion(ctx context.Context, repositoryID, agentID, snapshotID, actorID string, now time.Time) (*model.SnapshotDeletion, bool, error)
+	// HiddenSnapshotIDs 返回当前 repository 中应被前端隐藏的 snapshotID 集合。
+	HiddenSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error)
+	// ListRunningSnapshotDeletions 返回 state='running' 的删除意图，
+	// 供 TickSnapshotCleanup 对照关联 run 终态做完成或 fresh scan 确认。
+	ListRunningSnapshotDeletions(ctx context.Context) ([]model.SnapshotDeletion, error)
+	// ClaimSnapshotDeletionRun 在同一事务内插入 queued run、写入 ForgetTask、将意图置 running 并绑定 run_id/lease_expires_at。
+	ClaimSnapshotDeletionRun(ctx context.Context, deletionID string, run *model.Run, leaseUntil time.Time) error
+	// CompleteSnapshotDeletion 将意图置 succeeded 并记录完成时间。
+	CompleteSnapshotDeletion(ctx context.Context, deletionID string, now time.Time) error
+	// RetrySnapshotDeletion 记录失败并设置下次重试时间。
+	RetrySnapshotDeletion(ctx context.Context, deletionID, errorCode, errorMessage string, nextAttemptAt time.Time) error
+	// GetSnapshotCleanupState 读取孤儿扫描状态。
+	GetSnapshotCleanupState(ctx context.Context, repositoryID string) (*model.SnapshotCleanupState, error)
+	// StartSnapshotCleanupScan 以 run_id compare-and-set 开始一次扫描。
+	StartSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, startedAt time.Time) error
+	// FinishSnapshotCleanupScan 成功扫描后执行孤儿 reconciliation（含 7 天/seen_count 阈值）并写完成时间。
+	FinishSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, snapshots []model.Snapshot, completedAt time.Time) error
+	// ClearSnapshotCleanupScan 清理活跃扫描（失败时调用），保留候选原状态，不增加 seen_count。
+	ClearSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, nextAttemptAt time.Time) error
 }
 
 // NormalizeSnapshotPath 统一目录缓存键；空路径和根目录都使用 "/"。

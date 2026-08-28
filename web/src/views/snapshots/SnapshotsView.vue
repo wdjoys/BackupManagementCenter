@@ -35,6 +35,12 @@
           <template #header>
             <div style="display: flex; align-items: center; gap: 8px">
               <span style="font-weight: 600">{{ t('snapshots.snapshotsCard') }}</span>
+              <el-select v-model="planFilter" :placeholder="t('snapshots.planFilter.label')" style="width: 180px">
+                <el-option :label="t('snapshots.planFilter.all')" :value="ALL_PLANS_FILTER" />
+                <el-option v-for="plan in repositoryPlans" :key="plan.id" :label="plan.name" :value="plan.id" />
+                <el-option :label="t('snapshots.planFilter.deleted')" :value="DELETED_PLANS_FILTER" />
+                <el-option :label="t('snapshots.planFilter.unassigned')" :value="UNASSIGNED_PLAN_FILTER" />
+              </el-select>
               <el-text v-if="snapshotsCacheLabel" size="small" type="info">{{ snapshotsCacheLabel }}</el-text>
               <el-button size="small" :loading="snapshotsLoading" @click="loadSnapshots(true)">
                 <el-icon><Refresh /></el-icon>
@@ -49,7 +55,7 @@
 
           <el-table
             v-else
-            :data="snapshots"
+            :data="filteredSnapshots"
             stripe
             size="small"
             @row-click="handleSelectSnapshot"
@@ -105,9 +111,16 @@
                 </el-text>
               </template>
             </el-table-column>
+            <el-table-column :label="t('common.actions')" width="80" fixed="right">
+              <template #default="{ row }">
+                <el-button type="danger" link size="small" @click.stop="handleDeleteSnapshot(row as Snapshot)">
+                  {{ t('snapshots.delete.action') }}
+                </el-button>
+              </template>
+            </el-table-column>
           </el-table>
 
-          <el-empty v-if="!snapshotsLoading && snapshots.length === 0" :description="t('snapshots.noSnapshots')" :image-size="40" />
+          <el-empty v-if="!snapshotsLoading && filteredSnapshots.length === 0" :description="t('snapshots.noSnapshots')" :image-size="40" />
         </el-card>
       </el-col>
 
@@ -325,10 +338,10 @@
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { apiGet, apiGetWithMeta, apiPost } from '@/api/client'
+import { apiDelete, apiGet, apiGetWithMeta, apiPost } from '@/api/client'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatDateTime } from '@/i18n'
-import type { Repository, Snapshot, TreeEntry, TreeResponse } from '@/api/types'
+import type { Plan, Repository, Snapshot, SnapshotDeletionResponse, TreeEntry, TreeResponse } from '@/api/types'
 
 const { t } = useI18n()
 
@@ -361,6 +374,14 @@ const mainError = ref('')
 const router = useRouter()
 
 const selectedRepoId = ref<string>('')
+
+const ALL_PLANS_FILTER = 'all'
+const DELETED_PLANS_FILTER = 'deleted'
+const UNASSIGNED_PLAN_FILTER = 'unassigned'
+type PlanFilter = typeof ALL_PLANS_FILTER | typeof DELETED_PLANS_FILTER | typeof UNASSIGNED_PLAN_FILTER | string
+
+const plans = ref<Plan[]>([])
+const planFilter = ref<PlanFilter>(ALL_PLANS_FILTER)
 const snapshots = ref<Snapshot[]>([])
 const snapshotsLoading = ref(false)
 const snapshotsCache = ref<string | null>(null)
@@ -399,6 +420,24 @@ const breadcrumbs = computed<BreadcrumbPart[]>(() => {
 const snapshotsCacheLabel = computed(() => formatCacheLabel(snapshotsCache.value, snapshotsVerifiedAt.value))
 const treeCacheLabel = computed(() => formatCacheLabel(treeCache.value, treeVerifiedAt.value))
 
+const repositoryPlans = computed(() => plans.value.filter((plan) => plan.repository_id === selectedRepoId.value))
+const filteredSnapshots = computed(() => {
+  if (planFilter.value === ALL_PLANS_FILTER) return snapshots.value
+
+  const currentPlanIDs = new Set(plans.value.map((plan) => plan.id))
+  return snapshots.value.filter((snapshot) => {
+    const planIDs = snapshot.tags
+      .filter((tag) => tag.startsWith('plan:'))
+      .map((tag) => tag.slice('plan:'.length))
+
+    if (planFilter.value === UNASSIGNED_PLAN_FILTER) return planIDs.length === 0
+    if (planFilter.value === DELETED_PLANS_FILTER) {
+      return planIDs.length > 0 && planIDs.every((planID) => !currentPlanIDs.has(planID))
+    }
+    return planIDs.includes(planFilter.value)
+  })
+})
+
 function formatCacheLabel(cache: string | null, verifiedAt: string | null): string {
   if (!cache) return ''
   const status = cache === 'HIT' ? t('snapshots.cache.hit') : t('snapshots.cache.miss')
@@ -433,7 +472,12 @@ async function loadRepos(): Promise<void> {
   reposLoading.value = true
   mainError.value = ''
   try {
-    repos.value = await apiGet<Repository[]>('/repositories')
+    const [repositoryList, planList] = await Promise.all([
+      apiGet<Repository[]>('/repositories'),
+      apiGet<Plan[]>('/plans'),
+    ])
+    repos.value = repositoryList
+    plans.value = planList
     // Pre-select the first repo
     if (repos.value.length > 0 && !selectedRepoId.value) {
       selectedRepoId.value = repos.value[0].id
@@ -449,12 +493,7 @@ async function loadRepos(): Promise<void> {
 async function loadSnapshots(refresh = false): Promise<void> {
   if (!selectedRepoId.value) return
   snapshotsLoading.value = true
-  selectedSnapshot.value = null
-  treeEntries.value = []
-  treePath.value = '/'
-  treeSelectedPaths.value = []
-  treeCache.value = null
-  treeVerifiedAt.value = null
+  clearSnapshotSelection()
   try {
     const response = await apiGetWithMeta<Snapshot[]>(`/repositories/${selectedRepoId.value}/snapshots`, {
       refresh: refresh ? 1 : undefined,
@@ -470,6 +509,48 @@ async function loadSnapshots(refresh = false): Promise<void> {
     snapshotsVerifiedAt.value = null
   } finally {
     snapshotsLoading.value = false
+  }
+}
+
+function clearSnapshotSelection(): void {
+  selectedSnapshot.value = null
+  treeEntries.value = []
+  treePath.value = '/'
+  treeSelectedPaths.value = []
+  treeCache.value = null
+  treeVerifiedAt.value = null
+  restoreDialogVisible.value = false
+  dryRunResult.value = null
+}
+
+async function handleDeleteSnapshot(snapshot: Snapshot): Promise<void> {
+  if (!selectedRepoId.value) return
+  try {
+    const { value } = await ElMessageBox.prompt(
+      t('snapshots.delete.message'),
+      t('snapshots.delete.title'),
+      {
+        confirmButtonText: t('snapshots.delete.confirm'),
+        cancelButtonText: t('common.cancel'),
+        inputPlaceholder: t('snapshots.delete.inputPlaceholder'),
+        inputValidator: (value) => value === snapshot.id || t('snapshots.delete.inputMismatch'),
+      },
+    )
+    if (value !== snapshot.id) return
+
+    await apiDelete<SnapshotDeletionResponse>(`/repositories/${selectedRepoId.value}/snapshots/${snapshot.id}`)
+    snapshots.value = snapshots.value.filter((item) => item.id !== snapshot.id)
+    if (selectedSnapshot.value?.id === snapshot.id) clearSnapshotSelection()
+    ElMessage.success(t('snapshots.messages.deleteQueued'))
+  } catch (err: unknown) {
+    if (err === 'cancel') return
+    const e = err as { message?: string; status?: number }
+    if (e.status === 409) {
+      ElMessage.warning(t('snapshots.messages.deleteRefreshRequired'))
+      await loadSnapshots(true)
+      return
+    }
+    ElMessage.error(e.message || t('snapshots.messages.deleteFailed'))
   }
 }
 
@@ -599,13 +680,17 @@ async function handleConfirmRestore(): Promise<void> {
 }
 
 watch(selectedRepoId, (newId) => {
+  planFilter.value = ALL_PLANS_FILTER
+  clearSnapshotSelection()
   if (newId) {
     loadSnapshots()
   } else {
     snapshots.value = []
-    selectedSnapshot.value = null
-    treeEntries.value = []
   }
+})
+
+watch(planFilter, () => {
+  clearSnapshotSelection()
 })
 
 loadRepos()

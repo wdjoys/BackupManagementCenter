@@ -308,6 +308,10 @@ func (a schedAdapter) StartRetentionRun(ctx context.Context, repositoryID string
 	return a.o.StartRetentionRun(ctx, repositoryID)
 }
 
+func (a schedAdapter) TickSnapshotCleanup(ctx context.Context, now time.Time) error {
+	return a.o.TickSnapshotCleanup(ctx, now)
+}
+
 func serverTLS(cfg servercfg.Server) (*tls.Config, error) {
 	if cfg.TLSMode == "none" {
 		return nil, nil

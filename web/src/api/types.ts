@@ -52,6 +52,11 @@ export interface Snapshot {
   paths: string[]
 }
 
+export interface SnapshotDeletionResponse {
+  deletion_id: string
+  status: 'pending' | 'running' | 'succeeded'
+}
+
 export interface TreeEntry {
   name: string
   type: 'dir' | 'file'

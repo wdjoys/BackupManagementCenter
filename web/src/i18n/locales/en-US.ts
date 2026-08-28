@@ -492,6 +492,20 @@ export default {
     snapshotPrefix: 'snapshot {id}',
     restoreThisSnapshot: 'Restore this Snapshot',
     selectSnapshotHint: 'Select a snapshot to browse its contents',
+    planFilter: {
+      label: 'Filter by plan',
+      all: 'All plans',
+      deleted: 'Deleted plans',
+      unassigned: 'Unassigned',
+    },
+    delete: {
+      action: 'Delete',
+      title: 'Delete Snapshot',
+      message: 'The snapshot will immediately be hidden from the list and its space reclaimed in the background. Type the full snapshot ID to confirm deletion.',
+      confirm: 'Delete Snapshot',
+      inputPlaceholder: 'Type the full snapshot ID',
+      inputMismatch: 'Enter the complete matching snapshot ID',
+    },
     browseTable: {
       id: 'ID',
       time: 'Time',
@@ -543,6 +557,9 @@ export default {
       dryRunFailedCode: 'Dry-run failed (code: {code})',
       restoreInitiated: 'Restore initiated, redirecting to run detail...',
       restoreFailedCode: 'Restore failed (code: {code})',
+      deleteQueued: 'Snapshot removed from the list; space is being reclaimed in the background',
+      deleteRefreshRequired: 'Refresh the snapshot list before deleting; refreshing now',
+      deleteFailed: 'Failed to delete snapshot',
     },
   },
 }

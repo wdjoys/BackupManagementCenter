@@ -355,6 +355,42 @@ func DeleteByTags(ctx context.Context, exec backup.Executor, opts Options, tags 
   return nil
 }
 
+// DeleteSnapshots 删除指定 snapshot ID 的快照，并可选 prune 回收空间。
+func DeleteSnapshots(ctx context.Context, exec backup.Executor, opts Options, snapshotIDs []string, prune bool) error {
+  if opts.Exe == "" {
+    return fmt.Errorf("restic exe not set")
+  }
+  if len(snapshotIDs) == 0 {
+    return fmt.Errorf("no snapshot IDs provided")
+  }
+  args := []string{"forget"}
+  args = append(args, snapshotIDs...)
+  if prune {
+    args = append(args, "--prune")
+  }
+  if opts.RepoPath != "" {
+    args = append(args, "--repo", opts.RepoPath)
+  }
+  if opts.PasswordFile != "" {
+    args = append(args, "--password-file", opts.PasswordFile)
+  }
+  if opts.CacheDir != "" {
+    args = append(args, "--cache-dir", opts.CacheDir)
+  }
+  args = append(args, "--json")
+
+  env := buildEnv(opts)
+  if opts.CacheDir != "" {
+    env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
+  }
+
+  exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(string) {})
+  if err != nil || exitCode != 0 {
+    return mapResticError(exitCode, err)
+  }
+  return nil
+}
+
 func forget(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string, prune bool) error {
 	if opts.Exe == "" {
 		return fmt.Errorf("restic exe not set")

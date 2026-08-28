@@ -506,11 +506,11 @@ Web UI：**Storage → Repositories → 绑定仓库**
 
 ## 升级与回滚
 
-### 版本兼容规则
-
 - 主版本不同：Agent 拒绝连接。
 - 次版本不同：允许连接，UI 显示告警。
 - 升级顺序固定：**先 Server，后逐台 Agent**。
+- Server 启动时自动执行增量 SQLite migration；本版本新增 `0011_snapshot_deletions.sql`，只创建快照删除意图和扫描状态表，不会立即修改远端 Restic 数据。
+- 升级前必须完成 SQLite backup；migration 失败时 Server 拒绝继续启动。重复启动安全，不会重复创建表或丢失既有计划、运行记录、Repository、快照缓存。
 
 ### Docker Compose 升级
 
@@ -548,7 +548,8 @@ sudo systemctl start bmc-agent
 
 ### 回滚
 
-- Server：换回旧二进制/镜像重启即可（SQLite 迁移向前兼容旧版本的读路径有限，跨多个 minor 回滚前先咨询迁移日志）。
+- 本次 migration 完成后不可直接将 SQLite 降级到未包含 `0011` 的旧 Server。回滚 Server 前，停止服务并恢复升级前的 SQLite backup（以及匹配的 WAL/SHM 文件或使用 SQLite online backup 生成的完整副本），再换回旧二进制/镜像启动。
+- 若未恢复升级前数据库，仅换回旧二进制/镜像可能因未知 schema 表导致启动失败；不要删除 migration 表或手工重建数据库。
 - Agent：直接换回旧二进制。不要复用或拷贝 `identity.json` 来"克隆"Agent。
 
 ### 离线备份核对清单

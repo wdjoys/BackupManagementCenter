@@ -121,5 +121,5 @@ export const apiPut = <T>(path: string, body: unknown) =>
 export const apiPatch = <T>(path: string, body: unknown) =>
   api<T>(path, { method: 'PATCH', body: JSON.stringify(body) })
 
-export const apiDelete = (path: string) =>
-  api<void>(path, { method: 'DELETE' })
+export const apiDelete = <T = void>(path: string) =>
+  api<T>(path, { method: 'DELETE' })

@@ -122,6 +122,7 @@ func New(s *Server) http.Handler {
 			r.Get("/repositories", s.handleListRepositories)
 			r.Delete("/repositories/{id}", s.handleUnbindRepository)
 			r.Get("/repositories/{id}/snapshots", s.handleRepoSnapshots)
+			r.Delete("/repositories/{id}/snapshots/{snapshotID}", s.handleDeleteSnapshot)
 			r.Get("/snapshots/{snapshotID}/tree", s.handleSnapshotTree)
 
 			r.Post("/plans/validate", s.handleValidatePlan)

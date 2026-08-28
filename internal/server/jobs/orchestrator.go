@@ -443,7 +443,7 @@ func (o *Orchestrator) SnapshotsWithOptions(ctx context.Context, repoID, agentID
 			if json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps) == nil &&
 				store.SnapshotFingerprint(snaps) == cached.Fingerprint {
 				at := cached.VerifiedAt
-				return snaps, nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil
+				return o.filterHiddenSnapshots(ctx, repoID, snaps), nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil
 			}
 		}
 	}
@@ -467,7 +467,7 @@ func (o *Orchestrator) SnapshotsWithOptions(ctx context.Context, repoID, agentID
 			if json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps) == nil &&
 				store.SnapshotFingerprint(snaps) == cached.Fingerprint {
 				at := cached.VerifiedAt
-				return o.finishListFlight(flight, snaps, nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil)
+				return o.finishListFlight(flight, o.filterHiddenSnapshots(ctx, repoID, snaps), nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil)
 			}
 		}
 	}
@@ -512,21 +512,21 @@ func (o *Orchestrator) SnapshotsWithOptions(ctx context.Context, repoID, agentID
 		if err := cs.SaveSnapshotListCache(ctx, repoID, generation, string(resultJSON), fingerprint, time.Now().UTC()); err != nil {
 			if errors.Is(err, store.ErrCacheGenerationChanged) {
 				if cached, readErr := cs.GetSnapshotListCache(ctx, repoID); readErr == nil {
-					if json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps) == nil &&
-						store.SnapshotFingerprint(snaps) == cached.Fingerprint {
+					var cachedSnaps []model.Snapshot
+					if json.Unmarshal([]byte(cached.SnapshotsJSON), &cachedSnaps) == nil &&
+						store.SnapshotFingerprint(cachedSnaps) == cached.Fingerprint {
 						at := cached.VerifiedAt
-						return o.finishListFlight(flight, snaps, nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil)
+						return o.finishListFlight(flight, o.filterHiddenSnapshots(ctx, repoID, cachedSnaps), nil, CacheInfo{Hit: true, VerifiedAt: &at}, nil)
 					}
 				}
 			}
 			return o.finishListFlight(flight, nil, term, CacheInfo{}, err)
 		}
 		at := time.Now().UTC()
-		return o.finishListFlight(flight, snaps, term, CacheInfo{Hit: false, VerifiedAt: &at}, nil)
+		return o.finishListFlight(flight, o.filterHiddenSnapshots(ctx, repoID, snaps), term, CacheInfo{Hit: false, VerifiedAt: &at}, nil)
 	}
-	return o.finishListFlight(flight, snaps, term, CacheInfo{Hit: false}, nil)
+	return o.finishListFlight(flight, o.filterHiddenSnapshots(ctx, repoID, snaps), term, CacheInfo{Hit: false}, nil)
 }
-
 // SnapshotTree 返回快照目录树。
 func (o *Orchestrator) SnapshotTree(ctx context.Context, repoID, agentID, snapshotID, cachePath string) (*TreeResult, *model.Run, error) {
 	tree, run, _, err := o.SnapshotTreeWithOptions(ctx, repoID, agentID, snapshotID, cachePath, false)
@@ -1628,7 +1628,357 @@ func randRead(b []byte) error {
 	return err
 }
 
-// hexEncode returns the lowercase hex encoding of b.
-func hexEncode(b []byte) string {
-	return hex.EncodeToString(b)
+// ---------------------------------------------------------------------------
+// Snapshot deletion (manual + orphan cleanup)
+// ---------------------------------------------------------------------------
+
+// SnapshotDeletionStore is the narrow store surface required for deletion
+// intents and orphan cleanup scans. The concrete sqlite store implements it;
+// callers keep the dependency narrow for test doubles and future stores.
+type SnapshotDeletionStore interface {
+	QueueManualSnapshotDeletion(ctx context.Context, repositoryID, agentID, snapshotID, actorID string, now time.Time) (*model.SnapshotDeletion, bool, error)
+	HiddenSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error)
+	ListDueSnapshotDeletions(ctx context.Context, now time.Time, limit int) ([]model.SnapshotDeletion, error)
+	ListRunningSnapshotDeletions(ctx context.Context) ([]model.SnapshotDeletion, error)
+	ClaimSnapshotDeletionRun(ctx context.Context, deletionID string, run *model.Run, leaseUntil time.Time) error
+	CompleteSnapshotDeletion(ctx context.Context, deletionID string, now time.Time) error
+	RetrySnapshotDeletion(ctx context.Context, deletionID, errorCode, errorMessage string, nextAttemptAt time.Time) error
+	GetSnapshotCleanupState(ctx context.Context, repositoryID string) (*model.SnapshotCleanupState, error)
+	StartSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, startedAt time.Time) error
+	FinishSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, snapshots []model.Snapshot, completedAt time.Time) error
+	ClearSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, nextAttemptAt time.Time) error
+}
+
+func (o *Orchestrator) snapshotDeletions() (SnapshotDeletionStore, bool) {
+	s, ok := o.Store.(SnapshotDeletionStore)
+	return s, ok
+}
+
+// filterHiddenSnapshots 从快照列表中过滤掉所有处于隐藏状态的快照
+// （已请求删除的 manual 快照，以及已转为 pending/running 的 orphan 快照）。
+func (o *Orchestrator) filterHiddenSnapshots(ctx context.Context, repoID string, snaps []model.Snapshot) []model.Snapshot {
+	sds, ok := o.snapshotDeletions()
+	if !ok {
+		return snaps
+	}
+	hidden, err := sds.HiddenSnapshotIDs(ctx, repoID)
+	if err != nil || hidden == nil {
+		return snaps
+	}
+	if len(hidden) == 0 {
+		return snaps
+	}
+	filtered := make([]model.Snapshot, 0, len(snaps))
+	for _, s := range snaps {
+		if _, h := hidden[s.ID]; !h {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
+// QueueSnapshotDeletion 记录手动删除意图并立即使快照列表/目录缓存失效。
+// HTTP 请求不等待 Agent，也不直接调用 restic；真正的 forget 由 scheduler
+// 在后台上游处理。
+func (o *Orchestrator) QueueSnapshotDeletion(ctx context.Context, actorID, repoID, snapshotID string) (*model.SnapshotDeletion, bool, error) {
+	sds, ok := o.snapshotDeletions()
+	if !ok {
+		return nil, false, fmt.Errorf("snapshot deletion store unavailable")
+	}
+	repo, err := o.Store.GetRepository(ctx, repoID)
+	if err != nil {
+		return nil, false, err
+	}
+	del, created, err := sds.QueueManualSnapshotDeletion(ctx, repoID, repo.AgentID, snapshotID, actorID, time.Now().UTC())
+	if err != nil {
+		return nil, false, err
+	}
+	// 使 list/tree 缓存失效：已请求删除的快照必须立即从列表隐藏。
+	if cs, ok := o.Store.(store.SnapshotCacheStore); ok {
+		_ = cs.InvalidateSnapshotCache(ctx, repoID, true)
+	}
+	o.Audit(ctx, "admin", actorID, "snapshot.delete.requested", "snapshot", snapshotID,
+		map[string]string{"repository_id": repoID, "deletion_id": del.ID, "source": string(del.Source)})
+	return del, created, nil
+}
+
+// TickSnapshotCleanup 是 scheduler 每 tick 调用的删除状态机与孤儿扫描入口。
+// 单个 repository 的所有 run 仍由 dispatcher FIFO 串行执行；这里不做远端
+// I/O，只创建/消费 run。
+func (o *Orchestrator) TickSnapshotCleanup(ctx context.Context, now time.Time) error {
+	sds, ok := o.snapshotDeletions()
+	if !ok {
+		return nil
+	}
+	repos, err := o.Store.ListRepositories(ctx)
+	if err != nil {
+		return err
+	}
+	for _, repo := range repos {
+		if err := o.cleanupRunningDeletions(ctx, sds, &repo, now); err != nil {
+			continue
+		}
+		if err := o.claimPendingDeletion(ctx, sds, &repo, now); err != nil {
+			continue
+		}
+		if err := o.consumeCleanupScan(ctx, sds, &repo, now); err != nil {
+			continue
+		}
+		if err := o.maybeStartCleanupScan(ctx, sds, &repo, now); err != nil {
+			continue
+		}
+	}
+	return nil
+}
+
+// invalidateSnapshotCache 清空指定仓库的 list 缓存（并可选 tree 缓存）。
+func (o *Orchestrator) invalidateSnapshotCache(repoID string, clearTrees bool) {
+	if cs, ok := o.Store.(store.SnapshotCacheStore); ok {
+		_ = cs.InvalidateSnapshotCache(context.Background(), repoID, clearTrees)
+	}
+}
+
+// cleanupRunningDeletions 检查 running 意图关联的 run：成功/远端已消失则完成，
+// 失败则启动一次 fresh snapshots 确认后再决定是否重试。
+func (o *Orchestrator) cleanupRunningDeletions(ctx context.Context, sds SnapshotDeletionStore, repo *model.Repository, now time.Time) error {
+	runs, err := o.Store.ListRuns(ctx, store.RunFilter{
+		RepositoryID: repo.ID,
+		Operation:    model.OpForget,
+		Statuses:     []string{model.RunQueued, model.RunDispatched, model.RunRunning, model.RunSucceeded, model.RunFailed, model.RunCancelled},
+		Limit:        100,
+	})
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]model.Run, len(runs))
+	for _, r := range runs {
+		byID[r.ID] = r
+	}
+	deletions, err := sds.ListRunningSnapshotDeletions(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range deletions {
+		del := &deletions[i]
+		if del.RepositoryID != repo.ID {
+			continue
+		}
+		run, ok := byID[del.RunID]
+		if !ok {
+			continue
+		}
+		switch run.Status {
+		case model.RunSucceeded:
+			// run 成功——远端回收已完成（或快照不存在），直接完成。
+			_ = sds.CompleteSnapshotDeletion(ctx, del.ID, now)
+			o.Audit(ctx, "system", "scheduler", "snapshot.delete.completed", "snapshot", del.SnapshotID,
+				map[string]string{"repository_id": repo.ID, "deletion_id": del.ID, "mode": "run_success"})
+			o.invalidateSnapshotCache(repo.ID, true)
+		case model.RunFailed, model.RunCancelled:
+			// 不立即重发破坏性命令；先 fresh scan 确认远端是否仍存在。
+			if err := o.reconcileFailedDeletion(ctx, sds, repo, del, now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// reconcileFailedDeletion 在删除 run 失败后启动一次 fresh snapshots 确认；
+// 远端已不存在则完成，仍存在才重新置 pending 等待退避重试。
+func (o *Orchestrator) reconcileFailedDeletion(ctx context.Context, sds SnapshotDeletionStore, repo *model.Repository, del *model.SnapshotDeletion, now time.Time) error {
+	if del.RunID == "" {
+		return nil
+	}
+	// 启动 fresh OpSnapshots 确认（同步等待，最多 2 分钟）。
+	params := model.SnapshotsTask{Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath}}
+	run, err := o.SystemRun(ctx, repo.AgentID, repo.ID, model.OpSnapshots, params, 0)
+	if err != nil {
+		return err
+	}
+	term, resultJSON, err := o.WaitRunResult(ctx, run.ID, snapshotBrowseWait)
+	if err != nil {
+		return err
+	}
+	if term == nil || term.Status != model.RunSucceeded || resultJSON == nil {
+		// 无法确认；保持 running 状态由后续 tick 再试。
+		return nil
+	}
+	var snaps []model.Snapshot
+	if err := json.Unmarshal(resultJSON, &snaps); err != nil {
+		return nil
+	}
+	found := false
+	for _, s := range snaps {
+		if s.ID == del.SnapshotID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		// 远端已不存在：完成（fresh scan 结果已是权威事实）。
+		_ = sds.CompleteSnapshotDeletion(ctx, del.ID, now)
+		o.Audit(ctx, "system", "scheduler", "snapshot.delete.completed", "snapshot", del.SnapshotID,
+			map[string]string{"repository_id": repo.ID, "deletion_id": del.ID, "mode": "scan_absent"})
+		o.invalidateSnapshotCache(repo.ID, true)
+		return nil
+	}
+	// 仍存在：重新置 pending，退避重试；不恢复到前端列表。
+	backoff := min(1<<uint(del.Attempt), 24*60) // minutes
+	next := now.Add(time.Duration(backoff) * time.Minute)
+	if err := sds.RetrySnapshotDeletion(ctx, del.ID, "forget_failed", "previous delete run failed; retry scheduled", next); err != nil {
+		return err
+	}
+	o.Audit(ctx, "system", "scheduler", "snapshot.delete.retry_scheduled", "snapshot", del.SnapshotID,
+		map[string]string{"repository_id": repo.ID, "deletion_id": del.ID, "next_attempt_at": next.Format(time.RFC3339)})
+	return nil
+}
+
+// claimPendingDeletion 对到期 pending 意图每个仓库每 tick 最多 claim 一个：
+// 在同一事务插入 OpForget queued run、写入 ForgetTask、将意图置 running。
+func (o *Orchestrator) claimPendingDeletion(ctx context.Context, sds SnapshotDeletionStore, repo *model.Repository, now time.Time) error {
+	deletions, err := sds.ListDueSnapshotDeletions(ctx, now, 1000)
+	if err != nil {
+		return err
+	}
+	claimed := false
+	for i := range deletions {
+		del := &deletions[i]
+		if del.RepositoryID != repo.ID || del.State != model.SnapshotDeletionPending {
+			continue
+		}
+		if claimed {
+			continue // 每 tick 每仓库最多一个删除 run（FIFO 串行化）
+		}
+		if del.NextAttemptAt != nil && now.Before(*del.NextAttemptAt) {
+			continue
+		}
+		run := &model.Run{
+			ID:           model.NewUUIDv7(),
+			AgentID:      repo.AgentID,
+			Operation:    model.OpForget,
+			Status:       model.RunQueued,
+			QueuedAt:     now,
+			RepositoryID: repo.ID,
+			ProgressJSON: "{}",
+		}
+		// 该 run 的 task 载荷通过 ProgressJSON 传递（BuildCommand 为
+		// OpForget 系统 run 直接读取 ProgressJSON）。必须在 Claim 前写入，
+		// 因为 claim 会同步 INSERT 该 run。
+		task := model.ForgetTask{
+			Repository:  model.RepoAccess{RepositoryPath: repo.RepositoryPath},
+			SnapshotIDs: []string{del.SnapshotID},
+			Prune:       true,
+		}
+		if b, err := json.Marshal(task); err == nil {
+			run.ProgressJSON = string(b)
+		}
+		leaseUntil := now.Add(snapshotBrowseWait)
+		if err := sds.ClaimSnapshotDeletionRun(ctx, del.ID, run, leaseUntil); err != nil {
+			return err
+		}
+		// 写入 run 所需的 rclone config（无则空）。
+		if rs, ok := o.Store.(interface {
+			SaveRunRcloneConfig(context.Context, string, string) error
+		}); ok {
+			_ = rs.SaveRunRcloneConfig(ctx, run.ID, "")
+		}
+		o.Disp.Enqueue(ctx, run.ID, run.AgentID, repo.ID)
+		o.Bus.Publish(run.ID, events.Event{Type: events.State, Run: run})
+		o.Audit(ctx, "system", "scheduler", "snapshot.delete.started", "snapshot", del.SnapshotID,
+			map[string]string{"repository_id": repo.ID, "deletion_id": del.ID, "run_id": run.ID})
+		o.invalidateSnapshotCache(repo.ID, true)
+		claimed = true
+	}
+	return nil
+}
+
+// consumeCleanupScan 消费 snapshot_cleanup_state 指向的 terminal OpSnapshots
+// run，成功则做孤儿 reconciliation；失败只清 active scan，保留候选状态。
+func (o *Orchestrator) consumeCleanupScan(ctx context.Context, sds SnapshotDeletionStore, repo *model.Repository, now time.Time) error {
+	st, err := sds.GetSnapshotCleanupState(ctx, repo.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if st.ScanRunID == "" {
+		return nil
+	}
+	run, err := o.Store.GetRun(ctx, st.ScanRunID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// run 记录不存在（可能被清理）：清空 active scan。
+			next := now.Add(time.Hour)
+			_ = sds.ClearSnapshotCleanupScan(ctx, repo.ID, st.ScanRunID, next)
+			return nil
+		}
+		return err
+	}
+	if run.Status == model.RunQueued || run.Status == model.RunDispatched || run.Status == model.RunRunning {
+		return nil // 仍在执行
+	}
+	if run.Status != model.RunSucceeded {
+		// 失败：只清 active scan，保留候选原状态。
+		next := now.Add(time.Hour)
+		_ = sds.ClearSnapshotCleanupScan(ctx, repo.ID, st.ScanRunID, next)
+		return nil
+	}
+	// 成功：解析结果做孤儿 reconciliation。
+	var snaps []model.Snapshot
+	if err := json.Unmarshal([]byte(run.ProgressJSON), &snaps); err != nil {
+		next := now.Add(time.Hour)
+		_ = sds.ClearSnapshotCleanupScan(ctx, repo.ID, st.ScanRunID, next)
+		return nil
+	}
+	if err := sds.FinishSnapshotCleanupScan(ctx, repo.ID, st.ScanRunID, snaps, now); err != nil {
+		return err
+	}
+	// 扫描成功后若确认了删除完成会由 store 内部更新；列表缓存仍由
+	// 现有快照列表缓存保存逻辑负责，不在此失效。
+	return nil
+}
+
+// maybeStartCleanupScan 对 ready、Agent online、24h 未扫描且无 active scan 的
+// repository 创建 fresh OpSnapshots system run 并把 run ID 写入 cleanup state。
+func (o *Orchestrator) maybeStartCleanupScan(ctx context.Context, sds SnapshotDeletionStore, repo *model.Repository, now time.Time) error {
+	if repo.Status != "ready" || repo.RepositoryPath == "" {
+		return nil
+	}
+	st, err := sds.GetSnapshotCleanupState(ctx, repo.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if st != nil && st.ScanRunID != "" {
+		// 已有 active scan 或等待消费的 run。
+		run, rerr := o.Store.GetRun(ctx, st.ScanRunID)
+		if rerr == nil && (run.Status == model.RunQueued || run.Status == model.RunDispatched || run.Status == model.RunRunning) {
+			return nil
+		}
+		if rerr == nil && run.Status == model.RunSucceeded {
+			// 成功 run 尚未被消费；等 consume 处理。
+			return nil
+		}
+	}
+	if st != nil && st.LastScanCompletedAt != nil && now.Before(st.LastScanCompletedAt.Add(24*time.Hour)) {
+		return nil
+	}
+	// Agent online 检查
+	agent, err := o.Store.GetAgent(ctx, repo.AgentID)
+	if err != nil {
+		return err
+	}
+	if agent.Status != model.AgentOnline {
+		return nil
+	}
+	params := model.SnapshotsTask{Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath}}
+	run, err := o.SystemRun(ctx, repo.AgentID, repo.ID, model.OpSnapshots, params, 0)
+	if err != nil {
+		return err
+	}
+	if err := sds.StartSnapshotCleanupScan(ctx, repo.ID, run.ID, now); err != nil {
+		return err
+	}
+	return nil
 }

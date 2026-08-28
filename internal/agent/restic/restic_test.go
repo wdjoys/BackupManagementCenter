@@ -65,3 +65,46 @@ func TestDeleteByTagsDeletesSnapshotsAndPrunes(t *testing.T) {
     }
   }
 }
+
+func TestDeleteSnapshotsGeneratesCorrectArgs(t *testing.T) {
+  var cmd backup.Cmd
+  pwdFile := "/tmp/restic-pw"
+  cacheDir := "/cache/restic"
+  err := DeleteSnapshots(context.Background(), checkExecutor{cmd: &cmd}, Options{
+    Exe: "restic", RepoPath: "rclone:remote:/repo", PasswordFile: pwdFile, CacheDir: cacheDir,
+  }, []string{"abc123def456"}, true)
+  if err != nil {
+    t.Fatalf("DeleteSnapshots: %v", err)
+  }
+  want := []string{"forget", "abc123def456", "--prune", "--repo", "rclone:remote:/repo", "--password-file", pwdFile, "--cache-dir", cacheDir, "--json"}
+  if len(cmd.Args) != len(want) {
+    t.Fatalf("args = %q, want %q", cmd.Args, want)
+  }
+  for i, w := range want {
+    if cmd.Args[i] != w {
+      t.Fatalf("args[%d] = %q, want %q", i, cmd.Args[i], w)
+    }
+  }
+  if !contains(cmd.Env, "RESTIC_PASSWORD_FILE="+pwdFile) { t.Fatalf("env missing password file: %q", cmd.Env) }
+  if !contains(cmd.Env, "RESTIC_CACHE_DIR="+cacheDir) { t.Fatalf("env missing cache dir: %q", cmd.Env) }
+}
+
+func TestDeleteSnapshotsWithoutPruneOmitsFlag(t *testing.T) {
+  var cmd backup.Cmd
+  err := DeleteSnapshots(context.Background(), checkExecutor{cmd: &cmd}, Options{
+    Exe: "restic", RepoPath: "rclone:remote:/repo",
+  }, []string{"abc123def456"}, false)
+  if err != nil {
+    t.Fatalf("DeleteSnapshots: %v", err)
+  }
+  if contains(cmd.Args, "--prune") {
+    t.Fatalf("args should not contain --prune: %q", cmd.Args)
+  }
+}
+
+func TestDeleteSnapshotsRejectsEmptyIDs(t *testing.T) {
+  err := DeleteSnapshots(context.Background(), checkExecutor{code: 0}, Options{Exe: "restic"}, nil, true)
+  if err == nil {
+    t.Fatal("expected error for empty snapshot IDs")
+  }
+}

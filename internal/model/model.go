@@ -316,16 +316,57 @@ const (
 	TelegramTokenColumn   = "encrypted_token"
 )
 
-// Snapshot is a read model assembled from `restic snapshots --json` on the
-// agent; not persisted server-side.
-type Snapshot struct {
-	ID     string   `json:"id"`
-	Time   string   `json:"time"`
-	Host   string   `json:"host"`
-	Tags   []string `json:"tags,omitempty"`
-	Paths  []string `json:"paths,omitempty"`
-	PlanID string   `json:"-"`
+// SnapshotDeletionSource 标识删除意图来源。
+type SnapshotDeletionSource string
+
+const (
+	SnapshotDeletionManual SnapshotDeletionSource = "manual"
+	SnapshotDeletionOrphan SnapshotDeletionSource = "orphan"
+)
+
+// SnapshotDeletionState 标识删除意图状态。
+type SnapshotDeletionState string
+
+const (
+	SnapshotDeletionCandidate SnapshotDeletionState = "candidate"
+	SnapshotDeletionPending   SnapshotDeletionState = "pending"
+	SnapshotDeletionRunning   SnapshotDeletionState = "running"
+	SnapshotDeletionSucceeded SnapshotDeletionState = "succeeded"
+)
+
+// SnapshotDeletion 记录一次快照删除意图与执行状态。
+type SnapshotDeletion struct {
+	ID               string                 `json:"id"`
+	RepositoryID     string                 `json:"repository_id"`
+	AgentID          string                 `json:"agent_id"`
+	SnapshotID       string                 `json:"snapshot_id"`
+	Source           SnapshotDeletionSource `json:"source"`
+	State            SnapshotDeletionState  `json:"state"`
+	FirstSeenAt      time.Time              `json:"first_seen_at"`
+	LastSeenAt       time.Time              `json:"last_seen_at"`
+	SeenCount        int                    `json:"seen_count"`
+	NextAttemptAt    *time.Time             `json:"next_attempt_at,omitempty"`
+	Attempt          int                    `json:"attempt"`
+	RunID            string                 `json:"run_id,omitempty"`
+	LeaseExpiresAt   *time.Time             `json:"lease_expires_at,omitempty"`
+	ErrorCode        string                 `json:"error_code,omitempty"`
+	ErrorMessage     string                 `json:"error_message,omitempty"`
+	RequestedBy      string                 `json:"requested_by,omitempty"`
+	CreatedAt        time.Time              `json:"created_at"`
+	UpdatedAt        time.Time              `json:"updated_at"`
+	CompletedAt      *time.Time             `json:"completed_at,omitempty"`
 }
+
+// SnapshotCleanupState 记录每仓库的孤儿扫描进度。
+type SnapshotCleanupState struct {
+	RepositoryID        string     `json:"repository_id"`
+	ScanRunID           string     `json:"scan_run_id,omitempty"`
+	LastScanStartedAt   *time.Time `json:"last_scan_started_at,omitempty"`
+	LastScanCompletedAt *time.Time `json:"last_scan_completed_at,omitempty"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
+// ServerInfo is reported to agents during handshake.
 
 // ServerInfo is reported to agents during handshake.
 type ServerInfo struct {

@@ -492,6 +492,20 @@ export default {
     snapshotPrefix: '快照 {id}',
     restoreThisSnapshot: '恢复此快照',
     selectSnapshotHint: '选择一个快照以浏览其内容',
+    planFilter: {
+      label: '按计划筛选',
+      all: '全部计划',
+      deleted: '已删除计划',
+      unassigned: '未归属计划',
+    },
+    delete: {
+      action: '删除',
+      title: '删除快照',
+      message: '此快照将立即从列表中隐藏，并在后台回收空间。请输入完整快照 ID 以确认删除。',
+      confirm: '删除快照',
+      inputPlaceholder: '输入完整快照 ID',
+      inputMismatch: '请输入完整且匹配的快照 ID',
+    },
     browseTable: {
       id: 'ID',
       time: '时间',
@@ -543,6 +557,9 @@ export default {
       dryRunFailedCode: '试运行失败（代码：{code}）',
       restoreInitiated: '恢复任务已启动，正在跳转到运行详情...',
       restoreFailedCode: '恢复失败（代码：{code}）',
+      deleteQueued: '快照已从列表移除，后台正在回收空间',
+      deleteRefreshRequired: '快照列表需要刷新后才能删除，正在刷新列表',
+      deleteFailed: '删除快照失败',
     },
   },
 }

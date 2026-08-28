@@ -109,10 +109,9 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
-          script_stop: true
           script: |
             set -eu
             cd '${{ secrets.DEPLOY_PATH }}'
             docker compose pull
             docker compose up -d --no-build --remove-orphans
-            curl --fail --silent --show-error --insecure --retry 12 --retry-delay 5 https://localhost:8080/health/ready
+            curl --fail --silent --show-error --insecure --retry 12 --retry-delay 5 http://localhost:8081/health/ready

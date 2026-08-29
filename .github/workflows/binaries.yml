@@ -1,0 +1,160 @@
+name: Linux 二进制发布
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binaries-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  prepare:
+    name: 准备构建版本
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - name: 检出完整提交
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: 计算构建版本
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          SHORT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ] && [[ "$REF_NAME" == v* ]]; then
+            version="${REF_NAME#v}"
+            release=true
+          else
+            short_sha="${SHORT_SHA:0:7}"
+            safe_ref=$(printf '%s' "$REF_NAME" | tr -c '0-9A-Za-z._-' '-')
+            version="0.0.0-${safe_ref}.${short_sha}"
+            release=false
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'release=%s\n' "$release" >> "$GITHUB_OUTPUT"
+          echo "构建版本：$version"
+          echo "发布版本：$release"
+
+  build:
+    name: 构建 Linux ${{ matrix.arch }} 二进制
+    runs-on: ubuntu-latest
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+          - arch: arm64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+      - name: 设置 pnpm
+        uses: pnpm/action-setup@v4.4.0
+        with:
+          version: 10
+      - name: 设置 Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: 设置 Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 构建前端
+        working-directory: web
+        run: pnpm --ignore-workspace install --frozen-lockfile && pnpm --ignore-workspace run build
+      - name: 准备嵌入式前端
+        run: |
+          set -euo pipefail
+          rm -rf internal/server/webui/dist
+          mkdir -p internal/server/webui/dist
+          cp -r web/dist/. internal/server/webui/dist/
+      - name: 交叉编译 Server 和 Agent
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ldflags="-s -w -X backupmanagementcenter/internal/version.Version=${VERSION}"
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath -ldflags="$ldflags" -o dist/backup-center-server ./cmd/server
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath -ldflags="$ldflags" -o dist/backup-center-agent ./cmd/agent
+      - name: 打包并验证二进制
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          tar -czf "release/backup-center-server_${VERSION}_linux_${ARCH}.tar.gz" -C dist backup-center-server
+          tar -czf "release/backup-center-agent_${VERSION}_linux_${ARCH}.tar.gz" -C dist backup-center-agent
+          for binary in backup-center-server backup-center-agent; do
+            info=$(go version -m "dist/$binary")
+            case "$info" in
+              *"GOOS=linux"*"GOARCH=$ARCH"*|*"GOARCH=$ARCH"*"GOOS=linux"*) ;;
+              *) echo "架构验证失败：$binary"; echo "$info"; exit 1;;
+            esac
+            embedded=$(strings "dist/$binary")
+            case "$embedded" in
+              *"$VERSION"*) ;;
+              *) echo "版本验证失败：$binary"; exit 1;;
+            esac
+          done
+          server_archive="release/backup-center-server_${VERSION}_linux_${ARCH}.tar.gz"
+          agent_archive="release/backup-center-agent_${VERSION}_linux_${ARCH}.tar.gz"
+          [ "$(tar -tzf "$server_archive" | wc -l)" -eq 1 ]
+          [ "$(tar -tzf "$agent_archive" | wc -l)" -eq 1 ]
+          [ "$(tar -tzf "$server_archive")" = "backup-center-server" ]
+          [ "$(tar -tzf "$agent_archive")" = "backup-center-agent" ]
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bmc-linux-${{ matrix.arch }}
+          path: release/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: 创建 GitHub Release
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.release == 'true'
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 下载全部二进制产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bmc-linux-*
+          path: release
+          merge-multiple: true
+      - name: 生成并校验校验和
+        working-directory: release
+        run: |
+          set -euo pipefail
+          find . -maxdepth 1 -type f -name '*.tar.gz' -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: 创建 GitHub Release
+        env:
+          TAG: ${{ github.ref_name }}
+        working-directory: release
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" --verify-tag --generate-notes *.tar.gz SHA256SUMS

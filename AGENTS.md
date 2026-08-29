@@ -191,6 +191,6 @@ BMC_SERVER_TLS=0 BMC_ENROLLMENT_TOKEN=<token> make dev-agent
 
 - 功能实现并通过适用的验证后，必须自动创建 Git commit 并推送到当前远端分支。
 - commit message 必须遵循 Conventional Commit，描述使用简体中文。
-- 推送完成后，必须拉取最新 GitHub Actions 执行结果。
-- 若 Action 执行失败，必须根据失败日志继续修复；修复后重新验证、提交、推送，并再次拉取最新 Action 结果。
+- 推送完成后，必须通过 GitHub 网页端检查最新 GitHub Actions 执行结果，不使用命令行拉取 Actions 结果。
+- 若 Action 执行失败，必须根据网页端失败日志继续修复；修复后重新验证、提交、推送，并再次通过网页端检查最新 Action 结果。
 - 只有在最新 Action 执行成功，或明确记录外部基础设施导致的阻塞原因后，功能交付流程才算完成。

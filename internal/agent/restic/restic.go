@@ -14,14 +14,15 @@ import (
 	"backupmanagementcenter/internal/model"
 )
 
-// Options configures restic wrapper.
+// Options configures restic CLI invocation.
 type Options struct {
-	Exe            string // absolute path to restic binary
-	RepoPath       string // repository path (e.g., rclone:gdrive:path)
-	PasswordFile   string // path to 0600 password file
-	CacheDir       string // optional cache directory
-	RcloneConfFile string // 0600 rclone.conf path; required for rclone: repos
-	WorkingDir     string // optional working directory for relative backup paths
+	Exe            string       // absolute path to restic binary
+	RepoPath       string       // repository path (e.g. rclone:gdrive:path)
+	PasswordFile   string       // path to 0600 password file
+	CacheDir       string       // optional cache directory
+	RcloneConfFile string       // 0600 rclone.conf path; required for rclone: repos
+	WorkingDir     string       // optional working directory for relative backup paths
+	Logf           func(string) // optional raw stderr line sink
 }
 
 // Snapshot represents a restic snapshot from --json output.
@@ -445,7 +446,12 @@ func DeleteSnapshots(ctx context.Context, exec backup.Executor, opts Options, sn
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
 	var stderrTail strings.Builder
-	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) { stderrTail.WriteString(line + "\n") })
+	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) {
+		stderrTail.WriteString(line + "\n")
+		if opts.Logf != nil {
+			opts.Logf(line)
+		}
+	})
 	if err != nil || exitCode != 0 {
 		return enriched(mapResticError(exitCode, err), stderrTail.String())
 	}

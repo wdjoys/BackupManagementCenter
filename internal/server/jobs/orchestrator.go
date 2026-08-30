@@ -527,6 +527,7 @@ func (o *Orchestrator) SnapshotsWithOptions(ctx context.Context, repoID, agentID
 	}
 	return o.finishListFlight(flight, o.filterHiddenSnapshots(ctx, repoID, snaps), term, CacheInfo{Hit: false}, nil)
 }
+
 // SnapshotTree 返回快照目录树。
 func (o *Orchestrator) SnapshotTree(ctx context.Context, repoID, agentID, snapshotID, cachePath string) (*TreeResult, *model.Run, error) {
 	tree, run, _, err := o.SnapshotTreeWithOptions(ctx, repoID, agentID, snapshotID, cachePath, false)
@@ -1068,35 +1069,35 @@ func (o *Orchestrator) StartRetentionRun(ctx context.Context, repositoryID strin
 
 // DeletePlanBackups 删除计划标签下的全部快照及其无引用数据。
 func (o *Orchestrator) DeletePlanBackups(ctx context.Context, planID string) error {
-  plan, err := o.Store.GetPlan(ctx, planID)
-  if err != nil {
-    return err
-  }
-  repo, err := o.Store.GetRepository(ctx, plan.RepositoryID)
-  if err != nil {
-    return err
-  }
-  run, err := o.SystemRun(ctx, repo.AgentID, repo.ID, model.OpForget, model.ForgetTask{
-    PlanID: plan.ID,
-    Kind: plan.Kind,
-    Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath},
-    Tags: []string{"plan:" + plan.ID},
-    DeleteAll: true,
-  }, 30*time.Minute)
-  if err != nil {
-    return err
-  }
-  term, err := o.WaitRun(ctx, run.ID, 30*time.Minute)
-  if err != nil {
-    return err
-  }
-  if term.Status != model.RunSucceeded {
-    return fmt.Errorf("delete plan backups failed: %s %s", term.ErrorCode, term.ErrorMessage)
-  }
-  if cs, ok := o.Store.(store.SnapshotCacheStore); ok {
-    _ = cs.InvalidateSnapshotCache(ctx, repo.ID, true)
-  }
-  return nil
+	plan, err := o.Store.GetPlan(ctx, planID)
+	if err != nil {
+		return err
+	}
+	repo, err := o.Store.GetRepository(ctx, plan.RepositoryID)
+	if err != nil {
+		return err
+	}
+	run, err := o.SystemRun(ctx, repo.AgentID, repo.ID, model.OpForget, model.ForgetTask{
+		PlanID:     plan.ID,
+		Kind:       plan.Kind,
+		Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath},
+		Tags:       []string{"plan:" + plan.ID},
+		DeleteAll:  true,
+	}, 30*time.Minute)
+	if err != nil {
+		return err
+	}
+	term, err := o.WaitRun(ctx, run.ID, 30*time.Minute)
+	if err != nil {
+		return err
+	}
+	if term.Status != model.RunSucceeded {
+		return fmt.Errorf("delete plan backups failed: %s %s", term.ErrorCode, term.ErrorMessage)
+	}
+	if cs, ok := o.Store.(store.SnapshotCacheStore); ok {
+		_ = cs.InvalidateSnapshotCache(ctx, repo.ID, true)
+	}
+	return nil
 }
 
 // StartRestore creates a restore request and a restore run. For filesystem
@@ -1873,7 +1874,7 @@ func (o *Orchestrator) claimPendingDeletion(ctx context.Context, sds SnapshotDel
 		if b, err := json.Marshal(task); err == nil {
 			run.ProgressJSON = string(b)
 		}
-		leaseUntil := now.Add(snapshotBrowseWait)
+		leaseUntil := now.Add(20 * time.Minute)
 		if err := sds.ClaimSnapshotDeletionRun(ctx, del.ID, run, leaseUntil); err != nil {
 			return err
 		}

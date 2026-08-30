@@ -629,8 +629,17 @@ func runForget(ctx context.Context, d Deps, tempDir string, params []byte, secre
 		if len(task.Tags) > 0 || task.DeleteAll || task.Retention.KeepLast > 0 || task.Retention.KeepDaily > 0 || task.Retention.KeepWeekly > 0 || task.Retention.KeepMonthly > 0 {
 			return nil, &PipelineError{Code: "invalid_params", Message: "snapshot_ids cannot be combined with tags/delete_all/retention", Cause: nil}
 		}
+		if d.Logf != nil {
+			d.Logf("info", "开始删除快照 %s（等待仓库锁最多 5 分钟）", strings.Join(task.SnapshotIDs, ","))
+		}
 		if err := restic.DeleteSnapshots(ctx, d.Exec, opts, task.SnapshotIDs, task.Prune); err != nil {
+			if d.Logf != nil {
+				d.Logf("error", "restic 删除快照失败：%v", err)
+			}
 			return nil, &PipelineError{Code: "forget_failed", Message: "restic forget failed", Cause: err}
+		}
+		if d.Logf != nil {
+			d.Logf("info", "restic 删除快照命令已成功完成")
 		}
 		return &Result{}, nil
 	}
@@ -781,9 +790,6 @@ func runValidatePaths(ctx context.Context, d Deps, tempDir string, params []byte
 	return &Result{}, nil
 }
 
-// ErrUnsupportedOperation is returned for ops without an adapter.
-var ErrUnsupportedOperation = errors.New("unsupported operation")
-
 // runProbeCapabilities returns the current tool info.
 func runProbeCapabilities(_ context.Context, d Deps, _ string, _ []byte, _ backup.SecretBundle) (*Result, error) {
 	resultJSON, err := json.Marshal(d.Tools)
@@ -793,8 +799,9 @@ func runProbeCapabilities(_ context.Context, d Deps, _ string, _ []byte, _ backu
 	return &Result{ResultJSON: resultJSON}, nil
 }
 
-// newResticOpts writes the per-run secret files (restic password and, when
-// provided, the rclone config) into tempDir and returns ready-to-use options.
+// ErrUnsupportedOperation is returned for ops without an adapter.
+var ErrUnsupportedOperation = errors.New("unsupported operation")
+
 func newResticOpts(d Deps, repoPath, tempDir string, secrets backup.SecretBundle) (restic.Options, error) {
 	pwPath, err := backup.WriteSecretFile(tempDir, "restic_pw", secrets.ResticPassword)
 	if err != nil {
@@ -805,6 +812,14 @@ func newResticOpts(d Deps, repoPath, tempDir string, secrets backup.SecretBundle
 		RepoPath:     restic.NormalizeRepoPath(repoPath),
 		PasswordFile: pwPath,
 		CacheDir:     d.ResticCacheDir,
+		Logf: func(line string) {
+			if d.Logf != nil {
+				d.Logf("error", "restic stderr: %s", line)
+			}
+		},
+	}
+	if opts.Exe == "" {
+		opts.Exe = "restic"
 	}
 	if secrets.RcloneConf != "" {
 		confPath, err := rclone.WriteConf(tempDir, secrets.RcloneConf)

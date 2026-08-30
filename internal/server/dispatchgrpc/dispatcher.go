@@ -663,8 +663,12 @@ func (d *Dispatcher) checkTimeouts() {
 			}
 			continue
 		}
-		// Use plan timeout if available, otherwise default 300s
+		// 系统维护任务没有 Plan 可读取超时；forget 可能因 --retry-lock 等待
+		// 远端锁释放，不能沿用普通 5 分钟默认值。
 		timeoutSeconds := 300
+		if run.Operation == model.OpForget {
+			timeoutSeconds = 15 * 60
+		}
 		if run.PlanID != "" {
 			plan, err := d.store.GetPlan(ctx, run.PlanID)
 			if err == nil && plan.TimeoutSeconds > 0 {

@@ -83,7 +83,7 @@ func TestRunForget_SnapshotIDs_Succeeds(t *testing.T) {
 	if res == nil {
 		t.Fatal("expected result")
 	}
-	want := []string{"forget", "abc123def456", "--prune", "--repo", "rclone:remote:/repo"}
+	want := []string{"forget", "abc123def456", "--prune", "--retry-lock", "5m", "--repo", "rclone:remote:/repo"}
 	if len(cmd.Args) < len(want) {
 		t.Fatalf("args too short: %q", cmd.Args)
 	}

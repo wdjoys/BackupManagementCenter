@@ -334,61 +334,38 @@ func Forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 // ForgetOnly applies retention without prune. Backups use this path so a
 // long-running prune cannot contend with the next upload.
 func ForgetOnly(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string) error {
-  return forget(ctx, exec, opts, retention, tags, false)
+	return forget(ctx, exec, opts, retention, tags, false)
 }
 
 // DeleteByTags 删除匹配标签的全部快照，并清理不再引用的数据。
 func DeleteByTags(ctx context.Context, exec backup.Executor, opts Options, tags []string) error {
-  if opts.Exe == "" {
-    return fmt.Errorf("restic exe not set")
-  }
-  args := []string{"forget", "--group-by", "host,tags", "--prune"}
-  if opts.RepoPath != "" { args = append(args, "--repo", opts.RepoPath) }
-  if opts.PasswordFile != "" { args = append(args, "--password-file", opts.PasswordFile) }
-  if opts.CacheDir != "" { args = append(args, "--cache-dir", opts.CacheDir) }
-  for _, tag := range tags { args = append(args, "--tag", tag) }
-  args = append(args, "--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json")
-  env := buildEnv(opts)
-  if opts.CacheDir != "" { env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir) }
-  exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(string) {})
-  if err != nil || exitCode != 0 { return mapResticError(exitCode, err) }
-  return nil
-}
-
-// DeleteSnapshots 删除指定 snapshot ID 的快照，并可选 prune 回收空间。
-func DeleteSnapshots(ctx context.Context, exec backup.Executor, opts Options, snapshotIDs []string, prune bool) error {
-  if opts.Exe == "" {
-    return fmt.Errorf("restic exe not set")
-  }
-  if len(snapshotIDs) == 0 {
-    return fmt.Errorf("no snapshot IDs provided")
-  }
-  args := []string{"forget"}
-  args = append(args, snapshotIDs...)
-  if prune {
-    args = append(args, "--prune")
-  }
-  if opts.RepoPath != "" {
-    args = append(args, "--repo", opts.RepoPath)
-  }
-  if opts.PasswordFile != "" {
-    args = append(args, "--password-file", opts.PasswordFile)
-  }
-  if opts.CacheDir != "" {
-    args = append(args, "--cache-dir", opts.CacheDir)
-  }
-  args = append(args, "--json")
-
-  env := buildEnv(opts)
-  if opts.CacheDir != "" {
-    env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
-  }
-
-  exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(string) {})
-  if err != nil || exitCode != 0 {
-    return mapResticError(exitCode, err)
-  }
-  return nil
+	if opts.Exe == "" {
+		return fmt.Errorf("restic exe not set")
+	}
+	args := []string{"forget", "--group-by", "host,tags", "--prune", "--retry-lock", "5m"}
+	if opts.RepoPath != "" {
+		args = append(args, "--repo", opts.RepoPath)
+	}
+	if opts.PasswordFile != "" {
+		args = append(args, "--password-file", opts.PasswordFile)
+	}
+	if opts.CacheDir != "" {
+		args = append(args, "--cache-dir", opts.CacheDir)
+	}
+	for _, tag := range tags {
+		args = append(args, "--tag", tag)
+	}
+	args = append(args, "--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json")
+	env := buildEnv(opts)
+	if opts.CacheDir != "" {
+		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
+	}
+	var stderrTail strings.Builder
+	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) { stderrTail.WriteString(line + "\n") })
+	if err != nil || exitCode != 0 {
+		return enriched(mapResticError(exitCode, err), stderrTail.String())
+	}
+	return nil
 }
 
 func forget(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string, prune bool) error {
@@ -399,6 +376,7 @@ func forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 	if prune {
 		args = append(args, "--prune")
 	}
+	args = append(args, "--retry-lock", "5m")
 	if opts.RepoPath != "" {
 		args = append(args, "--repo", opts.RepoPath)
 	}
@@ -429,10 +407,47 @@ func forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
-
-	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(string) {})
+	var stderrTail strings.Builder
+	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) { stderrTail.WriteString(line + "\n") })
 	if err != nil || exitCode != 0 {
-		return mapResticError(exitCode, err)
+		return enriched(mapResticError(exitCode, err), stderrTail.String())
+	}
+	return nil
+}
+
+// DeleteSnapshots 删除指定 snapshot ID 的快照，并可选 prune 回收空间。
+func DeleteSnapshots(ctx context.Context, exec backup.Executor, opts Options, snapshotIDs []string, prune bool) error {
+	if opts.Exe == "" {
+		return fmt.Errorf("restic exe not set")
+	}
+	if len(snapshotIDs) == 0 {
+		return fmt.Errorf("no snapshot IDs provided")
+	}
+	args := []string{"forget"}
+	args = append(args, snapshotIDs...)
+	if prune {
+		args = append(args, "--prune")
+	}
+	args = append(args, "--retry-lock", "5m")
+	if opts.RepoPath != "" {
+		args = append(args, "--repo", opts.RepoPath)
+	}
+	if opts.PasswordFile != "" {
+		args = append(args, "--password-file", opts.PasswordFile)
+	}
+	if opts.CacheDir != "" {
+		args = append(args, "--cache-dir", opts.CacheDir)
+	}
+	args = append(args, "--json")
+
+	env := buildEnv(opts)
+	if opts.CacheDir != "" {
+		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
+	}
+	var stderrTail strings.Builder
+	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) { stderrTail.WriteString(line + "\n") })
+	if err != nil || exitCode != 0 {
+		return enriched(mapResticError(exitCode, err), stderrTail.String())
 	}
 	return nil
 }
@@ -507,10 +522,10 @@ func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID, sna
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
 		func(line string) {
 			var node struct {
-				Name string `json:"name"`
-				Type string `json:"type"`
-				Path string `json:"path"`
-				Size int64 `json:"size"`
+				Name  string `json:"name"`
+				Type  string `json:"type"`
+				Path  string `json:"path"`
+				Size  int64  `json:"size"`
 				Mtime string `json:"mtime"`
 			}
 			if json.Unmarshal([]byte(line), &node) != nil || node.Name == "" || node.Type == "" {

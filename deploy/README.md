@@ -60,14 +60,63 @@ BMC_TLS_KEY_FILE=/dev/null
 
 反向代理必须同时转发 Web/API 和 gRPC，并为 gRPC 保留 HTTP/2 能力。代理上游分别指向 `http://127.0.0.1:8080` 和支持明文 HTTP/2 的 `h2c://127.0.0.1:9090`。
 
-配置示意：
+#### Nginx 配置示意
 
-```text
-公网 HTTPS Web/API  →  http://127.0.0.1:8080
-公网 HTTPS gRPC    →  h2c://127.0.0.1:9090
+Nginx 需要启用 HTTP/2，并使用 `grpc_pass` 转发 Agent gRPC；Web/API 使用普通 HTTP 反代：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name agent-grpc.example.com;
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+
+    # Agent gRPC 控制通道；该域名专用于 gRPC。
+    location / {
+        grpc_pass grpc://127.0.0.1:9090;
+        grpc_read_timeout 3600s;
+        grpc_send_timeout 3600s;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name backup.example.com;
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+
+    # Web/API 请求。
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
 ```
 
-若反向代理与 BMC 同为容器，将两者加入同一内部 Docker 网络，并将上游分别指向 `http://bmc-server:8080` 和 `h2c://bmc-server:9090`。Agent 此时连接公网入口的 `host:port` 并设置 `BMC_SERVER_TLS=1`。证书申请和续期由外部反向代理负责；Server 仍必须配置并保护主密钥。
+注意：Nginx 的 `location /` 不能同时用于 gRPC 和 Web/API。生产配置应根据实际 gRPC 路径、域名或独立端口进行分流；如果 gRPC 与 Web 使用同一入口，建议使用独立域名，例如 `agent-grpc.example.com`。
+
+#### Caddy 配置示意
+
+Caddy 可按 gRPC 协议与普通 HTTP 请求分流：
+
+```caddyfile
+backup.example.com {
+    @grpc protocol grpc
+    handle @grpc {
+        reverse_proxy h2c://127.0.0.1:9090
+    }
+
+    handle {
+        reverse_proxy http://127.0.0.1:8080
+    }
+}
+```
+
+如果反向代理与 BMC 同为容器，将上游地址中的 `127.0.0.1` 替换为 `bmc-server`，并确保两个容器加入同一内部 Docker 网络。Agent 连接公网入口的 `host:port` 并设置 `BMC_SERVER_TLS=1`。证书由反向代理负责申请和续期；Server 仍必须配置并保护主密钥。
 
 ## 3. 部署 Agent
 

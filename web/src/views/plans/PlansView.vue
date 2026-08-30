@@ -48,14 +48,12 @@
           <el-tag :type="KIND_TAG_TYPE[(p as Plan).kind]">{{ t(KIND_LABELS[(p as Plan).kind]) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="t('plans.columns.schedule')" width="130">
+      <el-table-column :label="t('plans.columns.schedule')" width="180">
         <template #default="{ row: p }">
-          <code style="font-size: 12px">{{ p.schedule }}</code>
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('plans.columns.timezone')" width="140">
-        <template #default="{ row: p }">
-          {{ p.timezone }}
+          <div style="display: flex; flex-direction: column; line-height: 1.3">
+            <code style="font-size: 12px">{{ p.schedule }}</code>
+            <span style="font-size: 12px; color: var(--el-text-color-secondary)">{{ p.timezone }}</span>
+          </div>
         </template>
       </el-table-column>
       <el-table-column :label="t('plans.columns.enabled')" width="80">

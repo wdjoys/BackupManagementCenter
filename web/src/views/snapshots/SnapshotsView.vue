@@ -1,697 +1,124 @@
 <template>
-  <div>
+  <div class="snapshots-page">
     <div class="section-title">{{ t('snapshots.title') }}</div>
-
     <div v-if="mainError" class="error-state">
-      <el-icon><Warning /></el-icon>
-      <p>{{ mainError }}</p>
-      <el-button type="primary" @click="loadRepos" style="margin-top: 12px">{{ t('common.retry') }}</el-button>
+      <el-icon><Warning /></el-icon><p>{{ mainError }}</p>
+      <el-button type="primary" @click="loadRepos">{{ t('common.retry') }}</el-button>
     </div>
-
-    <el-card v-else shadow="never" style="margin-bottom: 16px">
-      <template #header>
-        <span style="font-weight: 600">{{ t('snapshots.selectRepository') }}</span>
-      </template>
-      <el-select
-        v-model="selectedRepoId"
-        :placeholder="t('snapshots.repositoryPlaceholder')"
-        style="width: 100%"
-        :loading="reposLoading"
-        :disabled="reposLoading"
-        filterable
-      >
-        <el-option
-          v-for="r in repos"
-          :key="r.id"
-          :label="`${r.agent_name || r.agent_id} / ${r.storage_target_name || r.storage_target_id} / ${r.repository_path}`"
-          :value="r.id"
-        />
-      </el-select>
+    <el-card v-else shadow="never" class="snapshot-shell">
+      <div class="snapshot-toolbar">
+        <el-select v-model="selectedRepoId" :placeholder="t('snapshots.repositoryPlaceholder')" class="repository-select" :loading="reposLoading" filterable>
+          <el-option v-for="repo in repos" :key="repo.id" :value="repo.id">
+            <div class="repository-option"><span>{{ repo.agent_name || repo.agent_id }} · {{ repo.storage_target_name || repo.storage_target_id }}</span><small>{{ repo.repository_path }}</small></div>
+          </el-option>
+        </el-select>
+        <el-select v-if="selectedRepoId" v-model="planFilter" :placeholder="t('snapshots.planFilter.label')" class="plan-filter">
+          <el-option :label="t('snapshots.planFilter.all')" :value="ALL_PLANS_FILTER" />
+          <el-option v-for="plan in repositoryPlans" :key="plan.id" :label="plan.name" :value="plan.id" />
+          <el-option :label="t('snapshots.planFilter.deleted')" :value="DELETED_PLANS_FILTER" />
+          <el-option :label="t('snapshots.planFilter.unassigned')" :value="UNASSIGNED_PLAN_FILTER" />
+        </el-select>
+        <el-text v-if="snapshotsCacheLabel" size="small" type="info">{{ snapshotsCacheLabel }}</el-text>
+        <el-text v-if="selectedRepoId" size="small" type="info">{{ filteredSnapshots.length }} {{ t('snapshots.count') }}</el-text>
+        <el-button v-if="selectedRepoId" size="small" :loading="snapshotsLoading" @click="loadSnapshots(true)"><el-icon><Refresh /></el-icon>{{ t('snapshots.refresh') }}</el-button>
+      </div>
+      <div v-if="snapshotsLoading" class="loading-state"><el-icon class="is-loading"><Loading /></el-icon></div>
+      <el-table v-else-if="selectedRepoId" :data="filteredSnapshots" stripe row-key="raw.id" class="snapshot-table" @row-click="(row) => handleSelectSnapshot(row.raw)">
+        <el-table-column :label="t('snapshots.browseTable.time')" width="170"><template #default="{ row }">{{ formatTime(row.raw.time) }}</template></el-table-column>
+        <el-table-column :label="t('snapshots.browseTable.plan')" min-width="150"><template #default="{ row }"><el-tag v-if="!row.plan" type="info" effect="plain">{{ row.planName }}</el-tag><span v-else>{{ row.planName }}</span></template></el-table-column>
+        <el-table-column :label="t('snapshots.browseTable.type')" width="130"><template #default="{ row }"><el-tag :type="row.kindTagType">{{ row.kindLabel }}</el-tag></template></el-table-column>
+        <el-table-column :label="t('snapshots.browseTable.content')" min-width="220"><template #default="{ row }"><el-tooltip :content="row.sourceSummary"><span class="source-summary">{{ row.sourceSummary }}</span></el-tooltip></template></el-table-column>
+        <el-table-column :label="t('snapshots.browseTable.agent')" min-width="150"><template #default="{ row }"><div class="agent-cell"><span>{{ row.agentDisplay.name }}</span><small>{{ row.agentDisplay.hostname }}</small></div></template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="150" fixed="right"><template #default="{ row }"><el-button link size="small" @click.stop="handleSelectSnapshot(row.raw)">{{ t('snapshots.viewDetails') }}</el-button><el-button type="danger" link size="small" @click.stop="handleDeleteSnapshot(row.raw)">{{ t('snapshots.delete.action') }}</el-button></template></el-table-column>
+      </el-table>
+      <el-empty v-if="!snapshotsLoading && selectedRepoId && filteredSnapshots.length === 0" :description="snapshots.length ? t('snapshots.noFilteredSnapshots') : t('snapshots.noSnapshots')" />
+      <el-empty v-if="!selectedRepoId && !reposLoading" :description="t('snapshots.repositoryPlaceholder')" />
     </el-card>
 
-    <el-row :gutter="16" v-if="selectedRepoId">
-      <el-col :span="16">
-        <el-card shadow="never">
-          <template #header>
-            <div style="display: flex; align-items: center; gap: 8px">
-              <span style="font-weight: 600">{{ t('snapshots.snapshotsCard') }}</span>
-              <el-select v-model="planFilter" :placeholder="t('snapshots.planFilter.label')" style="width: 180px">
-                <el-option :label="t('snapshots.planFilter.all')" :value="ALL_PLANS_FILTER" />
-                <el-option v-for="plan in repositoryPlans" :key="plan.id" :label="plan.name" :value="plan.id" />
-                <el-option :label="t('snapshots.planFilter.deleted')" :value="DELETED_PLANS_FILTER" />
-                <el-option :label="t('snapshots.planFilter.unassigned')" :value="UNASSIGNED_PLAN_FILTER" />
-              </el-select>
-              <el-text v-if="snapshotsCacheLabel" size="small" type="info">{{ snapshotsCacheLabel }}</el-text>
-              <el-button size="small" :loading="snapshotsLoading" @click="loadSnapshots(true)">
-                <el-icon><Refresh /></el-icon>
-                <span>{{ t('snapshots.refresh') }}</span>
-              </el-button>
-            </div>
-          </template>
-
-          <div v-if="snapshotsLoading" style="text-align: center; padding: 16px">
-            <el-icon class="is-loading"><Loading /></el-icon>
-          </div>
-
-          <el-table
-            v-else
-            :data="filteredSnapshots"
-            stripe
-            size="small"
-            @row-click="handleSelectSnapshot"
-            :row-class-name="({ row }) => selectedSnapshot?.id === row.id ? 'selected-row' : ''"
-            style="width: 100%; cursor: pointer"
-            height="520"
-          >
-            <el-table-column :label="t('snapshots.browseTable.id')" width="80">
-              <template #default="{ row }">
-                <code style="font-size: 12px">{{ shortId(row.id) }}</code>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('snapshots.browseTable.time')" width="150">
-              <template #default="{ row }">
-                <span style="font-size: 12px">{{ formatTime(row.time) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('snapshots.browseTable.host')" width="100">
-              <template #default="{ row }">
-                <span style="font-size: 12px">{{ row.host }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('snapshots.browseTable.tags')">
-              <template #default="{ row }">
-                <el-tag
-                  v-for="tag in row.tags.slice(0, 3)"
-                  :key="tag"
-                  size="small"
-                  effect="plain"
-                  style="margin-right: 2px; margin-bottom: 2px"
-                >
-                  {{ tag }}
-                </el-tag>
-                <el-text v-if="row.tags.length > 3" size="small" color="info">
-                  +{{ row.tags.length - 3 }}
-                </el-text>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('snapshots.browseTable.paths')">
-              <template #default="{ row }">
-                <el-tag
-                  v-for="p in row.paths.slice(0, 3)"
-                  :key="p"
-                  size="small"
-                  type="info"
-                  effect="plain"
-                  style="margin-right: 2px; margin-bottom: 2px"
-                >
-                  {{ p }}
-                </el-tag>
-                <el-text v-if="row.paths.length > 3" size="small" color="info">
-                  +{{ row.paths.length - 3 }}
-                </el-text>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('common.actions')" width="80" fixed="right">
-              <template #default="{ row }">
-                <el-button type="danger" link size="small" @click.stop="handleDeleteSnapshot(row as Snapshot)">
-                  {{ t('snapshots.delete.action') }}
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-
-          <el-empty v-if="!snapshotsLoading && filteredSnapshots.length === 0" :description="t('snapshots.noSnapshots')" :image-size="40" />
-        </el-card>
-      </el-col>
-
-      <el-col :span="8">
-        <el-card shadow="never" style="height: 580px; display: flex; flex-direction: column">
-          <template #header>
-            <div style="display: flex; justify-content: space-between; align-items: center">
-              <div>
-                <span style="font-weight: 600">{{ t('snapshots.fileBrowser') }}</span>
-                <span v-if="selectedSnapshot" style="font-size: 12px; color: #909399; margin-left: 8px">
-                  {{ t('snapshots.snapshotPrefix', { id: shortId(selectedSnapshot.id) }) }}
-                </span>
-                <el-text v-if="treeCacheLabel" size="small" type="info" style="margin-left: 8px">{{ treeCacheLabel }}</el-text>
-              </div>
-              <div>
-                <el-button
-                  v-if="selectedSnapshot"
-                  size="small"
-                  :loading="treeLoading"
-                  @click="loadTree(true)"
-                >
-                  <el-icon><Refresh /></el-icon>
-                  <span>{{ t('snapshots.refresh') }}</span>
-                </el-button>
-                <el-button
-                  v-if="selectedSnapshot"
-                  size="small"
-                  type="primary"
-                  @click="openRestoreWizard"
-                  :disabled="treeLoading || !treePath"
-                >
-                  <el-icon><Download /></el-icon>
-                  <span>{{ t('snapshots.restoreThisSnapshot') }}</span>
-                </el-button>
-              </div>
-            </div>
-          </template>
-
-          <div v-if="!selectedSnapshot" style="flex: 1; display: flex; align-items: center; justify-content: center">
-            <el-empty :description="t('snapshots.selectSnapshotHint')" />
-          </div>
-
-          <div v-else style="flex: 1; display: flex; flex-direction: column">
-            <!-- Breadcrumb -->
-            <el-breadcrumb separator="/" style="margin-bottom: 8px; padding: 4px 0">
-              <el-breadcrumb-item
-                v-for="part in breadcrumbs"
-                :key="part.path"
-                style="cursor: pointer"
-                @click="navigateBreadcrumb(part.path)"
-              >
-                {{ part.label }}
-              </el-breadcrumb-item>
-            </el-breadcrumb>
-
-            <div v-if="treeLoading" style="text-align: center; padding: 16px">
-              <el-icon class="is-loading"><Loading /></el-icon>
-            </div>
-
-            <el-table
-              v-else
-              :data="treeEntries"
-              stripe
-              size="small"
-              row-key="name"
-              style="flex: 1"
-              @selection-change="handleTreeSelection"
-            >
-              <el-table-column type="selection" width="40" />
-              <el-table-column :label="t('common.name')">
-                <template #default="{ row }">
-                  <span style="cursor: pointer" :style="{ color: row.type === 'dir' ? '#e6a23c' : 'inherit' }" @click="handleRowClick(row as TreeEntry)">
-                    <el-icon v-if="row.type === 'dir'" style="color: #e6a23c"><Folder /></el-icon>
-                    <el-icon v-else><Document /></el-icon>
-                    {{ row.name }}
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column :label="t('snapshots.browseTable.type')" width="60">
-                <template #default="{ row }">
-                  <el-tag :type="row.type === 'dir' ? 'warning' : 'info'" size="small">{{ entryTypeText(row.type) }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column :label="t('snapshots.browseTable.size')" width="120">
-                <template #default="{ row }">
-                  {{ formatSize(row.size) }}
-                </template>
-              </el-table-column>
-              <el-table-column :label="t('snapshots.browseTable.modified')">
-                <template #default="{ row }">
-                  {{ formatTime(row.mtime) }}
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
-
-    <!-- Restore wizard dialog -->
-    <el-dialog
-      v-model="restoreDialogVisible"
-      :title="t('snapshots.restoreDialog.title')"
-      width="680"
-      destroy-on-close
-      :close-on-click-modal="false"
-    >
-      <el-form :model="restoreForm" label-position="top" label-width="130px">
-        <el-form-item :label="t('snapshots.restoreDialog.snapshot')" required>
-          <el-text>
-            <code>{{ selectedSnapshot?.id }}</code>
-            &nbsp;
-            <span style="color: #909399">({{ formatTime(selectedSnapshot?.time || '') }})</span>
-          </el-text>
-        </el-form-item>
-
-        <el-form-item :label="t('snapshots.restoreDialog.targetPath')" required>
-          <el-input
-            v-model="restoreForm.target_path"
-            placeholder="/absolute/path/on/agent"
-          />
-          <el-text size="small" color="info">{{ t('snapshots.restoreDialog.targetPathHint') }}</el-text>
-        </el-form-item>
-
-        <el-form-item :label="t('snapshots.restoreDialog.overwriteMode')" required>
-          <el-radio-group v-model="restoreForm.overwrite_mode">
-            <el-radio value="never">{{ t('snapshots.restoreDialog.never') }}</el-radio>
-            <el-radio value="if-changed">{{ t('snapshots.restoreDialog.ifChanged') }}</el-radio>
-            <el-radio value="always">{{ t('snapshots.restoreDialog.always') }}</el-radio>
-          </el-radio-group>
-        </el-form-item>
-
-        <el-form-item :label="t('snapshots.restoreDialog.includePaths')">
-          <el-checkbox-group v-model="restoreForm.include_paths">
-            <div style="display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto">
-              <el-checkbox
-                v-for="p in includePathOptions"
-                :key="p"
-                :value="p"
-                style="margin-left: 0"
-              >
-                {{ p }}
-              </el-checkbox>
-              <el-checkbox
-                v-if="treeEntries.length > 0 && includePathOptions.length < treeEntries.length"
-                :value="'/ (all entries in current directory)'"
-                style="margin-left: 0"
-              >
-                {{ t('snapshots.restoreDialog.allEntries') }}
-              </el-checkbox>
-            </div>
-          </el-checkbox-group>
-          <el-text size="small" color="info">
-            {{ t('snapshots.restoreDialog.includePathsHint') }}
-          </el-text>
-        </el-form-item>
-      </el-form>
-
-      <el-divider />
-
-      <div v-if="dryRunResult" style="margin-top: 12px">
-        <el-alert :title="t('snapshots.restoreDialog.dryRunResult')" type="success" :closable="false">
-          <template #default>
-            <div style="display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap">
-              <el-statistic :title="t('snapshots.restoreDialog.add')" :value="dryRunResult.add" />
-              <el-statistic :title="t('snapshots.restoreDialog.changed')" :value="dryRunResult.changed" />
-              <el-statistic :title="t('snapshots.restoreDialog.skipped')" :value="dryRunResult.skipped" />
-              <el-statistic :title="t('snapshots.restoreDialog.deleteStat')" :value="dryRunResult.delete" />
-            </div>
-            <div v-if="dryRunResult.sample && dryRunResult.sample.length > 0" style="margin-top: 8px">
-              <el-text size="small" style="font-weight: 600">{{ t('snapshots.restoreDialog.sampleChanges') }}</el-text>
-              <el-tag
-                v-for="s in dryRunResult.sample.slice(0, 10)"
-                :key="s"
-                size="small"
-                type="info"
-                effect="plain"
-                style="margin-right: 4px; margin-top: 4px"
-              >
-                {{ s }}
-              </el-tag>
-              <el-text v-if="dryRunResult.sample.length > 10" size="small" color="info">
-                {{ t('snapshots.restoreDialog.moreChanges', { count: dryRunResult.sample.length - 10 }) }}
-              </el-text>
-            </div>
-          </template>
-        </el-alert>
+    <el-drawer v-model="detailDrawerVisible" :size="'min(760px, 90vw)'" destroy-on-close @closed="clearSnapshotSelection">
+      <template #header><div><strong>{{ selectedSnapshotView?.planName || t('snapshots.fileBrowser') }}</strong><div v-if="selectedSnapshotView" class="drawer-subtitle">{{ selectedSnapshotView.kindLabel }} · {{ formatTime(selectedSnapshotView.raw.time) }}</div></div></template>
+      <div v-if="selectedSnapshotView" class="snapshot-summary">
+        <div><b>{{ t('snapshots.browseTable.plan') }}</b><span>{{ selectedSnapshotView.planName }}</span></div>
+        <div><b>{{ t('snapshots.browseTable.type') }}</b><el-tag :type="selectedSnapshotView.kindTagType">{{ selectedSnapshotView.kindLabel }}</el-tag></div>
+        <div><b>{{ t('snapshots.browseTable.agent') }}</b><span>{{ selectedSnapshotView.agentDisplay.name }}<small>{{ selectedSnapshotView.agentDisplay.hostname }}</small></span></div>
+        <div><b>{{ t('snapshots.browseTable.content') }}</b><span>{{ selectedSnapshotView.sourceSummary }}</span></div>
       </div>
+      <el-descriptions v-if="selectedSnapshotView" :title="t('snapshots.snapshotInfo')" :column="1" border>
+        <el-descriptions-item :label="t('snapshots.snapshotId')"><span class="id-copy"><code>{{ selectedSnapshotView.raw.id }}</code><el-button link @click="copySnapshotId"><el-icon><CopyDocument /></el-icon>{{ t('snapshots.copySnapshotId') }}</el-button></span></el-descriptions-item>
+        <el-descriptions-item :label="t('snapshots.browseTable.paths')">{{ selectedSnapshotView.raw.paths.join(', ') || '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('snapshots.extraTags')">{{ selectedSnapshotView.extraTags.join(', ') || '—' }}</el-descriptions-item>
+      </el-descriptions>
+      <div class="drawer-actions"><el-button v-if="selectedSnapshotView?.runID" link type="primary" @click="router.push(`/runs/${selectedSnapshotView.runID}`)">{{ t('snapshots.viewRun') }}</el-button><el-button type="primary" :disabled="!canRestore" @click="openRestoreWizard"><el-icon><Download /></el-icon>{{ t('snapshots.restoreThisSnapshot') }}</el-button><el-tooltip v-if="!canRestore" :content="t('snapshots.filesystemRestoreOnly')"><span class="restore-hint">{{ t('snapshots.filesystemRestoreOnly') }}</span></el-tooltip><el-button size="small" :loading="treeLoading" @click="loadTree(true)"><el-icon><Refresh /></el-icon>{{ t('snapshots.refresh') }}</el-button></div>
+      <el-breadcrumb separator="/" class="snapshot-breadcrumb"><el-breadcrumb-item v-for="part in breadcrumbs" :key="part.path" @click="navigateBreadcrumb(part.path)">{{ part.label }}</el-breadcrumb-item></el-breadcrumb>
+      <div v-if="treeLoading" class="loading-state"><el-icon class="is-loading"><Loading /></el-icon></div>
+      <el-table v-else :data="treeEntries" stripe size="small" row-key="name" @selection-change="handleTreeSelection"><el-table-column type="selection" width="40" /><el-table-column :label="t('common.name')"><template #default="{ row }"><span class="tree-name" @click="handleRowClick(row as TreeEntry)"><el-icon v-if="row.type === 'dir'"><Folder /></el-icon><el-icon v-else><Document /></el-icon>{{ row.name }}</span></template></el-table-column><el-table-column :label="t('snapshots.browseTable.type')" width="70"><template #default="{ row }"><el-tag :type="row.type === 'dir' ? 'warning' : 'info'" size="small">{{ entryTypeText(row.type) }}</el-tag></template></el-table-column><el-table-column :label="t('snapshots.browseTable.size')" width="110"><template #default="{ row }">{{ formatSize(row.size) }}</template></el-table-column><el-table-column :label="t('snapshots.browseTable.modified')"><template #default="{ row }">{{ formatTime(row.mtime) }}</template></el-table-column></el-table>
+    </el-drawer>
 
-      <template #footer>
-        <el-button @click="restoreDialogVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button
-          type="info"
-          @click="handleDryRun"
-          :loading="dryRunLoading"
-          :disabled="!restoreForm.target_path"
-        >
-          <el-icon><Search /></el-icon>
-          <span>{{ t('snapshots.restoreDialog.dryRunButton') }}</span>
-        </el-button>
-        <el-button
-          type="primary"
-          @click="handleConfirmRestore"
-          :loading="restoreLoading"
-          :disabled="!restoreForm.target_path || !dryRunResult"
-        >
-          <span>{{ t('snapshots.restoreDialog.confirmExecute') }}</span>
-        </el-button>
-      </template>
+    <el-dialog v-model="restoreDialogVisible" :title="t('snapshots.restoreDialog.title')" width="680" destroy-on-close :close-on-click-modal="false">
+      <el-form :model="restoreForm" label-position="top"><el-form-item :label="t('snapshots.restoreDialog.snapshot')" required><el-text><code>{{ selectedSnapshot?.id }}</code> ({{ formatTime(selectedSnapshot?.time || '') }})</el-text></el-form-item><el-form-item :label="t('snapshots.restoreDialog.targetPath')" required><el-input v-model="restoreForm.target_path" placeholder="/absolute/path/on/agent" /><el-text size="small" type="info">{{ t('snapshots.restoreDialog.targetPathHint') }}</el-text></el-form-item><el-form-item :label="t('snapshots.restoreDialog.overwriteMode')" required><el-radio-group v-model="restoreForm.overwrite_mode"><el-radio value="never">{{ t('snapshots.restoreDialog.never') }}</el-radio><el-radio value="if-changed">{{ t('snapshots.restoreDialog.ifChanged') }}</el-radio><el-radio value="always">{{ t('snapshots.restoreDialog.always') }}</el-radio></el-radio-group></el-form-item><el-form-item :label="t('snapshots.restoreDialog.includePaths')"><el-checkbox-group v-model="restoreForm.include_paths"><div class="include-paths"><el-checkbox v-for="path in includePathOptions" :key="path" :value="path">{{ path }}</el-checkbox></div></el-checkbox-group><el-text size="small" type="info">{{ t('snapshots.restoreDialog.includePathsHint') }}</el-text></el-form-item></el-form>
+      <el-alert v-if="dryRunResult" :title="t('snapshots.restoreDialog.dryRunResult')" type="success" :closable="false"><div class="dry-run-stats"><el-statistic :title="t('snapshots.restoreDialog.add')" :value="dryRunResult.add" /><el-statistic :title="t('snapshots.restoreDialog.changed')" :value="dryRunResult.changed" /><el-statistic :title="t('snapshots.restoreDialog.skipped')" :value="dryRunResult.skipped" /><el-statistic :title="t('snapshots.restoreDialog.deleteStat')" :value="dryRunResult.delete" /></div></el-alert>
+      <template #footer><el-button @click="restoreDialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="info" @click="handleDryRun" :loading="dryRunLoading" :disabled="!restoreForm.target_path"><el-icon><Search /></el-icon>{{ t('snapshots.restoreDialog.dryRunButton') }}</el-button><el-button type="primary" @click="handleConfirmRestore" :loading="restoreLoading" :disabled="!restoreForm.target_path || !dryRunResult">{{ t('snapshots.restoreDialog.confirmExecute') }}</el-button></template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { apiDelete, apiGet, apiGetWithMeta, apiPost } from '@/api/client'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { apiDelete, apiGet, apiGetWithMeta, apiPost } from '@/api/client'
 import { formatDateTime } from '@/i18n'
-import type { Plan, Repository, Snapshot, SnapshotDeletionResponse, TreeEntry, TreeResponse } from '@/api/types'
+import { KIND_LABELS, KIND_TAG_TYPE } from '@/views/plans/Constants'
+import type { Agent, Plan, Repository, Snapshot, SnapshotDeletionResponse, TreeEntry, TreeResponse } from '@/api/types'
 
-const { t } = useI18n()
+interface DryRunResult { add: number; changed: number; skipped: number; delete: number; sample: string[] }
+interface RestoreResponse { restore_request_id: string; run_id: string }
+interface BreadcrumbPart { label: string; path: string }
+interface SnapshotView { raw: Snapshot; planID: string; planName: string; plan?: Plan; kind: string; kindLabel: string; kindTagType: 'primary' | 'success' | 'warning' | 'danger' | 'info'; sourceSummary: string; agentDisplay: { name: string; hostname: string }; runID: string; extraTags: string[] }
 
-function entryTypeText(type: string): string {
-  return t(`snapshots.fileTypes.${type}`)
-}
+const { t } = useI18n(); const router = useRouter()
+const repos = ref<Repository[]>([]); const plans = ref<Plan[]>([]); const agents = ref<Agent[]>([]); const reposLoading = ref(false); const mainError = ref(''); const selectedRepoId = ref('')
+const ALL_PLANS_FILTER = 'all'; const DELETED_PLANS_FILTER = 'deleted'; const UNASSIGNED_PLAN_FILTER = 'unassigned'; type PlanFilter = typeof ALL_PLANS_FILTER | typeof DELETED_PLANS_FILTER | typeof UNASSIGNED_PLAN_FILTER | string
+const planFilter = ref<PlanFilter>(ALL_PLANS_FILTER); const snapshots = ref<Snapshot[]>([]); const snapshotsLoading = ref(false); const snapshotsCache = ref<string | null>(null); const snapshotsVerifiedAt = ref<string | null>(null)
+const selectedSnapshot = ref<Snapshot | null>(null); const detailDrawerVisible = ref(false); const treeLoading = ref(false); const treeCache = ref<string | null>(null); const treeVerifiedAt = ref<string | null>(null); const treeEntries = ref<TreeEntry[]>([]); const treePath = ref('/'); const treeSelectedPaths = ref<string[]>([])
+const restoreDialogVisible = ref(false); const restoreForm = ref({ target_path: '', overwrite_mode: 'never' as 'never' | 'if-changed' | 'always', include_paths: [] as string[] }); const dryRunLoading = ref(false); const dryRunResult = ref<DryRunResult | null>(null); const restoreLoading = ref(false)
+const selectedRepo = computed(() => repos.value.find((repo) => repo.id === selectedRepoId.value)); const repositoryPlans = computed(() => plans.value.filter((plan) => plan.repository_id === selectedRepoId.value)); const selectedSnapshotView = computed(() => selectedSnapshot.value ? snapshotView(selectedSnapshot.value) : null); const canRestore = computed(() => selectedSnapshotView.value?.kind === 'filesystem')
+const snapshotViews = computed(() => snapshots.value.map(snapshotView).sort((a, b) => Date.parse(b.raw.time) - Date.parse(a.raw.time))); const filteredSnapshots = computed(() => planFilter.value === ALL_PLANS_FILTER ? snapshotViews.value : snapshotViews.value.filter((snapshot) => snapshot.planID === planFilter.value))
+const breadcrumbs = computed<BreadcrumbPart[]>(() => { const parts = treePath.value.split('/').filter(Boolean); const result = [{ label: '/', path: '/' }]; let path = ''; for (const part of parts) { path += `/${part}`; result.push({ label: part, path }) } return result })
+const includePathOptions = computed(() => treeEntries.value.map((entry) => treePath.value === '/' ? `/${entry.name}` : `${treePath.value}/${entry.name}`)); const snapshotsCacheLabel = computed(() => formatCacheLabel(snapshotsCache.value, snapshotsVerifiedAt.value))
 
-// Local types
-interface DryRunResult {
-  add: number
-  changed: number
-  skipped: number
-  delete: number
-  sample: string[]
-}
+function tagValues(snapshot: Snapshot, prefix: string): string[] { return [...new Set(snapshot.tags.filter((tag) => tag.startsWith(prefix) && tag.slice(prefix.length)).map((tag) => tag.slice(prefix.length)))] }
+function sourceSummary(plan: Plan): string { if (plan.kind === 'filesystem') return plan.source.paths?.join(', ') || ''; if (plan.kind === 'sqlite') return plan.source.path || ''; return plan.source.host && plan.source.database ? `${plan.source.host}${plan.source.port ? `:${plan.source.port}` : ''}/${plan.source.database}` : '' }
+function snapshotView(snapshot: Snapshot): SnapshotView { const ids = tagValues(snapshot, 'plan:'); const plan = ids.length === 1 ? plans.value.find((item) => item.id === ids[0]) : undefined; const planID = plan ? plan.id : ids.length ? DELETED_PLANS_FILTER : UNASSIGNED_PLAN_FILTER; const kind = tagValues(snapshot, 'kind:')[0] || plan?.kind || 'unknown'; const known = kind in KIND_LABELS; const agent = agents.value.find((item) => item.id === selectedRepo.value?.agent_id); const runs = tagValues(snapshot, 'run:'); return { raw: snapshot, planID, plan, planName: plan?.name || t(ids.length ? 'snapshots.deletedPlan' : 'snapshots.unassignedPlan'), kind, kindLabel: known ? t(KIND_LABELS[kind as Plan['kind']]) : t('snapshots.unknownType'), kindTagType: known ? KIND_TAG_TYPE[kind as Plan['kind']] : 'info', sourceSummary: sourceSummary(plan || ({ kind: 'filesystem', source: { paths: snapshot.paths } } as Plan)) || '—', agentDisplay: { name: agent?.name || selectedRepo.value?.agent_name || selectedRepo.value?.agent_id || '—', hostname: agent?.hostname || '—' }, runID: runs.length === 1 ? runs[0] : '', extraTags: snapshot.tags.filter((tag) => !['plan:', 'kind:', 'run:'].some((prefix) => tag.startsWith(prefix))) } }
+function formatTime(value: string): string { return value ? formatDateTime(value) : '—' }; function formatSize(bytes: number): string { if (bytes <= 0) return '-'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1); return i ? `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}` : `${bytes} B` }; function entryTypeText(type: string): string { return t(`snapshots.fileTypes.${type}`) }; function formatCacheLabel(cache: string | null, verifiedAt: string | null): string { if (!cache) return ''; return t('snapshots.cache.status', { status: cache === 'HIT' ? t('snapshots.cache.hit') : t('snapshots.cache.miss'), time: verifiedAt ? formatTime(verifiedAt) : t('snapshots.cache.unknownTime') }) }
 
-interface RestoreResponse {
-  restore_request_id: string
-  run_id: string
-}
-
-interface BreadcrumbPart {
-  label: string
-  path: string
-}
-
-const repos = ref<Repository[]>([])
-const reposLoading = ref(false)
-const mainError = ref('')
-const router = useRouter()
-
-const selectedRepoId = ref<string>('')
-
-const ALL_PLANS_FILTER = 'all'
-const DELETED_PLANS_FILTER = 'deleted'
-const UNASSIGNED_PLAN_FILTER = 'unassigned'
-type PlanFilter = typeof ALL_PLANS_FILTER | typeof DELETED_PLANS_FILTER | typeof UNASSIGNED_PLAN_FILTER | string
-
-const plans = ref<Plan[]>([])
-const planFilter = ref<PlanFilter>(ALL_PLANS_FILTER)
-const snapshots = ref<Snapshot[]>([])
-const snapshotsLoading = ref(false)
-const snapshotsCache = ref<string | null>(null)
-const snapshotsVerifiedAt = ref<string | null>(null)
-
-const selectedSnapshot = ref<Snapshot | null>(null)
-const treeLoading = ref(false)
-const treeCache = ref<string | null>(null)
-const treeVerifiedAt = ref<string | null>(null)
-const treeEntries = ref<TreeEntry[]>([])
-const treePath = ref('/')
-const treeSelectedPaths = ref<string[]>([])
-
-const restoreDialogVisible = ref(false)
-const restoreForm = ref({
-  target_path: '',
-  overwrite_mode: 'never' as 'never' | 'if-changed' | 'always',
-  include_paths: [] as string[],
-})
-const dryRunLoading = ref(false)
-const dryRunResult = ref<DryRunResult | null>(null)
-const restoreLoading = ref(false)
-
-const breadcrumbs = computed<BreadcrumbPart[]>(() => {
-  const p = treePath.value
-  if (p === '/' || p === '') return [{ label: '/', path: '/' }]
-  const parts = p.split('/').filter(Boolean)
-  const result: BreadcrumbPart[] = [{ label: '/', path: '/' }]
-  let acc = ''
-  for (const part of parts) {
-    acc += '/' + part
-    result.push({ label: part, path: acc })
-  }
-  return result
-})
-const snapshotsCacheLabel = computed(() => formatCacheLabel(snapshotsCache.value, snapshotsVerifiedAt.value))
-const treeCacheLabel = computed(() => formatCacheLabel(treeCache.value, treeVerifiedAt.value))
-
-const repositoryPlans = computed(() => plans.value.filter((plan) => plan.repository_id === selectedRepoId.value))
-const filteredSnapshots = computed(() => {
-  if (planFilter.value === ALL_PLANS_FILTER) return snapshots.value
-
-  const currentPlanIDs = new Set(plans.value.map((plan) => plan.id))
-  return snapshots.value.filter((snapshot) => {
-    const planIDs = snapshot.tags
-      .filter((tag) => tag.startsWith('plan:'))
-      .map((tag) => tag.slice('plan:'.length))
-
-    if (planFilter.value === UNASSIGNED_PLAN_FILTER) return planIDs.length === 0
-    if (planFilter.value === DELETED_PLANS_FILTER) {
-      return planIDs.length > 0 && planIDs.every((planID) => !currentPlanIDs.has(planID))
-    }
-    return planIDs.includes(planFilter.value)
-  })
-})
-
-function formatCacheLabel(cache: string | null, verifiedAt: string | null): string {
-  if (!cache) return ''
-  const status = cache === 'HIT' ? t('snapshots.cache.hit') : t('snapshots.cache.miss')
-  const verified = verifiedAt ? formatTime(verifiedAt) : t('snapshots.cache.unknownTime')
-  return t('snapshots.cache.status', { status, time: verified })
-}
-
-const includePathOptions = computed<string[]>(() => {
-  return treeEntries.value
-    .filter((e) => e.type === 'file' || e.type === 'dir')
-    .map((e) => treePath.value === '/' ? '/' + e.name : treePath.value + '/' + e.name)
-})
-
-function shortId(id: string | undefined): string {
-  if (!id) return ''
-  return id.length > 8 ? id.slice(0, 8) : id
-}
-
-function formatTime(iso: string): string {
-  return formatDateTime(iso)
-}
-
-function formatSize(bytes: number): string {
-  if (bytes <= 0) return '-'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  if (i === 0) return `${bytes} B`
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
-}
-
-async function loadRepos(): Promise<void> {
-  reposLoading.value = true
-  mainError.value = ''
-  try {
-    const [repositoryList, planList] = await Promise.all([
-      apiGet<Repository[]>('/repositories'),
-      apiGet<Plan[]>('/plans'),
-    ])
-    repos.value = repositoryList
-    plans.value = planList
-    // Pre-select the first repo
-    if (repos.value.length > 0 && !selectedRepoId.value) {
-      selectedRepoId.value = repos.value[0].id
-    }
-  } catch (err: unknown) {
-    const e = err as { message?: string }
-    mainError.value = e.message || t('snapshots.messages.reposLoadFailed')
-  } finally {
-    reposLoading.value = false
-  }
-}
-
-async function loadSnapshots(refresh = false): Promise<void> {
-  if (!selectedRepoId.value) return
-  snapshotsLoading.value = true
-  clearSnapshotSelection()
-  try {
-    const response = await apiGetWithMeta<Snapshot[]>(`/repositories/${selectedRepoId.value}/snapshots`, {
-      refresh: refresh ? 1 : undefined,
-    })
-    snapshots.value = response.data
-    snapshotsCache.value = response.meta.cache
-    snapshotsVerifiedAt.value = response.meta.verifiedAt
-  } catch (err: unknown) {
-    const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || t('snapshots.messages.loadSnapshotsFailedCode', { code: e.code || 'unknown' }))
-    snapshots.value = []
-    snapshotsCache.value = null
-    snapshotsVerifiedAt.value = null
-  } finally {
-    snapshotsLoading.value = false
-  }
-}
-
-function clearSnapshotSelection(): void {
-  selectedSnapshot.value = null
-  treeEntries.value = []
-  treePath.value = '/'
-  treeSelectedPaths.value = []
-  treeCache.value = null
-  treeVerifiedAt.value = null
-  restoreDialogVisible.value = false
-  dryRunResult.value = null
-}
-
-async function handleDeleteSnapshot(snapshot: Snapshot): Promise<void> {
-  if (!selectedRepoId.value) return
-  try {
-    const { value } = await ElMessageBox.prompt(
-      `${t('snapshots.delete.message')}\n\n${t('snapshots.delete.snapshotId', { id: snapshot.id })}`,
-      t('snapshots.delete.title'),
-      {
-        confirmButtonText: t('snapshots.delete.confirm'),
-        cancelButtonText: t('common.cancel'),
-        inputPlaceholder: t('snapshots.delete.inputPlaceholder'),
-        inputValidator: (value) => value === snapshot.id || t('snapshots.delete.inputMismatch'),
-      },
-    )
-    if (value !== snapshot.id) return
-
-    await apiDelete<SnapshotDeletionResponse>(`/repositories/${selectedRepoId.value}/snapshots/${snapshot.id}`)
-    snapshots.value = snapshots.value.filter((item) => item.id !== snapshot.id)
-    if (selectedSnapshot.value?.id === snapshot.id) clearSnapshotSelection()
-    ElMessage.success(t('snapshots.messages.deleteQueued'))
-  } catch (err: unknown) {
-    if (err === 'cancel') return
-    const e = err as { message?: string; status?: number }
-    if (e.status === 409) {
-      ElMessage.warning(t('snapshots.messages.deleteRefreshRequired'))
-      await loadSnapshots(true)
-      return
-    }
-    ElMessage.error(e.message || t('snapshots.messages.deleteFailed'))
-  }
-}
-
-async function handleSelectSnapshot(snapshot: Snapshot): Promise<void> {
-  selectedSnapshot.value = snapshot
-  treePath.value = '/'
-  treeSelectedPaths.value = []
-  await loadTree()
-}
-
-async function loadTree(refresh = false): Promise<void> {
-  if (!selectedSnapshot.value || !selectedRepoId.value) return
-  treeLoading.value = true
-  try {
-    const response = await apiGetWithMeta<TreeResponse>('/snapshots/' + selectedSnapshot.value.id + '/tree', {
-      repo: selectedRepoId.value,
-      path: treePath.value,
-      refresh: refresh ? 1 : undefined,
-    })
-    treeEntries.value = response.data.entries || []
-    treePath.value = response.data.path || treePath.value
-    treeCache.value = response.meta.cache
-    treeVerifiedAt.value = response.meta.verifiedAt
-  } catch (err: unknown) {
-    const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || t('snapshots.messages.loadTreeFailedCode', { code: e.code || 'unknown' }))
-    treeCache.value = null
-    treeVerifiedAt.value = null
-  } finally {
-    treeLoading.value = false
-  }
-}
-
-function handleRowClick(entry: TreeEntry): void {
-  if (entry.type !== 'dir') return
-  const newPath = treePath.value === '/' ? '/' + entry.name : treePath.value + '/' + entry.name
-  treePath.value = newPath
-  treeSelectedPaths.value = []
-  loadTree()
-}
-
-function navigateBreadcrumb(path: string): void {
-  treePath.value = path
-  treeSelectedPaths.value = []
-  loadTree()
-}
-
-function handleTreeSelection(rows: TreeEntry[]): void {
-  treeSelectedPaths.value = rows.map((r) => {
-    const parent = treePath.value === '/' ? '/' : treePath.value
-    return parent + '/' + r.name
-  })
-}
-
-function openRestoreWizard(): void {
-  if (!selectedSnapshot.value) return
-  restoreForm.value = {
-    target_path: '',
-    overwrite_mode: 'never',
-    include_paths: [...treeSelectedPaths.value],
-  }
-  dryRunResult.value = null
-  restoreDialogVisible.value = true
-}
-
-async function handleDryRun(): Promise<void> {
-  if (!selectedSnapshot.value || !selectedRepoId.value) return
-  dryRunLoading.value = true
-  dryRunResult.value = null
-  try {
-    dryRunResult.value = await apiPost<DryRunResult>('/restores/dry-run', {
-      repository_id: selectedRepoId.value,
-      snapshot_id: selectedSnapshot.value.id,
-      include_paths: restoreForm.value.include_paths,
-      target_path: restoreForm.value.target_path,
-      overwrite_mode: restoreForm.value.overwrite_mode,
-    })
-    ElMessage.success(t('snapshots.messages.dryRunCompleted'))
-  } catch (err: unknown) {
-    const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || t('snapshots.messages.dryRunFailedCode', { code: e.code || 'unknown' }))
-  } finally {
-    dryRunLoading.value = false
-  }
-}
-
+async function loadRepos(): Promise<void> { reposLoading.value = true; mainError.value = ''; try { const [repoList, planList, agentList] = await Promise.all([apiGet<Repository[]>('/repositories'), apiGet<Plan[]>('/plans'), apiGet<Agent[]>('/agents')]); repos.value = repoList; plans.value = planList; agents.value = agentList; if (!selectedRepoId.value && repoList.length) selectedRepoId.value = repoList[0].id } catch (err: unknown) { mainError.value = (err as { message?: string }).message || t('snapshots.messages.reposLoadFailed') } finally { reposLoading.value = false } }
+async function loadSnapshots(refresh = false): Promise<void> { if (!selectedRepoId.value) return; snapshotsLoading.value = true; clearSnapshotSelection(); try { const response = await apiGetWithMeta<Snapshot[]>(`/repositories/${selectedRepoId.value}/snapshots`, { refresh: refresh ? 1 : undefined }); snapshots.value = response.data; snapshotsCache.value = response.meta.cache; snapshotsVerifiedAt.value = response.meta.verifiedAt } catch (err: unknown) { const e = err as { message?: string; code?: string }; ElMessage.error(e.message || t('snapshots.messages.loadSnapshotsFailedCode', { code: e.code || 'unknown' })); snapshots.value = [] } finally { snapshotsLoading.value = false } }
+function clearSnapshotSelection(): void { selectedSnapshot.value = null; detailDrawerVisible.value = false; treeEntries.value = []; treePath.value = '/'; treeSelectedPaths.value = []; treeCache.value = null; treeVerifiedAt.value = null; restoreDialogVisible.value = false; dryRunResult.value = null }
+async function handleSelectSnapshot(snapshot: Snapshot): Promise<void> { selectedSnapshot.value = snapshot; detailDrawerVisible.value = true; treePath.value = '/'; treeSelectedPaths.value = []; treeEntries.value = []; treeCache.value = null; treeVerifiedAt.value = null; dryRunResult.value = null; await loadTree() }
+async function loadTree(refresh = false): Promise<void> { if (!selectedSnapshot.value || !selectedRepoId.value) return; treeLoading.value = true; try { const response = await apiGetWithMeta<TreeResponse>(`/snapshots/${selectedSnapshot.value.id}/tree`, { repo: selectedRepoId.value, path: treePath.value, refresh: refresh ? 1 : undefined }); treeEntries.value = response.data.entries || []; treePath.value = response.data.path || treePath.value; treeCache.value = response.meta.cache; treeVerifiedAt.value = response.meta.verifiedAt } catch (err: unknown) { const e = err as { message?: string; code?: string }; ElMessage.error(e.message || t('snapshots.messages.loadTreeFailedCode', { code: e.code || 'unknown' })) } finally { treeLoading.value = false } }
+function handleRowClick(entry: TreeEntry): void { if (entry.type !== 'dir') return; treePath.value = treePath.value === '/' ? `/${entry.name}` : `${treePath.value}/${entry.name}`; treeSelectedPaths.value = []; void loadTree() }; function navigateBreadcrumb(path: string): void { treePath.value = path; treeSelectedPaths.value = []; void loadTree() }; function handleTreeSelection(rows: TreeEntry[]): void { treeSelectedPaths.value = rows.map((row) => `${treePath.value === '/' ? '' : treePath.value}/${row.name}`) }
+function openRestoreWizard(): void { if (!selectedSnapshot.value || !canRestore.value) return; restoreForm.value = { target_path: '', overwrite_mode: 'never', include_paths: [...treeSelectedPaths.value] }; dryRunResult.value = null; restoreDialogVisible.value = true }
+async function copySnapshotId(): Promise<void> { if (!selectedSnapshot.value) return; try { await navigator.clipboard.writeText(selectedSnapshot.value.id); ElMessage.success(t('common.copied')) } catch { ElMessage.error(t('common.copyFailed')) } }
+async function handleDeleteSnapshot(snapshot: Snapshot): Promise<void> { if (!selectedRepoId.value) return; try { const { value } = await ElMessageBox.prompt(`${t('snapshots.delete.message')}\n\n${t('snapshots.delete.snapshotId', { id: snapshot.id })}`, t('snapshots.delete.title'), { confirmButtonText: t('snapshots.delete.confirm'), cancelButtonText: t('common.cancel'), inputPlaceholder: t('snapshots.delete.inputPlaceholder'), inputValidator: (value) => value === snapshot.id || t('snapshots.delete.inputMismatch') }); if (value !== snapshot.id) return; await apiDelete<SnapshotDeletionResponse>(`/repositories/${selectedRepoId.value}/snapshots/${snapshot.id}`); snapshots.value = snapshots.value.filter((item) => item.id !== snapshot.id); if (selectedSnapshot.value?.id === snapshot.id) clearSnapshotSelection(); ElMessage.success(t('snapshots.messages.deleteQueued')) } catch (err: unknown) { if (err === 'cancel') return; const e = err as { message?: string; status?: number }; if (e.status === 409) { await loadSnapshots(true); return }; ElMessage.error(e.message || t('snapshots.messages.deleteFailed')) } }
+async function handleDryRun(): Promise<void> { if (!selectedSnapshot.value || !selectedRepoId.value) return; dryRunLoading.value = true; dryRunResult.value = null; try { dryRunResult.value = await apiPost<DryRunResult>('/restores/dry-run', { repository_id: selectedRepoId.value, snapshot_id: selectedSnapshot.value.id, include_paths: restoreForm.value.include_paths, target_path: restoreForm.value.target_path, overwrite_mode: restoreForm.value.overwrite_mode }); ElMessage.success(t('snapshots.messages.dryRunCompleted')) } catch (err: unknown) { const e = err as { message?: string; code?: string }; ElMessage.error(e.message || t('snapshots.messages.dryRunFailedCode', { code: e.code || 'unknown' })) } finally { dryRunLoading.value = false } }
 async function handleConfirmRestore(): Promise<void> {
   if (!selectedSnapshot.value || !selectedRepoId.value || !dryRunResult.value) return
   try {
-    const { value } = await ElMessageBox.prompt(
-      t('snapshots.prompt.message'),
-      t('snapshots.prompt.title'),
-      {
-        confirmButtonText: t('snapshots.prompt.execute'),
-        cancelButtonText: t('common.cancel'),
-        inputPlaceholder: t('snapshots.prompt.inputPlaceholder', { example: shortId(selectedSnapshot.value.id) }),
-        inputPattern: /.+/,
-        inputErrorMessage: t('snapshots.prompt.inputRequired'),
-      },
-    )
-    if (!value) return
-
+    const { value } = await ElMessageBox.prompt(t('snapshots.prompt.message'), t('snapshots.prompt.title'), { confirmButtonText: t('snapshots.prompt.execute'), cancelButtonText: t('common.cancel'), inputPlaceholder: t('snapshots.prompt.inputPlaceholder', { example: selectedSnapshot.value.id.slice(0, 8) }), inputPattern: /.+/, inputErrorMessage: t('snapshots.prompt.inputRequired') })
     restoreLoading.value = true
-    const resp = await apiPost<RestoreResponse>('/restores', {
-      repository_id: selectedRepoId.value,
-      snapshot_id: selectedSnapshot.value.id,
-      restore_kind: 'filesystem',
-      target: {
-        target_path: restoreForm.value.target_path,
-        include_paths: restoreForm.value.include_paths,
-        overwrite_mode: restoreForm.value.overwrite_mode,
-      },
-      overwrite: restoreForm.value.overwrite_mode !== 'never',
-      confirmation: value,
-    })
-
+    const response = await apiPost<RestoreResponse>('/restores', { repository_id: selectedRepoId.value, snapshot_id: selectedSnapshot.value.id, restore_kind: 'filesystem', target: { target_path: restoreForm.value.target_path, include_paths: restoreForm.value.include_paths, overwrite_mode: restoreForm.value.overwrite_mode }, overwrite: restoreForm.value.overwrite_mode !== 'never', confirmation: value })
     ElMessage.success(t('snapshots.messages.restoreInitiated'))
     restoreDialogVisible.value = false
-    router.push(`/runs/${resp.run_id}`)
+    await router.push(`/runs/${response.run_id}`)
   } catch (err: unknown) {
-    if (err === 'cancel') return
-    const e = err as { message?: string; code?: string }
-    ElMessage.error(e.message || t('snapshots.messages.restoreFailedCode', { code: e.code || 'unknown' }))
-  } finally {
-    restoreLoading.value = false
-  }
+    if (err !== 'cancel') { const e = err as { message?: string; code?: string }; ElMessage.error(e.message || t('snapshots.messages.restoreFailedCode', { code: e.code || 'unknown' })) }
+  } finally { restoreLoading.value = false }
 }
-
-watch(selectedRepoId, (newId) => {
-  planFilter.value = ALL_PLANS_FILTER
-  clearSnapshotSelection()
-  if (newId) {
-    loadSnapshots()
-  } else {
-    snapshots.value = []
-  }
-})
-
-watch(planFilter, () => {
-  clearSnapshotSelection()
-})
-
-loadRepos()
+watch(selectedRepoId, (value) => { planFilter.value = ALL_PLANS_FILTER; clearSnapshotSelection(); if (value) void loadSnapshots() }); watch(planFilter, clearSnapshotSelection); void loadRepos()
 </script>
+
+<style scoped>
+.snapshot-shell { margin-bottom: 16px }.snapshot-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px }.repository-select { min-width: 280px; flex: 1 }.plan-filter { width: 180px }.repository-option { display: flex; flex-direction: column; line-height: 1.4 }.repository-option small, .agent-cell small, .snapshot-summary small, .drawer-subtitle { color: var(--el-text-color-secondary); font-size: 12px }.snapshot-table { width: 100%; cursor: pointer }.source-summary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }.agent-cell { display: flex; flex-direction: column }.loading-state { text-align: center; padding: 32px }.snapshot-summary { display: grid; gap: 10px; margin-bottom: 18px }.snapshot-summary > div { display: flex; gap: 12px; align-items: center }.snapshot-summary b { width: 76px; color: var(--el-text-color-secondary) }.snapshot-summary span { min-width: 0 }.drawer-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 18px 0 }.restore-hint { color: var(--el-text-color-secondary); font-size: 12px }.snapshot-breadcrumb { margin: 12px 0; cursor: pointer }.tree-name { cursor: pointer; display: inline-flex; align-items: center; gap: 4px }.id-copy { display: flex; align-items: center; gap: 10px; flex-wrap: wrap }.include-paths { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto }.dry-run-stats { display: flex; gap: 16px; flex-wrap: wrap }.muted { color: var(--el-text-color-secondary) }
+</style>

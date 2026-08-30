@@ -762,9 +762,9 @@ func TestSnapshotDeletionFinishScanReconcilesPresentSnapshot(t *testing.T) {
 	}
 }
 
-// TestSnapshotDeletionClaimRunRepositoryCacheInvalidation verifies that
-// ClaimSnapshotDeletionRun invalidates the snapshot cache for the repository.
-func TestSnapshotDeletionClaimRunRepositoryCacheInvalidation(t *testing.T) {
+// TestSnapshotDeletionClaimRunPreservesRepositoryCache verifies that claiming
+// a deletion run keeps the last verified snapshot cache available for browsing.
+func TestSnapshotDeletionClaimRunPreservesRepositoryCache(t *testing.T) {
 	ts, _, _, repo := newSnapshotDeletionRepository(t)
 	defer ts.Close(t)
 	ctx := context.Background()
@@ -810,8 +810,11 @@ func TestSnapshotDeletionClaimRunRepositoryCacheInvalidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gen after claim: %v", err)
 	}
-	if gen2 <= gen1 {
-		t.Fatalf("expected cache generation bumped after claim, got %d -> %d", gen1, gen2)
+	if gen2 != gen1 {
+		t.Fatalf("cache generation changed after claim: %d -> %d", gen1, gen2)
+	}
+	if _, err := cacheStore.GetSnapshotListCache(ctx, repo.ID); err != nil {
+		t.Fatalf("snapshot cache unavailable after claim: %v", err)
 	}
 }
 

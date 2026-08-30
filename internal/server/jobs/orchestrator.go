@@ -1678,7 +1678,8 @@ func (o *Orchestrator) filterHiddenSnapshots(ctx context.Context, repoID string,
 	return filtered
 }
 
-// QueueSnapshotDeletion 记录手动删除意图并立即使快照列表/目录缓存失效。
+// QueueSnapshotDeletion 记录手动删除意图。旧缓存继续提供浏览数据，
+// filterHiddenSnapshots 会立即隐藏待删除快照；远端刷新成功后再替换缓存。
 // HTTP 请求不等待 Agent，也不直接调用 restic；真正的 forget 由 scheduler
 // 在后台上游处理。
 func (o *Orchestrator) QueueSnapshotDeletion(ctx context.Context, actorID, repoID, snapshotID string) (*model.SnapshotDeletion, bool, error) {
@@ -1693,10 +1694,6 @@ func (o *Orchestrator) QueueSnapshotDeletion(ctx context.Context, actorID, repoI
 	del, created, err := sds.QueueManualSnapshotDeletion(ctx, repoID, repo.AgentID, snapshotID, actorID, time.Now().UTC())
 	if err != nil {
 		return nil, false, err
-	}
-	// 使 list/tree 缓存失效：已请求删除的快照必须立即从列表隐藏。
-	if cs, ok := o.Store.(store.SnapshotCacheStore); ok {
-		_ = cs.InvalidateSnapshotCache(ctx, repoID, true)
 	}
 	o.Audit(ctx, "admin", actorID, "snapshot.delete.requested", "snapshot", snapshotID,
 		map[string]string{"repository_id": repoID, "deletion_id": del.ID, "source": string(del.Source)})
@@ -1730,13 +1727,6 @@ func (o *Orchestrator) TickSnapshotCleanup(ctx context.Context, now time.Time) e
 		}
 	}
 	return nil
-}
-
-// invalidateSnapshotCache 清空指定仓库的 list 缓存（并可选 tree 缓存）。
-func (o *Orchestrator) invalidateSnapshotCache(repoID string, clearTrees bool) {
-	if cs, ok := o.Store.(store.SnapshotCacheStore); ok {
-		_ = cs.InvalidateSnapshotCache(context.Background(), repoID, clearTrees)
-	}
 }
 
 // cleanupRunningDeletions 检查 running 意图关联的 run：成功/远端已消失则完成，
@@ -1774,7 +1764,6 @@ func (o *Orchestrator) cleanupRunningDeletions(ctx context.Context, sds Snapshot
 			_ = sds.CompleteSnapshotDeletion(ctx, del.ID, now)
 			o.Audit(ctx, "system", "scheduler", "snapshot.delete.completed", "snapshot", del.SnapshotID,
 				map[string]string{"repository_id": repo.ID, "deletion_id": del.ID, "mode": "run_success"})
-			o.invalidateSnapshotCache(repo.ID, true)
 		case model.RunFailed, model.RunCancelled:
 			// 不立即重发破坏性命令；先 fresh scan 确认远端是否仍存在。
 			if err := o.reconcileFailedDeletion(ctx, sds, repo, del, now); err != nil {
@@ -1821,7 +1810,6 @@ func (o *Orchestrator) reconcileFailedDeletion(ctx context.Context, sds Snapshot
 		_ = sds.CompleteSnapshotDeletion(ctx, del.ID, now)
 		o.Audit(ctx, "system", "scheduler", "snapshot.delete.completed", "snapshot", del.SnapshotID,
 			map[string]string{"repository_id": repo.ID, "deletion_id": del.ID, "mode": "scan_absent"})
-		o.invalidateSnapshotCache(repo.ID, true)
 		return nil
 	}
 	// 仍存在：重新置 pending，退避重试；不恢复到前端列表。
@@ -1888,7 +1876,6 @@ func (o *Orchestrator) claimPendingDeletion(ctx context.Context, sds SnapshotDel
 		o.Bus.Publish(run.ID, events.Event{Type: events.State, Run: run})
 		o.Audit(ctx, "system", "scheduler", "snapshot.delete.started", "snapshot", del.SnapshotID,
 			map[string]string{"repository_id": repo.ID, "deletion_id": del.ID, "run_id": run.ID})
-		o.invalidateSnapshotCache(repo.ID, true)
 		claimed = true
 	}
 	return nil

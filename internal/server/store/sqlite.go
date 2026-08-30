@@ -2479,13 +2479,6 @@ func (s *sqliteStore) ClaimSnapshotDeletionRun(ctx context.Context, deletionID s
 		return fmt.Errorf("claim deletion set running: %w", err)
 	}
 
-	// 删除 run 创建即失效快照缓存（clearTrees）。
-	if run.RepositoryID != "" {
-		if err := invalidateSnapshotCacheTx(ctx, tx, run.RepositoryID, true); err != nil {
-			return err
-		}
-	}
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("claim deletion run commit: %w", err)
 	}

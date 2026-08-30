@@ -270,14 +270,20 @@ func (s *Server) handleCreatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
+	retentionJSON, err := json.Marshal(body.Retention)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", "failed to encode retention")
+		return
+	}
 	p := &model.Plan{
 		ID: newUUID(), Name: body.Name, AgentID: body.AgentID, Kind: body.Kind,
 		Schedule: body.Schedule, Timezone: body.Timezone,
 		Enabled:    body.Enabled == nil || *body.Enabled,
 		SourceJSON: string(cleanSource), RepositoryID: body.RepositoryID,
-		Retention: body.Retention, TimeoutSeconds: body.TimeoutSeconds,
+		Retention: body.Retention, RetentionJSON: string(retentionJSON), TimeoutSeconds: body.TimeoutSeconds,
 		CreatedAt: now, UpdatedAt: now,
 	}
+
 	if err := s.ST.CreatePlan(r.Context(), p); err != nil {
 		if !mapStoreErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -346,7 +352,13 @@ func (s *Server) handleUpdatePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	existing.SourceJSON = string(cleanSource)
 	existing.RepositoryID = body.RepositoryID
+	retentionJSON, err := json.Marshal(body.Retention)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", "failed to encode retention")
+		return
+	}
 	existing.Retention = body.Retention
+	existing.RetentionJSON = string(retentionJSON)
 	existing.TimeoutSeconds = body.TimeoutSeconds
 	repo, err := s.ST.GetRepository(r.Context(), body.RepositoryID)
 	if err != nil {

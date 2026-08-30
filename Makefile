@@ -48,17 +48,17 @@ docker-build-agent:
 	docker build -f Dockerfile.agent -t backup-management-center-agent:latest .
 
 docker-up:
-	docker compose up -d --build
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 
 docker-pull:
-	docker compose pull
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
 
 docker-update:
-	docker compose pull
-	docker compose up -d --no-build --remove-orphans
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --no-build --remove-orphans
 
 docker-down:
-	docker compose down
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml down
 
 test:
 	$(GO) test ./... -count=1

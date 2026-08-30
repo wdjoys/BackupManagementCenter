@@ -1,4 +1,0 @@
-# 默认入口：Server。Agent 应在每台被管理主机上单独使用
-# docker-compose.agent.yml 部署。
-include:
-  - docker-compose.server.yml

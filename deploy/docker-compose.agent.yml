@@ -17,10 +17,9 @@ services:
     container_name: bmc-agent
     # 默认拉取 Docker Hub 上的 latest；可通过 BMC_AGENT_IMAGE 覆盖。
     image: ${BMC_AGENT_IMAGE:-wdjoys/backup-management-center-agent:latest}
-    pull_policy: always
     build:
-      # 使用项目根目录作为构建上下文，并通过 Dockerfile.agent 构建 Agent 镜像。
-      context: .
+      # 构建上下文指向仓库根目录；Compose 文件位于 deploy/。
+      context: ..
       dockerfile: Dockerfile.agent
       args:
         # 将版本号传递给镜像构建过程；未设置时使用默认版本。

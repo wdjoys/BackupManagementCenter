@@ -8,8 +8,7 @@ Backup Management Center（BMC）是一个 Server/Agent 架构的备份管理系
 
 - `backup-center-server`：控制面，负责认证、计划、运行记录、存储目标、仓库、调度、审计、指标和 Web UI。
 - `backup-center-agent`：受管主机上的执行面，首次使用注册身份，随后维持双向 gRPC stream 并调用本机 `restic`、`rclone` 及数据库客户端。
-- `web/`：Vue 3 + TypeScript + Vite 前端；生产构建结果由 Go `embed.FS` 嵌入 Server。
-- 部署和运维权威说明位于 `deploy/README.md` 与 `deploy/docker-compose.md`；仓库根目录没有独立 README。
+- 部署和运维权威说明位于 `deploy/README.md`；Compose 文件和环境变量示例统一位于 `deploy/`，仓库根目录没有独立 README。
 
 ## 架构与数据流
 
@@ -169,8 +168,8 @@ BMC_SERVER_TLS=0 BMC_ENROLLMENT_TOKEN=<token> make dev-agent
 - `internal/agent/client.go`、`runner.go`、`pipeline/pipeline.go`：Agent stream、幂等执行和具体操作分发。
 - `web/package.json`、`web/vite.config.ts`、`web/tsconfig.json`：前端脚本、代理/alias、类型检查和构建输出。
 - `web/src/api/client.ts`、`web/src/router/index.ts`、`web/src/stores/auth.ts`：前端 API、导航守卫和认证状态。
-- `Dockerfile.server`、`Dockerfile.agent`、`docker-compose.server.yml`、`docker-compose.agent.yml`：镜像运行时、端口、volume、secret 和主机挂载约定。
-- `deploy/systemd/*.service`、`deploy/README.md`、`deploy/docker-compose.md`：Linux service hardening、生产环境变量、升级顺序和数据备份要求。
+- `Dockerfile.server`、`Dockerfile.agent`、`deploy/docker-compose.yml`、`deploy/docker-compose.agent.yml`：镜像运行时、端口、volume、secret 和主机挂载约定。
+- `deploy/systemd/*.service`、`deploy/README.md`：Linux service hardening、环境变量、升级顺序和数据备份要求。
 
 ## 运行时与工具偏好
 

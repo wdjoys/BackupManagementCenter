@@ -1,684 +1,136 @@
 # Backup Management Center 部署文档
 
-版本基线：`v0.1.0`。本文档覆盖全部官方部署路径，内容与仓库当前实现一致。
+本文档是仓库唯一权威部署说明。Compose 文件统一位于 `deploy/`：
 
-## 目录
+- `deploy/docker-compose.yml`：Server（控制面），每台 Server 只运行这一份。
+- `deploy/docker-compose.agent.yml`：Agent 模板，每台需要读取备份源的 Linux 主机单独运行一份。
+- `deploy/.env.example`：Server 环境变量示例，可复制为 `deploy/.env` 后按实际环境修改。
+- `deploy/.env.agent.example`：Agent 环境变量示例，可复制到 Agent 主机并命名为 `.env.agent`。
 
-1. [架构总览](#架构总览)
-2. [部署方式选择](#部署方式选择)
-3. [通用准备](#通用准备)
-4. [方式一：Docker Compose 部署（推荐）](#方式一docker-compose-部署推荐)
-   - [Server Compose](#server-compose)
-   - [Agent Compose](#agent-compose)
-5. [方式二：systemd 二进制部署](#方式二systemd-二进制部署)
-   - [构建产物](#构建产物)
-   - [Server 安装](#server-安装)
-   - [Agent 安装](#agent-安装)
-6. [首次初始化](#首次初始化)
-7. [Agent 注册流程](#agent-注册流程)
-8. [备份目标与 Restic 仓库](#备份目标与-restic-仓库)
-9. [环境变量参考](#环境变量参考)
-10. [健康检查与监控](#健康检查与监控)
-11. [升级与回滚](#升级与回滚)
-12. [故障排查](#故障排查)
+不要把 Server 与所有 Agent 合并到同一个 Compose 项目，也不要提交真实 `.env`、`.env.agent`、注册令牌、主密钥、TLS 私钥或其他凭据。
 
-## 架构总览
+## 1. 前置条件与架构
 
-```text
-┌────────────────────────┐
-│ 浏览器                  │
-            ▼
-┌─────────────────────────────────────────────┐
-│ BMC Server（单节点）                          │
-│  :8080 HTTP API + Web UI（TLS）              │
-│  :9090 Agent gRPC（TLS）                     │
-│  127.0.0.1:9100 Prometheus 指标               │
-│  SQLite WAL + 主密钥加密列                    │
-└───────────▲─────────────────────────────────┘
-            │ 出站 TLS gRPC（长连接）
-┌───────────┴────────────┐
-│ BMC Agent（每台主机一个）│
-│  restic / rclone        │
-│  pg_dump / mysqldump    │
-│  mongodump / sqlite3    │
-└───────────┬────────────┘
-            │ 备份数据直写
-            ▼
-     网盘存储目标（rclone remote）
-```
+需要 Docker Engine 24+ 和 Docker Compose v2（命令为 `docker compose`）。Server 提供 Web/API（容器端口 8080）和 Agent gRPC（容器端口 9090）；Agent 不监听入站端口，通过出站 gRPC 连接 Server，并直接把备份写入存储目标。
 
-关键原则：
+生产环境建议使用正式 TLS 证书。若 80/443 已由 Caddy 占用，可让 Server 使用 `BMC_TLS_MODE=none` 运行明文后端，仅绑定本机回环地址，由 Caddy 终止 TLS 并将 gRPC 以 h2c 转发到 9090。
 
-- 控制面不承载备份数据流；Agent 直接写入网盘。
-- Server 与 Agent 之间只有一条出站 gRPC 长连接，Agent 不监听端口。
-- 每个 Agent × 存储目标对应独立 Restic 仓库与独立密码。
-- BMC（由 Server 调度 Agent）必须是每个 Restic 仓库的唯一写入方；运维必须禁止在 BMC 之外执行 `backup`、`forget`、`prune`、`tag`、`init` 等写操作，否则无法保证快照缓存的一致性。
-
-## 部署方式选择
-
-| 场景 | 推荐方式 | 说明 |
-| --- | --- | --- |
-| 生产服务器（独占边缘） | Docker Compose，自行提供 TLS 证书 | 支持每次握手动态加载，续期无需重启 |
-| 80/443 已被 Caddy/Nginx 占用 | Caddy 共存模式 | BMC 全明文，TLS 由边缘代理负责，见 [`deploy/caddy.md`](caddy.md) |
-| 已有 systemd 运维体系 | systemd 二进制部署 | 直接使用发行版 restic/rclone/数据库客户端 |
-| 本地开发 | `BMC_DEV_INSECURE=1` | 仅本机测试，禁止生产使用 |
-
-多种方式不要混用同一台主机的数据目录。
-
-## 通用准备
-
-无论哪种部署方式，都需要：
-
-### 1. DNS
-
-```
-backup.example.com → Server 公网 IP
-```
-
-验证：
+## 2. 准备 Server
 
 ```sh
-dig +short backup.example.com
+cd /path/to/BackupManagementCenter
+mkdir -p deploy/secrets
+head -c 32 /dev/urandom > deploy/secrets/master.key
+chmod 600 deploy/secrets/master.key
+cp deploy/.env.example deploy/.env
 ```
 
-### 2. 端口规划
+编辑 `deploy/.env`。主密钥必须离线备份；主密钥丢失后，数据库中的加密凭据无法恢复。正式 TLS 模式还需将证书链和私钥放入 `deploy/secrets/`，文件名默认分别为 `server.crt`、`server.key`。
 
-| 公网端口 | 用途 | 是否必须公网开放 |
-| --- | --- | --- |
-| TCP 443 | Web UI / API（HTTPS） | 是 |
-| TCP 9090 | Agent gRPC（TLS） | 是，至少对所有 Agent 开放 |
+### 自行提供 TLS 证书（默认）
 
-### 3. 主密钥
-
-32 字节随机密钥，用于 AES-256-GCM 加密数据库中的敏感列：
+将证书 SAN 覆盖浏览器和 Agent 使用的域名，然后启动：
 
 ```sh
-mkdir -p secrets
-head -c 32 /dev/urandom > secrets/master.key
-chmod 600 secrets/master.key
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+curl -fk https://backup.example.com/health/ready
 ```
 
-**主密钥丢失 = 数据库中所有凭据无法解密。必须离线备份主密钥。**
+默认映射为宿主机 `443 → 8080` 和 `9090 → 9090`。首次启动后访问 `https://<域名>/setup` 创建唯一管理员；初始化成功后 `/setup` 永久关闭。
 
-### 4. 国内镜像（可选）
+测试环境可用自签证书，但必须让 Agent 信任对应 CA；`BMC_DEV_INSECURE=1` 仅适用于隔离的本地测试，禁止生产使用。
 
-容器构建默认使用：
+### Caddy 共存 / 非 TLS 后端
 
-- Go modules：`https://goproxy.cn,direct`
-- pnpm：`https://registry.npmmirror.com`
-- Debian APT：`mirrors.aliyun.com`
-- Restic/Rclone Release 下载：`gh-proxy.com` 代理
-
-可按需通过构建参数覆盖（见 Agent 镜像章节）。
-
----
-
-## 方式一：Docker Compose 部署（推荐）
-
-前置要求：
-
-- Docker Engine 24+
-- Docker Compose v2（`docker compose` 命令）
-
-文件清单：
-
-```text
-docker-compose.yml              # 默认入口，包含 Server
-docker-compose.server.yml       # Server 服务定义（TLS 证书自行提供）
-docker-compose.agent.yml        # Agent 模板（在每台受管主机使用）
-Dockerfile.server
-Dockerfile.agent
-.dockerignore
-```
-
-### Server Compose
-
-#### 第 1 步：准备目录
-
-```sh
-cd /mnt/sdb/docker-project/BackupManagementCenter
-mkdir -p secrets
-head -c 32 /dev/urandom > secrets/master.key
-chmod 600 secrets/master.key
-```
-
-#### 第 2 步：准备 TLS 证书
-
-将证书链与私钥放入 `secrets/`：
-
-```text
-secrets/server.crt   # fullchain 证书链
-secrets/server.key   # 私钥
-chmod 600 secrets/server.key
-```
-
-证书来源任选其一：
-
-- 企业 CA / 商业证书；
-- Let's Encrypt 等 ACME 证书：80 端口可用时用 HTTP-01，否则用 DNS-01（acme.sh 等 ACME 客户端的 DNS 模式均可），签发后把 `fullchain.pem` / `privkey.pem` 复制到上述路径；
-- 内网环境可用自签证书（Agent 侧需信任 CA 或临时设置 `BMC_DEV_INSECURE=1`），见 [自签证书](#自签证书)。
-
-要求：证书 SAN 必须覆盖 Agent 与浏览器访问的域名；Server 在每次 TLS 握手时动态重读该文件，**替换证书后无需重启**。
-
-#### 第 3 步：启动 Server
-
-```sh
-export BMC_PUBLIC_URL=https://backup.example.com
-export BMC_MASTER_KEY_FILE=./secrets/master.key
-export BMC_TLS_CERT_FILE=./secrets/server.crt
-export BMC_TLS_KEY_FILE=./secrets/server.key
-
-docker compose -f docker-compose.server.yml up -d --build bmc-server
-
-GitHub Actions 会将 `main` 分支的构建发布为 Docker Hub 的 `server:latest` 与 `agent:latest` 镜像；`develop` 分支也会执行测试、构建并推送带有 `develop` 标签的镜像。
-
-GitHub Actions 会将 `main` 分支的构建发布为 Docker Hub 的 `server:latest` 与 `agent:latest` 镜像。生产机不需要源码，设置镜像变量后执行：
+当宿主机已有 Caddy 占用 80/443 时，编辑 `deploy/.env`：
 
 ```dotenv
-BMC_SERVER_IMAGE=your-dockerhub-user/backup-management-center-server:latest
+BMC_TLS_MODE=none
+BMC_PUBLIC_URL=https://backup.example.com
 ```
 
-```sh
-docker compose -f docker-compose.server.yml pull
-docker compose -f docker-compose.server.yml up -d --no-build --remove-orphans
-curl -fk https://localhost/health/ready
-```
+启动后，Server 应仅暴露 `127.0.0.1:8080` 和 `127.0.0.1:9090`。在 `deploy/.env` 中设置 `BMC_SERVER_BIND=127.0.0.1`、`BMC_SERVER_PORT=8080`、`BMC_GRPC_BIND=127.0.0.1`、`BMC_GRPC_PORT=9090`，不要将明文端口暴露到公网。
 
-Agent 主机使用 `BMC_AGENT_IMAGE`，并执行：
-
-```sh
-docker compose -f docker-compose.agent.yml --env-file .env.agent pull
-docker compose -f docker-compose.agent.yml --env-file .env.agent up -d --no-build --remove-orphans
-```
-
-升级顺序固定为先 Server、确认 ready、再逐台 Agent。需要回滚时改用 Actions 发布的 `sha-<短 SHA>` 标签，不要依赖 `latest`。
-```
-
-端口映射：
-
-```text
-公网 443 → 容器 8080（HTTPS Web/API）
-公网 9090 → 容器 9090（Agent gRPC）
-```
-
-#### 数据卷
-
-| Volume | 内容 | 可否删除 |
-| --- | --- | --- |
-| `bmc-data` | SQLite 数据库、实例 ID | **永不删除** |
-
-### 自签证书
-
-**内网/无公网域名** → 自签 + 手动分发：
-
-```sh
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout secrets/server.key \
-  -out secrets/server.crt \
-  -days 825 \
-  -subj "/CN=backup.internal" \
-  -addext "subjectAltName=DNS:backup.internal,IP:10.0.0.5"
-```
-
-然后在每台 Agent 上信任该 CA，或临时设置 `BMC_DEV_INSECURE=1`（仅限隔离内网）。
-
-**已有企业 CA 证书** → 直接放置：
-
-```text
-secrets/server.crt   # fullchain
-secrets/server.key   # 私钥
-```
-
-并调整 Compose 中 `BMC_TLS_CERT_FILE` / `BMC_TLS_KEY_FILE` 指向挂载路径。
-
-### Agent Compose
-
-Agent 镜像内置：`restic 0.18.0`、`rclone 1.69.0`、MongoDB Database Tools 100.12.2、`sqlite3`、PostgreSQL 客户端和 MariaDB 客户端。
-
-#### 第 1 步：获取注册令牌
-
-在 Server Web UI：**Agents → 生成注册令牌**。令牌 15 分钟有效且只能用一次。
-
-#### 第 2 步：编写 `.env.agent`
-
- BMC_SERVER_GRPC_URL=backup.example.com:9090
- BMC_SERVER_TLS=1
- BMC_ENROLLMENT_TOKEN=<粘贴一次性令牌>
- BMC_SOURCE_ETC=/etc
- BMC_SOURCE_SRV=/srv
- BMC_SOURCE_ROOTS=/backup-sources
- BMC_RESTORE_ROOT=/var/lib/bmc-restore
- BMC_RESTORE_ROOTS=/backup-restore
- BMC_AGENT_MAX_CONCURRENCY=2
- BMC_RESTIC_CACHE_DIR=/var/lib/bmc-agent/.cache/restic
-```
-
-#### 第 3 步：启动
-
-```sh
-docker compose -f docker-compose.agent.yml --env-file .env.agent up -d --build
-```
-
-#### 第 4 步：清理令牌
-
-注册成功后立即从 env 文件中删除令牌：
-
-```sh
-sed -i '/^BMC_ENROLLMENT_TOKEN=/d' .env.agent
-docker compose -f docker-compose.agent.yml up -d
-```
-
-#### 源路径映射规则
-
-Agent Compose 默认使用两组显式只读挂载：
-
-```text
-宿主机 /etc → 容器 /backup-sources/etc
-宿主机 /srv → 容器 /backup-sources/srv
-```
-
-`.env.agent` 中配置与挂载一一对应的 JSON 映射：
+若使用 Caddy 且未准备证书文件，还应将 Compose secret 路径设为 `/dev/null`（Compose 仍会解析 secret 文件）：
 
 ```dotenv
-BMC_SOURCE_PATH_MAPPINGS={"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv"}
+BMC_TLS_CERT_FILE=/dev/null
+BMC_TLS_KEY_FILE=/dev/null
 ```
 
-计划统一填写宿主机原始路径，Agent 执行时自动转换为容器路径；用户无需填写 `/backup-sources`：
+Caddyfile 必须同时分流 Web 和 gRPC：
 
-```json
-{"paths": ["/etc", "/srv/myapp"]}
+```caddyfile
+backup.example.com {
+    @grpc protocol grpc
+    handle @grpc {
+        reverse_proxy h2c://127.0.0.1:9090
+    }
+    handle {
+        reverse_proxy http://127.0.0.1:8080
+    }
+}
 ```
 
-`BMC_SOURCE_ROOTS` 仍然是容器内 runtime allowlist，只允许访问列出的运行时根目录，不会自动创建挂载或映射宿主目录。未配置映射的旧 Agent 保持当前恒等路径行为。
+Caddy 容器部署时，将 BMC 与 Caddy 加入同一外部 Docker 网络，并将上游改为 `h2c://bmc-server:9090` 与 `http://bmc-server:8080`。Agent 此时连接 `backup.example.com:443` 并设置 `BMC_SERVER_TLS=1`。Caddy 负责证书申请和续期；Server 仍必须配置并保护主密钥。
 
-新增源目录时，必须同时增加显式只读挂载和映射：
+## 3. 部署 Agent
 
-```yaml
-    volumes:
-      - /var/lib/myapp:/backup-sources/var-lib-myapp:ro
-```
-
-```dotenv
-BMC_SOURCE_PATH_MAPPINGS={"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv","/var/lib/myapp":"/backup-sources/var-lib-myapp"}
-```
-
-计划填写 `/var/lib/myapp`。安全边界始终是显式只读挂载；不得挂载宿主机 `/` 或 `/var/run/docker.sock`，也不能通过 allowlist 绕过挂载限制。
-
-例如备份宿主机 `/root/nginx`：
-
-```yaml
-    volumes:
-      - /root/nginx:/backup-sources/root/nginx:ro
-```
-
-```dotenv
-BMC_SOURCE_PATH_MAPPINGS={"/root/nginx":"/backup-sources/root/nginx"}
-```
-
-计划填写 `/root/nginx`。Compose 模板实际以 root（UID 0）运行，以便读取宿主机 bind mount；不要将此配置改为非 root，否则可能无法读取权限为 `0700` 的宿主目录。
-
-安全红线：
-
-- 不要挂载 `/` 或 `/var/run/docker.sock`。
-- 不要给 Agent 容器 `privileged: true`。
-- 只读挂载足够——恢复走 staging 目录再落盘，不需要对源目录写入。
-- `/var/lib/bmc-agent/scratch` 是独立持久卷，不再使用固定 10GB tmpfs；应按估算制品大小配置卷容量。
-- `/backup-restore` 必须是独立读写挂载，且 `BMC_RESTORE_ROOTS` 只列出允许覆盖的容器内路径。
-
-Server 端数据库恢复安全门由 `BMC_ENABLE_DATABASE_RESTORE=1` 显式开启；默认关闭，完成预恢复备份/回滚演练后才应设置。
-
----
-
-## 方式二：systemd 二进制部署
-
-适合已有成熟 systemd 运维体系、希望直接使用发行版软件包的环境。
-
-### 构建产物
-
-在任意构建机执行：
+在 Server Web UI 的 **Agents → 生成注册令牌** 获取一次性令牌（有效期和使用次数以 UI 提示为准）。将 `deploy/.env.agent.example` 复制到目标主机，例如：
 
 ```sh
-make build-linux
+cp deploy/.env.agent.example .env.agent
 ```
 
-产出：
-
-```text
-bin/backup-center-server-linux-amd64
-bin/backup-center-agent-linux-amd64
-```
-
-复制到目标主机 `/usr/local/bin/` 并赋予执行权限。
-
-### Server 安装
+填写 Server 的纯 `host:port` 地址（不要写 `https://`），注册令牌、源目录、恢复目录和路径映射。启动：
 
 ```sh
-sudo useradd --system --home /var/lib/bmc --shell /usr/sbin/nologin bmc || true
-sudo mkdir -p /var/lib/bmc /etc/bmc
-
-# 主密钥
-sudo sh -c 'head -c 32 /dev/urandom > /etc/bmc/master.key && chmod 600 /etc/bmc/master.key && chown bmc:bmc /etc/bmc/master.key'
-
-# TLS 证书（企业 CA 或 Let's Encrypt 等签发）
-sudo cp fullchain.pem /etc/bmc/server.crt
-sudo cp privkey.pem   /etc/bmc/server.key
-sudo chown bmc:bmc /etc/bmc/*
-
-sudo cp deploy/systemd/bmc-server.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now bmc-server
+docker compose --env-file .env.agent -f deploy/docker-compose.agent.yml up -d --build
 ```
 
-证书更新：Server 在每次 TLS 握手时动态重读 `/etc/bmc/server.crt` / `server.key`，替换文件后无需重启。若使用宿主机 ACME 续期工具，在其续期钩子中复制新文件到 `/etc/bmc/` 即可。
+每台 Agent 必须在实际拥有备份源目录的主机上运行。默认显式只读挂载宿主机 `/etc`、`/srv`，映射为容器 `/backup-sources/etc`、`/backup-sources/srv`；恢复目录单独读写挂载。新增源目录时，必须同时增加 Compose 的只读挂载和 `BMC_SOURCE_PATH_MAPPINGS` 映射，禁止挂载整个主机根目录或 `/var/run/docker.sock`。
 
-> Server 支持每次 TLS 握手重新读取证书文件；即使不发送信号，新握手也会拿到新证书。
+注册完成后立即从 `.env.agent` 删除 `BMC_ENROLLMENT_TOKEN`，再重新创建容器；身份保存在 `bmc-agent-state` 卷，不能删除、复制或在多台 Agent 间共享。
 
-### Agent 安装
+## 4. 环境变量与敏感信息
 
-```sh
-# 安装依赖（Ubuntu/Debian 示例）
-sudo apt update
-sudo apt install -y restic rclone sqlite3 postgresql-client mariadb-client
-# MongoDB 工具需按官方文档安装 mongodb-database-tools
+所有可填写变量均在 `deploy/.env.example` 和 `deploy/.env.agent.example` 中逐项中文注释。示例文件可直接复制，但默认域名、镜像、目录和并发数必须按环境审核。敏感项（`BMC_ENROLLMENT_TOKEN`、主密钥、TLS 私钥、任何存储凭据）只放在宿主机受限文件或 Secret 管理系统中，不得提交 Git、写入 Compose YAML 或粘贴到工单。
 
-sudo useradd --system --home /var/lib/bmc-agent --shell /usr/sbin/nologin bmc-agent || true
-sudo mkdir -p /var/lib/bmc-agent && sudo chown bmc-agent:bmc-agent /var/lib/bmc-agent
+Compose 的 build context 已从 `deploy/` 正确指向仓库根目录；生产机若使用已发布镜像，设置 `BMC_SERVER_IMAGE` / `BMC_AGENT_IMAGE` 后使用 `--no-build`，无需保存源码。
 
-sudo cp deploy/systemd/bmc-agent.service /etc/systemd/system/
-sudo systemctl edit bmc-agent
-```
+## 5. 健康检查与运维
 
-drop-in 中填写：
-
-```ini
-[Service]
-Environment=BMC_SERVER_GRPC_URL=backup.example.com:9090
-Environment=BMC_SERVER_TLS=1
-Environment=BMC_ENROLLMENT_TOKEN=<一次性令牌>
-# 如需限制 Agent 可读范围：
-# ReadOnlyPaths=/srv/myapp
-```
-
-启动：
-
-```sh
-sudo systemctl enable --now bmc-agent
-```
-
-注册完成后移除令牌：
-
-```sh
-sudo systemctl edit bmc-agent   # 删除 BMC_ENROLLMENT_TOKEN 行
-sudo systemctl restart bmc-agent
-```
-
----
-
-## 首次初始化
-
-任一部署方式完成后：
-
-1. 浏览器访问 `https://backup.example.com/`。
-2. 自动跳转到 `/setup`。
-3. 创建唯一管理员（用户名 ≥3 字符，密码 ≥10 字符）。
-4. `/setup` 随即永久关闭（返回 404）。
-5. 使用管理员账号登录，进入 Dashboard。
-
-## Agent 注册流程
-
-1. Web UI：**Agents 页 → 生成注册令牌**（15 分钟有效，一次性）。
-2. 在目标主机按上文配置 `BMC_ENROLLMENT_TOKEN` 并启动 Agent。
-3. Agent 出站连接 Server gRPC，提交主机名/OS/架构/版本和随机生成的 32 字节 secret。
-4. Server 消耗令牌、保存 secret 哈希、分配 UUID。
-5. Agent 将身份写入 `<state>/identity.json`（0600），此后不再需要令牌。
-6. UI 中 Agent 变为 online，能力探测结果（restic/rclone/各数据库客户端路径与版本）自动上报。
-
-身份丢失的处理：在 UI 吊销旧 Agent → 在主机上清空 state 目录 → 生成新令牌重新注册。系统不会自动重建身份。
-
-## 备份目标与 Restic 仓库
-
-### 创建存储目标
-
-Web UI：**Storage → 导入 rclone 配置**
-
-1. 在任意一台在线 Agent 所在主机（或你自己的电脑）运行 `rclone config` 完成网盘授权；
-2. 把生成的 `rclone.conf` 内容粘贴到 UI；
-3. 选择要使用的 remote 名称；
-4. 选择用于验证的在线 Agent；
-5. 点击验证（Agent 会执行 `rclone listremotes` 和 `rclone lsd <remote>:`）；
-6. 保存后配置以 AES-256-GCM 密文入库。
-
-首期支持所有 rclone 支持的 remote 类型（Google Drive、OneDrive、Dropbox、WebDAV、S3 兼容、本地目录等）；不做供应商 OAuth 回调。
-
-### 绑定仓库
-
-Web UI：**Storage → Repositories → 绑定仓库**
-
-选择 Agent 和存储目标后，Server 自动：
-
-1. 计算仓库路径 `<remote>:<remote_path>/<instance_id>/<agent_id>`；
-2. 生成 32 字节随机 Restic 密码（加密存储）；
-3. 通过 Agent 执行 `restic snapshots` 探测：
-   - exit 0 → 仓库已存在，直接接入；
-   - exit 10 → 仓库不存在，自动 `restic init`；
-   - exit 12 → 报错 `wrong_repository_password`；
-   - exit 11 → 报错 `repository_locked`。
-
-之后创建计划时选择该仓库即可。
-
-## 环境变量参考
-
-### Server
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `BMC_LISTEN_ADDR` | `:8080` | HTTP/Web UI 监听地址 |
-| `BMC_GRPC_ADDR` | `:9090` | Agent gRPC 监听地址 |
-| `BMC_METRICS_ADDR` | `127.0.0.1:9100` | Prometheus 指标，仅本机 |
-| `BMC_TLS_MODE` | `auto` | `auto`=使用证书文件；`none`=明文运行（置于 TLS 反代之后，如 Caddy 共存模式） |
-| `BMC_DATA_DIR` | `./data` | SQLite 与实例 ID 目录 |
-| `BMC_PUBLIC_URL` | 空 | 外部访问 URL |
-| `BMC_MASTER_KEY_FILE` | 空 | 32 字节主密钥文件，生产必填 |
-| `BMC_TLS_CERT_FILE` | 空 | TLS 证书链，生产必填 |
-| `BMC_TLS_KEY_FILE` | 空 | TLS 私钥，生产必填 |
-| `BMC_DEV_INSECURE` | 空 | 设为 `1` 时跳过证书与主密钥校验，仅本地开发 |
-
-> Telegram 失败通知不使用环境变量：在 Web 界面「设置」页配置 Bot Token 与 Chat ID（二者必须同时填写，清除即禁用），保存后立即生效，无需重启。配置 `BMC_PUBLIC_URL` 后，通知会附带 `/runs/{id}` 详情链接。
-
-### Agent
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `BMC_SERVER_GRPC_URL` | 必填 | Server gRPC 地址 `host:port` |
-| `BMC_SERVER_TLS` | `1` | 是否启用 TLS |
-| `BMC_ENROLLMENT_TOKEN` | 空 | 一次性注册令牌，仅首启 |
-| `BMC_AGENT_STATE_DIR` | `./agent-state` | 身份及持久状态根目录 |
-| `BMC_AGENT_DATA_DIR` | `<state>/scratch` | 导出/恢复临时空间 |
-| `BMC_RESTIC_CACHE_DIR` | `<state>/.cache/restic` | 持久化 Restic metadata cache；不得指向 scratch |
-| `BMC_AGENT_PROBE_INTERVAL` | `600` | 能力探测间隔（秒） |
-| `BMC_DEV_INSECURE` | 空 | `1` 时跳过 Server 证书校验 |
-| `BMC_SOURCE_PATH_MAPPINGS` | 空 | JSON object，宿主机源路径到容器 runtime 路径的映射；应与显式只读挂载一一对应。未设置时旧 Agent 保持恒等路径行为 |
-| `BMC_SOURCE_ROOTS` | `/backup-sources`（Compose） | 容器内源路径 runtime allowlist，不负责挂载宿主目录 |
-| `BMC_RESTORE_ROOTS` | `/backup-restore`（Compose） | 容器内恢复目标 allowlist |
-
-## 健康检查与监控
-
-| 端点 | 说明 |
-| --- | --- |
-| `GET /health/live` | 进程存活，始终 200 |
-| `GET /health/ready` | 数据库+迁移+调度器+gRPC 就绪，否则 503 |
-| `GET /metrics`（`BMC_METRICS_ADDR`） | Prometheus 格式指标 |
-
-指标列表：
-
-- `bmc_runs_total{operation,status}`
-- `bmc_run_duration_seconds`
-- `bmc_agents_online`
-- `bmc_dispatch_queue_depth`
-- `bmc_repository_last_check_timestamp`
-- `bmc_agent_grpc_reconnects_total`
-
-- 路径映射配置使用 JSON object；升级前保持 `BMC_SOURCE_PATH_MAPPINGS` 与 Compose 显式只读挂载一一对应，计划继续填写宿主机原始路径。
-- 新 Agent 配置映射后，旧 Agent 或未配置映射时仍按恒等路径处理，便于分批升级。
-- 回滚到不支持映射的旧 Agent 时保留旧环境变量和只读 volumes，并暂时将计划路径改回该 Agent 可见的容器路径。
-- 映射只转换已显式只读挂载的路径，不能扩大 `BMC_SOURCE_ROOTS` allowlist，也不能替代挂载。
-
-### Docker Compose 升级
-
-```sh
-# 0. 备份（离线保存！）
-docker run --rm -v bmc-data:/data -v $PWD/backup:/backup alpine \
-  tar czf /backup/bmc-data-$(date +%F).tar.gz -C /data .
-cp secrets/master.key /secure/offline/place/
-
-# 1. 拉取新代码
-git pull
-
-# 2. 重建并滚动
-docker compose -f docker-compose.server.yml build --pull
-docker compose -f docker-compose.server.yml up -d bmc-server
-curl -fk https://localhost/health/ready
-
-# 3. 逐台升级 Agent
-ssh agent-host "cd ... && docker compose -f docker-compose.agent.yml build --pull && docker compose -f docker-compose.agent.yml up -d"
-```
-
-### systemd 升级
+Server 更新后必须先确认就绪，再升级 Agent：
 
 ```sh
 # Server
-sudo systemctl stop bmc-server
-sudo cp bin/backup-center-server-linux-amd64 /usr/local/bin/backup-center-server
-sudo systemctl start bmc-server
+curl -fk https://backup.example.com/health/live
+curl -fk https://backup.example.com/health/ready
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs -f bmc-server
 
-# Agent（逐台）
-sudo systemctl stop bmc-agent
-sudo cp bin/backup-center-agent-linux-amd64 /usr/local/bin/backup-center-agent
-sudo systemctl start bmc-agent
+# Agent
+docker compose --env-file .env.agent -f deploy/docker-compose.agent.yml ps
+docker compose --env-file .env.agent -f deploy/docker-compose.agent.yml logs -f bmc-agent
 ```
 
-### 回滚
+健康检查失败时先查看日志、DNS、端口和证书。`BMC_SERVER_GRPC_URL` 必须是 `host:port`；经 Caddy 连接时必须存在 `@grpc protocol grpc` 的 h2c 分流。主密钥权限错误时，确保容器用户可读宿主机 Secret（通常将文件属主设为 UID 65532，或按主机安全策略调整权限）。
 
-- 本次 migration 完成后不可直接将 SQLite 降级到未包含 `0011` 的旧 Server。回滚 Server 前，停止服务并恢复升级前的 SQLite backup（以及匹配的 WAL/SHM 文件或使用 SQLite online backup 生成的完整副本），再换回旧二进制/镜像启动。
-- 若未恢复升级前数据库，仅换回旧二进制/镜像可能因未知 schema 表导致启动失败；不要删除 migration 表或手工重建数据库。
-- Agent：直接换回旧二进制。不要复用或拷贝 `identity.json` 来"克隆"Agent。
+## 6. 升级与回滚
 
-### 离线备份核对清单
-
-| 内容 | 方式 | 频率 |
-| --- | --- | --- |
-| `secrets/master.key` | 手动复制到密码管理器/离线介质 | 创建后一次，变更时 |
-| `bmc-data` volume / `BMC_DATA_DIR` | tar 或 SQLite backup | 每日 |
-| `bmc-certs` volume | 可选（丢了重新签发即可） | 不必须 |
-| Agent `identity.json` | 不备份；丢失就吊销重注册 | — |
-
-## 故障排查
-
-### Server 无法启动：`config: BMC_TLS_CERT_FILE and BMC_TLS_KEY_FILE are required`
-
-生产模式必须提供证书。确认：
-
-- 文件存在且可读（容器内路径 vs 主机路径）。
-- 证书链完整（`fullchain.pem` 而不是 `cert.pem`）。
-
-临时开发可用 `BMC_DEV_INSECURE=1`，但禁止生产使用。
-
-### Agent 一直 offline
-
-依次检查：
+生产环境升级前备份 `bmc-data` 卷和 `deploy/secrets/master.key`。使用发布镜像时先拉取，再禁止本地构建：
 
 ```sh
-# 1. Agent 进程活着吗？
-docker logs bmc-agent        # 或 journalctl -u bmc-agent
+# 先升级 Server
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --no-build --remove-orphans
+curl -fk https://backup.example.com/health/ready
 
-# 2. 能解析 Server 域名吗？
-nslookup backup.example.com
-
-# 3. 9090 通吗？
-nc -zv backup.example.com 9090
-
-# 4. 令牌过期了吗？（15 分钟）
-#   重新生成令牌并重启 Agent。
-
-# 5. 证书可信吗？
-#   自签证书场景需在 Agent 侧安装 CA 或设置 BMC_DEV_INSECURE=1。
+# 再逐台升级 Agent
+docker compose --env-file .env.agent -f deploy/docker-compose.agent.yml pull
+docker compose --env-file .env.agent -f deploy/docker-compose.agent.yml up -d --no-build --remove-orphans
 ```
 
-### 任务失败：`mkdir /var/lib/bmc-agent/scratch/bmc-run-*: permission denied`
+回滚时将 `BMC_SERVER_IMAGE` 或 `BMC_AGENT_IMAGE` 改为 CI 发布的不可变 `sha-<短 SHA>` 标签，然后重复 `pull` 和 `up -d --no-build`；不要用 `latest` 做可重复回滚。Server 与 Agent 应保持兼容版本，切勿通过复制 Agent 的 `identity.json` 克隆身份。
 
-Agent 临时目录（`BMC_AGENT_DATA_DIR`，默认 `<state>/scratch`）对运行用户不可写。按部署方式处理：
-
-```sh
-# systemd：目录属主必须是 bmc-agent（曾以 root 手动运行过 agent 的主机常见）
-sudo chown -R bmc-agent:bmc-agent /var/lib/bmc-agent && sudo chmod 700 /var/lib/bmc-agent
-
-# Docker Compose：scratch 是独立持久卷；旧部署重建 Agent 容器后，
-# 若状态卷内旧文件属主不是 65532，执行一次：
-docker run --rm -v bmc-agent-state:/data alpine chown -R 65532:65532 /data
-```
-
-### 备份任务失败：`insufficient_temp_space`
-
-数据库导出的临时空间不足。解决：
-
-- Compose：扩容 `bmc-agent-scratch` 卷；
-- systemd：扩大 `BMC_AGENT_DATA_DIR` 所在分区；
-- 或调小计划的 `estimated_dump_bytes`（如果高估了）。
-
-需求公式：`free_space ≥ estimated_dump_bytes × 1.3`。
-
-### 备份失败：`repository_locked`
-
-另一个 restic 进程持有锁（通常是上次被强杀的任务残留）。处理：
-
-```sh
-# 在 Agent 主机上
-restic unlock -r <repository_path> --insecure-no-password-file ...
-```
-
-或在 UI 取消卡住的运行后重试。Server 对每个 repository 串行派发，正常情况不会并发冲突。
-
-### 备份失败：`wrong_repository_password`
-
-Restic 密码不匹配。该密码由系统生成并加密存储，通常意味着：
-
-- 有人在网盘侧手动改过仓库；
-- 或者存储目标的 remote 配置变了。
-
-如果确认要放弃旧仓库，删除 Repository 后重新绑定（会重新 init）。
-
-### Web UI 打不开但 `/health/live` 正常
-
-- 检查反向代理（如有）是否正确转发 WebSocket：`/ws/runs/{id}` 需要 Upgrade 头。
-- 浏览器控制台查看是否有混合内容（HTTPS 页面请求 HTTP 资源）。
-
-### 证书更新后未生效
-
-Server 在每次新 TLS 握手时动态重读证书文件，正常无需重启。排查顺序：
-
-```sh
-# 容器内看到的文件是否已更新
-docker compose exec bmc-server cat /run/secrets/bmc_tls_cert | openssl x509 -noout -dates
-```
-
-- 文件未更新 → 检查你的续期工具是否真的写入了挂载的源文件；
-- 文件已更新但仍是旧证书 → 确认客户端没有复用旧的长连接（重建连接即可）。
-
----
-
-## 附：快速核对清单
-
-上线前逐项确认：
-
-- [ ] DNS 已生效，`dig` 解析正确
-- [ ] 公网 443/9090 放行，80 仅在续期窗口开放
-- [ ] `master.key` 已离线备份（两份以上）
-- [ ] TLS 证书覆盖访问域名，`openssl s_client` 验证通过
-- [ ] Server `/health/ready` 返回 200
-- [ ] 管理员已创建，`/setup` 返回 404
-- [ ] 至少一台 Agent online 且能力探测完整
-- [ ] 存储目标验证通过，仓库 status = ready
-- [ ] 第一条测试计划手动跑通，快照可浏览
-- [ ] 恢复 dry-run 通过，实际恢复文件 SHA-256 校验一致
-- [ ] `restic check` 计划启用（每周自动）
-- [ ] `bmc-data` 卷的每日备份任务已配置
+停止 Compose 不会删除卷。确认已有离线备份后才执行 `docker compose ... down -v`，否则会永久删除状态数据。

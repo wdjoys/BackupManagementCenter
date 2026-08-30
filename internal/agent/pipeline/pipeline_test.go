@@ -83,7 +83,7 @@ func TestRunForget_SnapshotIDs_Succeeds(t *testing.T) {
 	if res == nil {
 		t.Fatal("expected result")
 	}
-	want := []string{"forget", "abc123def456", "--prune", "--retry-lock", "5m", "--repo", "rclone:remote:/repo"}
+	want := []string{"forget", "abc123def456", "--prune", "--repo", "rclone:remote:/repo"}
 	if len(cmd.Args) < len(want) {
 		t.Fatalf("args too short: %q", cmd.Args)
 	}
@@ -170,6 +170,70 @@ func TestRunForget_SnapshotIDs_ResticFailureMapsToForgetFailed(t *testing.T) {
 	}
 	if pErr.Code != "forget_failed" {
 		t.Fatalf("code = %q, want forget_failed", pErr.Code)
+	}
+}
+
+type pipelineScriptExecutor struct {
+	steps []struct {
+		code int
+		out  string
+	}
+	logs *[]string
+}
+
+func (e *pipelineScriptExecutor) Run(_ context.Context, _ backup.Cmd, _, onStderr func(string)) (int, error) {
+	step := e.steps[0]
+	e.steps = e.steps[1:]
+	if step.out != "" && onStderr != nil {
+		onStderr(step.out)
+	}
+	return step.code, nil
+}
+
+func TestRunForget_StaleLockLogsRecoveryStages(t *testing.T) {
+	steps := []struct {
+		code int
+		out  string
+	}{{code: 11, out: "locked"}, {code: 0}, {code: 0}}
+	var logs []string
+	params, _ := json.Marshal(model.ForgetTask{
+		Repository: model.RepoAccess{RepositoryPath: "repo"}, SnapshotIDs: []string{"snap"},
+	})
+	_, err := runForget(context.Background(), Deps{
+		Exec: &pipelineScriptExecutor{steps: steps}, Logf: func(level, format string, args ...any) { logs = append(logs, level+" "+fmt.Sprintf(format, args...)) },
+	}, t.TempDir(), params, backup.SecretBundle{ResticPassword: "pw"})
+	if err != nil {
+		t.Fatalf("runForget: %v", err)
+	}
+	joined := strings.Join(logs, "\n")
+	for _, want := range []string{"检测到仓库锁", "已清理陈旧锁", "重新删除快照"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("logs missing %q: %s", want, joined)
+		}
+	}
+}
+
+func TestRunForget_UnlockFailurePreservesStderr(t *testing.T) {
+	steps := []struct {
+		code int
+		out  string
+	}{{code: 11, out: "locked"}, {code: 1, out: "unlock denied"}}
+	var logs []string
+	params, _ := json.Marshal(model.ForgetTask{
+		Repository: model.RepoAccess{RepositoryPath: "repo"}, SnapshotIDs: []string{"snap"},
+	})
+	_, err := runForget(context.Background(), Deps{
+		Exec: &pipelineScriptExecutor{steps: steps}, Logf: func(level, format string, args ...any) { logs = append(logs, level+" "+fmt.Sprintf(format, args...)) },
+	}, t.TempDir(), params, backup.SecretBundle{ResticPassword: "pw"})
+	if err == nil || !strings.Contains(err.Error(), "unlock denied") {
+		t.Fatalf("err = %v", err)
+	}
+	var pErr *PipelineError
+	if !errors.As(err, &pErr) || pErr.Code != "forget_failed" {
+		t.Fatalf("error = %T %v", err, err)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "unlock denied") {
+		t.Fatalf("logs missing unlock stderr: %v", logs)
 	}
 }
 

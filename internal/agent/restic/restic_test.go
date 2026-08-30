@@ -26,6 +26,92 @@ func (e checkExecutor) Run(_ context.Context, cmd backup.Cmd, onStdout func(stri
 	}
 	return e.code, nil
 }
+
+type scriptedExecutor struct {
+	steps []struct {
+		code int
+		err  error
+		out  string
+	}
+	cmds []backup.Cmd
+}
+
+func (e *scriptedExecutor) Run(_ context.Context, cmd backup.Cmd, _ func(string), onStderr func(string)) (int, error) {
+	e.cmds = append(e.cmds, cmd)
+	step := e.steps[len(e.cmds)-1]
+	if onStderr != nil && step.out != "" {
+		onStderr(step.out)
+	}
+	return step.code, step.err
+}
+
+func TestDeleteSnapshotsRecoversStaleLockOnce(t *testing.T) {
+	exec := &scriptedExecutor{steps: []struct {
+		code int
+		err  error
+		out  string
+	}{
+		{code: 11, out: "the unlock command can be used to remove stale locks"},
+		{code: 0},
+		{code: 0},
+	}}
+	err := DeleteSnapshots(context.Background(), exec, Options{Exe: "restic", RepoPath: "repo", PasswordFile: "pw", CacheDir: "cache"}, []string{"snap"}, false)
+	if err != nil {
+		t.Fatalf("DeleteSnapshots: %v", err)
+	}
+	if len(exec.cmds) != 3 {
+		t.Fatalf("command count = %d, want 3", len(exec.cmds))
+	}
+	if exec.cmds[1].Args[0] != "unlock" || contains(exec.cmds[1].Args, "--remove-all") {
+		t.Fatalf("unlock args = %q", exec.cmds[1].Args)
+	}
+	if !contains(exec.cmds[2].Args, "--retry-lock") || !contains(exec.cmds[2].Args, "5m") {
+		t.Fatalf("retry args = %q", exec.cmds[2].Args)
+	}
+}
+
+func TestDeleteSnapshotsDoesNotUnlockNonLockFailure(t *testing.T) {
+	exec := &scriptedExecutor{steps: []struct {
+		code int
+		err  error
+		out  string
+	}{{code: 1, out: "permission denied"}}}
+	err := DeleteSnapshots(context.Background(), exec, Options{Exe: "restic", RepoPath: "repo"}, []string{"snap"}, false)
+	if err == nil || len(exec.cmds) != 1 || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("err = %v, commands = %d", err, len(exec.cmds))
+	}
+}
+
+func TestDeleteSnapshotsUnlockFailureStopsRetry(t *testing.T) {
+	exec := &scriptedExecutor{steps: []struct {
+		code int
+		err  error
+		out  string
+	}{
+		{code: 11, out: "locked"},
+		{code: 1, out: "unlock denied"},
+	}}
+	err := DeleteSnapshots(context.Background(), exec, Options{Exe: "restic", RepoPath: "repo"}, []string{"snap"}, false)
+	if err == nil || len(exec.cmds) != 2 || !strings.Contains(err.Error(), "unlock denied") {
+		t.Fatalf("err = %v, commands = %d", err, len(exec.cmds))
+	}
+}
+
+func TestDeleteSnapshotsRetryLockFailureDoesNotLoop(t *testing.T) {
+	exec := &scriptedExecutor{steps: []struct {
+		code int
+		err  error
+		out  string
+	}{
+		{code: 11, out: "locked"},
+		{code: 0},
+		{code: 11, out: "still locked"},
+	}}
+	err := DeleteSnapshots(context.Background(), exec, Options{Exe: "restic", RepoPath: "repo"}, []string{"snap"}, false)
+	if err == nil || len(exec.cmds) != 3 || !strings.Contains(err.Error(), "still locked") {
+		t.Fatalf("err = %v, commands = %d", err, len(exec.cmds))
+	}
+}
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -107,7 +193,7 @@ func TestDeleteByTagsDeletesSnapshotsAndPrunes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteByTags: %v", err)
 	}
-	want := []string{"forget", "--group-by", "host,tags", "--prune", "--retry-lock", "5m", "--repo", "rclone:remote:/repo", "--cache-dir", "/cache/restic", "--tag", "plan:plan-1", "--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json"}
+	want := []string{"forget", "--group-by", "host,tags", "--prune", "--repo", "rclone:remote:/repo", "--cache-dir", "/cache/restic", "--tag", "plan:plan-1", "--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json"}
 	if len(cmd.Args) != len(want) {
 		t.Fatalf("args = %q, want %q", cmd.Args, want)
 	}
@@ -128,7 +214,7 @@ func TestDeleteSnapshotsGeneratesCorrectArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteSnapshots: %v", err)
 	}
-	want := []string{"forget", "abc123def456", "--prune", "--retry-lock", "5m", "--repo", "rclone:remote:/repo", "--password-file", pwdFile, "--cache-dir", cacheDir, "--json"}
+	want := []string{"forget", "abc123def456", "--prune", "--repo", "rclone:remote:/repo", "--password-file", pwdFile, "--cache-dir", cacheDir, "--json"}
 	if len(cmd.Args) != len(want) {
 		t.Fatalf("args = %q, want %q", cmd.Args, want)
 	}

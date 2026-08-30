@@ -4,6 +4,7 @@ package restic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -343,30 +344,13 @@ func DeleteByTags(ctx context.Context, exec backup.Executor, opts Options, tags 
 	if opts.Exe == "" {
 		return fmt.Errorf("restic exe not set")
 	}
-	args := []string{"forget", "--group-by", "host,tags", "--prune", "--retry-lock", "5m"}
-	if opts.RepoPath != "" {
-		args = append(args, "--repo", opts.RepoPath)
-	}
-	if opts.PasswordFile != "" {
-		args = append(args, "--password-file", opts.PasswordFile)
-	}
-	if opts.CacheDir != "" {
-		args = append(args, "--cache-dir", opts.CacheDir)
-	}
+	args := []string{"forget", "--group-by", "host,tags", "--prune"}
+	args = append(args, resticRepositoryArgs(opts)...)
 	for _, tag := range tags {
 		args = append(args, "--tag", tag)
 	}
 	args = append(args, "--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json")
-	env := buildEnv(opts)
-	if opts.CacheDir != "" {
-		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
-	}
-	var stderrTail strings.Builder
-	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) { stderrTail.WriteString(line + "\n") })
-	if err != nil || exitCode != 0 {
-		return enriched(mapResticError(exitCode, err), stderrTail.String())
-	}
-	return nil
+	return runDelete(ctx, exec, opts, args)
 }
 
 func forget(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string, prune bool) error {
@@ -377,16 +361,7 @@ func forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 	if prune {
 		args = append(args, "--prune")
 	}
-	args = append(args, "--retry-lock", "5m")
-	if opts.RepoPath != "" {
-		args = append(args, "--repo", opts.RepoPath)
-	}
-	if opts.PasswordFile != "" {
-		args = append(args, "--password-file", opts.PasswordFile)
-	}
-	if opts.CacheDir != "" {
-		args = append(args, "--cache-dir", opts.CacheDir)
-	}
+	args = append(args, resticRepositoryArgs(opts)...)
 	for _, t := range tags {
 		args = append(args, "--tag", t)
 	}
@@ -403,17 +378,7 @@ func forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 		args = append(args, "--keep-monthly", strconv.Itoa(retention.KeepMonthly))
 	}
 	args = append(args, "--json")
-
-	env := buildEnv(opts)
-	if opts.CacheDir != "" {
-		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
-	}
-	var stderrTail strings.Builder
-	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) { stderrTail.WriteString(line + "\n") })
-	if err != nil || exitCode != 0 {
-		return enriched(mapResticError(exitCode, err), stderrTail.String())
-	}
-	return nil
+	return runDelete(ctx, exec, opts, args)
 }
 
 // DeleteSnapshots 删除指定 snapshot ID 的快照，并可选 prune 回收空间。
@@ -424,12 +389,17 @@ func DeleteSnapshots(ctx context.Context, exec backup.Executor, opts Options, sn
 	if len(snapshotIDs) == 0 {
 		return fmt.Errorf("no snapshot IDs provided")
 	}
-	args := []string{"forget"}
-	args = append(args, snapshotIDs...)
+	args := append([]string{"forget"}, snapshotIDs...)
 	if prune {
 		args = append(args, "--prune")
 	}
-	args = append(args, "--retry-lock", "5m")
+	args = append(args, resticRepositoryArgs(opts)...)
+	args = append(args, "--json")
+	return runDelete(ctx, exec, opts, args)
+}
+
+func resticRepositoryArgs(opts Options) []string {
+	args := make([]string, 0, 6)
 	if opts.RepoPath != "" {
 		args = append(args, "--repo", opts.RepoPath)
 	}
@@ -439,8 +409,43 @@ func DeleteSnapshots(ctx context.Context, exec backup.Executor, opts Options, sn
 	if opts.CacheDir != "" {
 		args = append(args, "--cache-dir", opts.CacheDir)
 	}
-	args = append(args, "--json")
+	return args
+}
 
+func runDelete(ctx context.Context, exec backup.Executor, opts Options, args []string) error {
+	if err := runResticDeleteCommand(ctx, exec, opts, args); err == nil {
+		return nil
+	} else {
+		var resticErr *ResticError
+		if !errors.As(err, &resticErr) || resticErr.Code != model.ErrRepositoryLocked {
+			return err
+		}
+		if opts.Logf != nil {
+			opts.Logf("检测到仓库锁，开始执行 stale unlock")
+		}
+		unlockArgs := append([]string{"unlock"}, resticRepositoryArgs(opts)...)
+		unlockArgs = append(unlockArgs, "--json")
+		if unlockErr := runResticDeleteCommand(ctx, exec, opts, unlockArgs); unlockErr != nil {
+			if opts.Logf != nil {
+				opts.Logf(fmt.Sprintf("stale unlock 失败：%v", unlockErr))
+			}
+			return unlockErr
+		}
+		if opts.Logf != nil {
+			opts.Logf("已清理陈旧锁，重新删除快照")
+		}
+		retryArgs := addRetryLock(args)
+		if retryErr := runResticDeleteCommand(ctx, exec, opts, retryArgs); retryErr != nil {
+			if opts.Logf != nil {
+				opts.Logf(fmt.Sprintf("重试删除失败：%v", retryErr))
+			}
+			return retryErr
+		}
+		return nil
+	}
+}
+
+func runResticDeleteCommand(ctx context.Context, exec backup.Executor, opts Options, args []string) error {
 	env := buildEnv(opts)
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
@@ -456,6 +461,20 @@ func DeleteSnapshots(ctx context.Context, exec backup.Executor, opts Options, sn
 		return enriched(mapResticError(exitCode, err), stderrTail.String())
 	}
 	return nil
+}
+
+func addRetryLock(args []string) []string {
+	result := make([]string, 0, len(args)+2)
+	for i, arg := range args {
+		if arg == "--repo" && i > 0 {
+			result = append(result, "--retry-lock", "5m")
+		}
+		result = append(result, arg)
+	}
+	if len(result) == len(args) {
+		result = append(result, "--retry-lock", "5m")
+	}
+	return result
 }
 
 // Check runs `restic check --json`.

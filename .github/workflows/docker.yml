@@ -185,4 +185,4 @@ jobs:
             cd '${{ secrets.DEPLOY_PATH }}'
             docker compose --env-file .env -f docker-compose.yml pull
             docker compose --env-file .env -f docker-compose.yml up -d --no-build --remove-orphans
-            curl --fail --silent --show-error --insecure --retry 12 --retry-delay 5 https://localhost/health/ready
+            curl --fail --silent --show-error --insecure --retry 12 --retry-delay 5 http://localhost:9090/health/ready

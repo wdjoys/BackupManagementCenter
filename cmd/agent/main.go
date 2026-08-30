@@ -29,6 +29,7 @@ func (a cfgAdapter) GetProbeInterval() time.Duration {
 	return time.Duration(a.c.ProbeInterval) * time.Second
 }
 func (a cfgAdapter) GetSourcePathMappings() []model.PathMapping { return a.c.SourcePathMappings }
+func (a cfgAdapter) GetRestorePathMappings() []model.PathMapping { return a.c.RestorePathMappings }
 func main() {
 
 	agentLogSink := logging.NewSink(os.Stderr, 4096)
@@ -40,8 +41,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("[FATAL] %v", err)
 	}
-	log.Printf("[INFO] agent configuration server=%s tls=%t dev_insecure=%t state_dir=%s data_dir=%s restic_cache_dir=%s source_roots=%v restore_roots=%v source_path_mappings=%v probe_interval=%ds max_concurrency=%d",
-		cfg.ServerGRPCURL, cfg.ServerTLS, cfg.DevInsecure, cfg.StateDir, cfg.DataDir, cfg.ResticCacheDir, cfg.SourceRoots, cfg.RestoreRoots, cfg.SourcePathMappings, cfg.ProbeInterval, cfg.MaxConcurrency)
+	log.Printf("[INFO] agent configuration server=%s tls=%t dev_insecure=%t state_dir=%s data_dir=%s restic_cache_dir=%s source_roots=%v restore_roots=%v source_path_mappings=%v restore_path_mappings=%v probe_interval=%ds max_concurrency=%d", cfg.ServerGRPCURL, cfg.ServerTLS, cfg.DevInsecure, cfg.StateDir, cfg.DataDir, cfg.ResticCacheDir, cfg.SourceRoots, cfg.RestoreRoots, cfg.SourcePathMappings, cfg.RestorePathMappings, cfg.ProbeInterval, cfg.MaxConcurrency)
 	im := agent.NewIdentityManager(cfg.StateDir)
 	ident, created, err := im.LoadOrCreate(cfg.EnrollToken)
 	if err != nil {
@@ -67,13 +67,9 @@ func main() {
 	}
 
 	runner := agent.NewRunner(pipeline.Deps{
-		Exec:                agent.OSExecutor{},
-		SourceRoots:         cfg.SourceRoots,
-		RestoreRoots:        cfg.RestoreRoots,
-		SourcePathMappings:  cfg.SourcePathMappings,
-		ScratchMinFreeBytes: cfg.ScratchMinFreeBytes,
-		MaxConcurrency:      cfg.MaxConcurrency,
-		ResticCacheDir:      cfg.ResticCacheDir,
+		Exec: agent.OSExecutor{}, SourceRoots: cfg.SourceRoots, RestoreRoots: cfg.RestoreRoots,
+		SourcePathMappings: cfg.SourcePathMappings, RestorePathMappings: cfg.RestorePathMappings,
+		ScratchMinFreeBytes: cfg.ScratchMinFreeBytes, MaxConcurrency: cfg.MaxConcurrency, ResticCacheDir: cfg.ResticCacheDir,
 		Logf: func(level, format string, args ...any) {
 			log.Printf("[%s] "+format, append([]any{level}, args...)...)
 		},

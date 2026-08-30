@@ -395,14 +395,13 @@ func (s *sqliteStore) SetAgentStatus(ctx context.Context, agentID string, st mod
 	return nil
 }
 
-func (s *sqliteStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, mappings []model.PathMapping, at time.Time) error {
+func (s *sqliteStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, sourceMappings []model.PathMapping, restoreMappings []model.PathMapping, at time.Time) error {
 	data, err := json.Marshal(struct {
-		Tools              []model.ToolInfo    `json:"tools"`
+		Tools []model.ToolInfo `json:"tools"`
 		SourcePathMappings []model.PathMapping `json:"source_path_mappings"`
-	}{Tools: tools, SourcePathMappings: mappings})
-	if err != nil {
-		return fmt.Errorf("marshal capabilities: %w", err)
-	}
+		RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
+	}{Tools: tools, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings})
+	if err != nil { return fmt.Errorf("marshal capabilities: %w", err) }
 	_, err = s.db.ExecContext(ctx,
 		"UPDATE agents SET capabilities_json = ?, last_seen_at = ? WHERE id = ?",
 		string(data), at.Format(time.RFC3339), agentID,
@@ -1688,24 +1687,23 @@ func scanAgent(row interface{ Scan(dest ...any) error }) (*model.Agent, error) {
 
 	var tools []model.ToolInfo
 	var mappings []model.PathMapping
+	var restoreMappings []model.PathMapping
 	if capsJSON != "" && capsJSON != "[]" {
 		if strings.HasPrefix(strings.TrimSpace(capsJSON), "[") {
 			_ = json.Unmarshal([]byte(capsJSON), &tools)
 		} else {
 			var caps struct {
-				Tools              []model.ToolInfo    `json:"tools"`
+				Tools []model.ToolInfo `json:"tools"`
 				SourcePathMappings []model.PathMapping `json:"source_path_mappings"`
+				RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
 			}
 			_ = json.Unmarshal([]byte(capsJSON), &caps)
-			tools, mappings = caps.Tools, caps.SourcePathMappings
+			tools, mappings, restoreMappings = caps.Tools, caps.SourcePathMappings, caps.RestorePathMappings
 		}
 	}
-	if tools == nil {
-		tools = []model.ToolInfo{}
-	}
-	if mappings == nil {
-		mappings = []model.PathMapping{}
-	}
+	if tools == nil { tools = []model.ToolInfo{} }
+	if mappings == nil { mappings = []model.PathMapping{} }
+	if restoreMappings == nil { restoreMappings = []model.PathMapping{} }
 
 	return &model.Agent{
 		ID:                 id,
@@ -1716,10 +1714,8 @@ func scanAgent(row interface{ Scan(dest ...any) error }) (*model.Agent, error) {
 		Version:            version,
 		Status:             model.AgentStatus(status),
 		LastSeenAt:         parseTimePtr(lastSeenNull),
-		TokenHash:          tokenHash,
-		Capabilities:       tools,
-		SourcePathMappings: mappings,
-		CapabilitiesJSON:   capsJSON,
+		Capabilities: tools, SourcePathMappings: mappings, RestorePathMappings: restoreMappings,
+		CapabilitiesJSON: capsJSON,
 		Revoked:            revoked != 0,
 	}, nil
 }

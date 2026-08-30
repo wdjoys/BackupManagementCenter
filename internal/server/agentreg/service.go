@@ -390,11 +390,12 @@ func (s *Service) handleCapabilities(ctx context.Context, agentID string, report
 	for _, t := range report.GetTools() {
 		tools = append(tools, model.ToolInfo{Name: t.GetName(), Path: t.GetPath(), Version: t.GetVersion()})
 	}
-	mappings := make([]model.PathMapping, 0, len(report.GetSourcePathMappings()))
-	for _, m := range report.GetSourcePathMappings() {
-		mappings = append(mappings, model.PathMapping{HostPath: m.GetHostPath(), RuntimePath: m.GetRuntimePath(), ReadOnly: m.GetReadOnly()})
+	toMappings := func(input []*bmcv1.PathMapping) []model.PathMapping {
+		out := make([]model.PathMapping, 0, len(input))
+		for _, m := range input { out = append(out, model.PathMapping{HostPath: m.GetHostPath(), RuntimePath: m.GetRuntimePath(), ReadOnly: m.GetReadOnly()}) }
+		return out
 	}
-	return s.store.SaveAgentCapabilities(ctx, agentID, tools, mappings, time.Now().UTC())
+	return s.store.SaveAgentCapabilities(ctx, agentID, tools, toMappings(report.GetSourcePathMappings()), toMappings(report.GetRestorePathMappings()), time.Now().UTC())
 }
 
 func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca *bmcv1.CommandAccepted) error {

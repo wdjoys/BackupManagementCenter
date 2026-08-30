@@ -100,6 +100,7 @@ type Agent struct {
 	TokenHash          string        `json:"-"` // SHA-256 hex of the agent secret
 	Capabilities       []ToolInfo    `json:"capabilities"`
 	SourcePathMappings []PathMapping `json:"source_path_mappings"`
+	RestorePathMappings []PathMapping `json:"restore_path_mappings"`
 	CapabilitiesJSON   string        `json:"-"`
 	Revoked            bool          `json:"revoked"`
 }

@@ -46,6 +46,7 @@ type Deps struct {
 	SourceRoots         []string
 	RestoreRoots        []string
 	SourcePathMappings  []model.PathMapping
+	RestorePathMappings []model.PathMapping
 	ScratchMinFreeBytes int64
 	MaxConcurrency      int
 	ResticCacheDir      string
@@ -238,12 +239,18 @@ func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task
 	if fs == nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "missing filesystem restore spec"}
 	}
-	if err := validateAllowedPaths([]string{fs.TargetPath}, d.RestoreRoots, true); err != nil {
+	execFS := *fs
+	mapped, err := mapPath(fs.TargetPath, d.RestorePathMappings, false)
+	if err != nil {
+		return nil, &PipelineError{Code: "path_not_allowed", Message: "restore target path mapping failed", Cause: err}
+	}
+	execFS.TargetPath = mapped
+	if err := validateAllowedPaths([]string{execFS.TargetPath}, d.RestoreRoots, true); err != nil {
 		return nil, &PipelineError{Code: "path_not_allowed", Message: "restore target is outside configured allowlist", Cause: err}
 	}
 
 	if dryRun {
-		prog, err := restic.RestoreDryRunWithOverwrite(ctx, d.Exec, opts, fs.SnapshotID, fs.TargetPath, fs.IncludePaths, fs.OverwriteMode)
+		prog, err := restic.RestoreDryRunWithOverwrite(ctx, d.Exec, opts, execFS.SnapshotID, execFS.TargetPath, execFS.IncludePaths, execFS.OverwriteMode)
 		if err != nil {
 			return nil, &PipelineError{Code: "restore_failed", Message: "dry run failed", Cause: err}
 		}
@@ -257,16 +264,16 @@ func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task
 		return &Result{ResultJSON: resultJSON}, nil
 	}
 
-	if fs.OverwriteMode == "never" {
-		if entries, err := os.ReadDir(fs.TargetPath); err == nil && len(entries) > 0 {
+	if execFS.OverwriteMode == "never" {
+		if entries, err := os.ReadDir(execFS.TargetPath); err == nil && len(entries) > 0 {
 			return nil, &PipelineError{Code: "restore_target_not_empty", Message: "target path not empty and overwrite_mode=never"}
 		}
 	}
 
-	if err := restic.RestoreWithOverwrite(ctx, d.Exec, opts, fs.SnapshotID, fs.TargetPath, fs.IncludePaths, fs.OverwriteMode); err != nil {
+	if err := restic.RestoreWithOverwrite(ctx, d.Exec, opts, execFS.SnapshotID, execFS.TargetPath, execFS.IncludePaths, execFS.OverwriteMode); err != nil {
 		return nil, &PipelineError{Code: "restore_failed", Message: "restore failed", Cause: err}
 	}
-	if err := validateRestoredSymlinks(fs.TargetPath); err != nil {
+	if err := validateRestoredSymlinks(execFS.TargetPath); err != nil {
 		return nil, &PipelineError{Code: "path_not_allowed", Message: "restored symlink escapes target root", Cause: err}
 	}
 	return &Result{}, nil
@@ -278,12 +285,17 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	if db == nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "missing database restore spec"}
 	}
+	execDB := *db
 	if task.Kind == "sqlite" {
-		if err := validateAllowedPaths([]string{db.TargetDatabase}, d.RestoreRoots, true); err != nil {
+		mapped, err := mapPath(db.TargetDatabase, d.RestorePathMappings, false)
+		if err != nil {
+			return nil, &PipelineError{Code: "path_not_allowed", Message: "sqlite restore target path mapping failed", Cause: err}
+		}
+		execDB.TargetDatabase = mapped
+		if err := validateAllowedPaths([]string{execDB.TargetDatabase}, d.RestoreRoots, true); err != nil {
 			return nil, &PipelineError{Code: "path_not_allowed", Message: "sqlite restore target is outside configured allowlist", Cause: err}
 		}
 	}
-
 	adapter, ok := backup.For(task.Kind)
 	if !ok {
 		return nil, &PipelineError{Code: "invalid_plan", Message: "unknown kind: " + task.Kind}
@@ -294,7 +306,7 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 		return nil, &PipelineError{Code: "internal", Message: "mkdir staging", Cause: err}
 	}
 
-	if err := restic.Restore(ctx, d.Exec, opts, db.SnapshotID, stagingDir, nil); err != nil {
+	if err := restic.Restore(ctx, d.Exec, opts, execDB.SnapshotID, stagingDir, nil); err != nil {
 		return nil, &PipelineError{Code: "restore_failed", Message: "restic restore snapshot failed", Cause: err}
 	}
 
@@ -332,10 +344,10 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	}
 
 	restoreSpec := &backup.RestoreSpec{
-		SnapshotID: db.SnapshotID,
+		SnapshotID: execDB.SnapshotID,
 		Kind:       task.Kind,
 		StagingDir: artifactRoot,
-		Database:   db,
+		Database:   &execDB,
 		Secrets:    secrets,
 		Tools:      d.Tools,
 		Logf:       d.Logf,
@@ -374,45 +386,99 @@ func findRestoredManifest(root string) (manifestPath, artifactRoot string, err e
 	return found, filepath.Dir(found), nil
 }
 
-func mapBackupSource(task *model.BackupTask, mappings []model.PathMapping) error {
+func mapPath(path string, mappings []model.PathMapping, reverse bool) (string, error) {
 	if len(mappings) == 0 {
-		return nil
+		return path, nil
 	}
-	mapOne := func(p string) (string, error) {
-		clean := filepath.Clean(p)
-		var best model.PathMapping
-		bestHost := ""
-		for _, mapping := range mappings {
-			host := filepath.Clean(mapping.HostPath)
-			rel, err := filepath.Rel(host, clean)
-			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-				continue
-			}
-			if bestHost == "" || len(host) > len(bestHost) {
-				best = mapping
-				bestHost = host
-			}
+	clean := filepath.Clean(path)
+	best := -1
+	bestRoot := ""
+	for i, mapping := range mappings {
+		root := mapping.HostPath
+		if reverse {
+			root = mapping.RuntimePath
 		}
-		if bestHost == "" {
-			return "", fmt.Errorf("path %q is not covered by a source path mapping", p)
+		root = filepath.Clean(root)
+		rel, err := filepath.Rel(root, clean)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			continue
 		}
-		rel, err := filepath.Rel(bestHost, clean)
-		if err != nil {
-			return "", err
+		if best < 0 || len(root) > len(bestRoot) {
+			best, bestRoot = i, root
 		}
-		if rel == "." {
-			rel = ""
-		}
-		runtimeRoot := filepath.Clean(best.RuntimePath)
-		runtimePath := filepath.Clean(filepath.Join(runtimeRoot, rel))
-		runtimeRel, err := filepath.Rel(runtimeRoot, runtimePath)
-		if err != nil || runtimeRel == ".." || strings.HasPrefix(runtimeRel, ".."+string(filepath.Separator)) || filepath.IsAbs(runtimeRel) {
-			return "", fmt.Errorf("mapped path %q escapes runtime root", p)
-		}
-		return runtimePath, nil
 	}
+	if best < 0 {
+		if reverse {
+			return path, nil
+		}
+		return "", fmt.Errorf("path %q is not covered by a path mapping", path)
+	}
+	mapping := mappings[best]
+	targetRoot := mapping.RuntimePath
+	if reverse {
+		targetRoot = mapping.HostPath
+	}
+	rel, err := filepath.Rel(bestRoot, clean)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." {
+		rel = ""
+	}
+	target := filepath.Clean(filepath.Join(targetRoot, rel))
+	check, err := filepath.Rel(filepath.Clean(targetRoot), target)
+	if err != nil || check == ".." || strings.HasPrefix(check, ".."+string(filepath.Separator)) || filepath.IsAbs(check) {
+		return "", fmt.Errorf("mapped path %q escapes target root", path)
+	}
+	return target, nil
+}
+
+// HostDisplayText converts mapped runtime paths back to host paths for user-facing text.
+// It only replaces path-boundary matches and leaves unrelated runtime paths unchanged.
+func HostDisplayText(text string, mappings []model.PathMapping) string {
+	for _, mapping := range mappings {
+		runtime := filepath.Clean(mapping.RuntimePath)
+		host := filepath.Clean(mapping.HostPath)
+		for _, sep := range []string{"/", "\\"} {
+			text = replacePathBoundary(text, runtime, host, sep)
+		}
+	}
+	return text
+}
+
+func replacePathBoundary(text, from, to, sep string) string {
+	if from == "" || from == "." || !strings.Contains(text, from) {
+		return text
+	}
+	for start := 0; ; {
+		i := strings.Index(text[start:], from)
+		if i < 0 {
+			return text
+		}
+		i += start
+		beforeOK := i == 0 || isPathBoundary(text[i-1], sep)
+
+		after := i + len(from)
+		afterOK := after == len(text) || isPathBoundary(text[after], sep)
+		if beforeOK && afterOK {
+			text = text[:i] + to + text[after:]
+			start = i + len(to)
+		} else {
+			start = after
+		}
+		if start >= len(text) {
+			return text
+		}
+	}
+}
+
+func isPathBoundary(ch byte, sep string) bool {
+	return ch == sep[0] || ch == '/' || ch == '\\' || ch == ' ' || ch == '\t' || ch == '\n' || ch == ':' || ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == ',' || ch == ';'
+}
+
+func mapBackupSource(task *model.BackupTask, mappings []model.PathMapping) error {
 	for i, path := range task.Source.Paths {
-		mapped, err := mapOne(path)
+		mapped, err := mapPath(path, mappings, false)
 		if err != nil {
 			return err
 		}
@@ -422,14 +488,14 @@ func mapBackupSource(task *model.BackupTask, mappings []model.PathMapping) error
 		if !filepath.IsAbs(path) && !strings.HasPrefix(path, "/") {
 			continue
 		}
-		mapped, err := mapOne(path)
+		mapped, err := mapPath(path, mappings, false)
 		if err != nil {
 			return err
 		}
 		task.Source.Excludes[i] = mapped
 	}
 	if task.Kind == model.KindSQLite {
-		mapped, err := mapOne(task.Source.Path)
+		mapped, err := mapPath(task.Source.Path, mappings, false)
 		if err != nil {
 			return err
 		}
@@ -670,6 +736,13 @@ func runSnapshots(ctx context.Context, d Deps, tempDir string, params []byte, se
 	snaps, err := restic.Snapshots(ctx, d.Exec, opts)
 	if err != nil {
 		return nil, &PipelineError{Code: "snapshots_failed", Message: "restic snapshots failed", Cause: err}
+	}
+	for i := range snaps {
+		for j, path := range snaps[i].Paths {
+			if mapped, mapErr := mapPath(path, d.SourcePathMappings, true); mapErr == nil {
+				snaps[i].Paths[j] = mapped
+			}
+		}
 	}
 	resultJSON, _ := json.Marshal(snaps)
 	return &Result{ResultJSON: resultJSON}, nil

@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,33 @@ func TestLoadAgentSourcePathMappings(t *testing.T) {
 	mapping := cfg.SourcePathMappings[0]
 	if mapping.HostPath != filepath.Clean(hostRoot) || mapping.RuntimePath != filepath.Clean(runtimeRoot) || !mapping.ReadOnly {
 		t.Fatalf("mapping = %#v", mapping)
+	}
+}
+
+func TestLoadAgentRestorePathMappings(t *testing.T) {
+	t.Setenv("BMC_SERVER_GRPC_URL", "server:9090")
+	hostRoot := filepath.Join(t.TempDir(), "restore-host")
+	runtimeRoot := filepath.Join(t.TempDir(), "restore-runtime")
+	raw, err := json.Marshal(map[string]string{hostRoot: runtimeRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BMC_RESTORE_PATH_MAPPINGS", string(raw))
+	cfg, err := LoadAgent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RestorePathMappings) != 1 || cfg.RestorePathMappings[0].ReadOnly {
+		t.Fatalf("restore mappings = %#v", cfg.RestorePathMappings)
+	}
+}
+
+func TestLoadAgentRejectsInvalidRestorePathMappings(t *testing.T) {
+	t.Setenv("BMC_SERVER_GRPC_URL", "server:9090")
+	t.Setenv("BMC_RESTORE_PATH_MAPPINGS", `[]`)
+	_, err := LoadAgent()
+	if err == nil || !strings.Contains(err.Error(), "BMC_RESTORE_PATH_MAPPINGS") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

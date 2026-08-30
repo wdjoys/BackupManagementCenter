@@ -25,13 +25,18 @@ type Agent struct {
 	SourceRoots         []string
 	RestoreRoots        []string
 	SourcePathMappings  []model.PathMapping
+	RestorePathMappings []model.PathMapping
 	ScratchMinFreeBytes int64
 	MaxConcurrency      int
 }
 
 func LoadAgent() (Agent, error) {
 	stateDir := envOr("BMC_AGENT_STATE_DIR", "./agent-state")
-	mappings, err := parsePathMappings(os.Getenv("BMC_SOURCE_PATH_MAPPINGS"))
+	sourceMappings, err := parsePathMappings("BMC_SOURCE_PATH_MAPPINGS", os.Getenv("BMC_SOURCE_PATH_MAPPINGS"), true)
+	if err != nil {
+		return Agent{}, err
+	}
+	restoreMappings, err := parsePathMappings("BMC_RESTORE_PATH_MAPPINGS", os.Getenv("BMC_RESTORE_PATH_MAPPINGS"), false)
 	if err != nil {
 		return Agent{}, err
 	}
@@ -39,8 +44,8 @@ func LoadAgent() (Agent, error) {
 		ServerGRPCURL: os.Getenv("BMC_SERVER_GRPC_URL"), ServerTLS: os.Getenv("BMC_SERVER_TLS") != "0",
 		EnrollToken: os.Getenv("BMC_ENROLLMENT_TOKEN"), StateDir: stateDir, DataDir: os.Getenv("BMC_AGENT_DATA_DIR"),
 		ResticCacheDir: filepath.Clean(envOr("BMC_RESTIC_CACHE_DIR", filepath.Join(stateDir, ".cache", "restic"))),
-		DevInsecure:    os.Getenv("BMC_DEV_INSECURE") == "1", ProbeInterval: envInt("BMC_AGENT_PROBE_INTERVAL", 600),
-		SourceRoots: splitPaths(os.Getenv("BMC_SOURCE_ROOTS")), RestoreRoots: splitPaths(os.Getenv("BMC_RESTORE_ROOTS")), SourcePathMappings: mappings,
+		DevInsecure: os.Getenv("BMC_DEV_INSECURE") == "1", ProbeInterval: envInt("BMC_AGENT_PROBE_INTERVAL", 600),
+		SourceRoots: splitPaths(os.Getenv("BMC_SOURCE_ROOTS")), RestoreRoots: splitPaths(os.Getenv("BMC_RESTORE_ROOTS")), SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings,
 		ScratchMinFreeBytes: envInt64("BMC_SCRATCH_MIN_FREE_BYTES", 0), MaxConcurrency: envInt("BMC_AGENT_MAX_CONCURRENCY", 2),
 	}
 	if a.ServerGRPCURL == "" {
@@ -52,33 +57,32 @@ func LoadAgent() (Agent, error) {
 	return a, nil
 }
 
-func parsePathMappings(raw string) ([]model.PathMapping, error) {
+func parsePathMappings(key, raw string, readOnly bool) ([]model.PathMapping, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
 	var values map[string]string
 	dec := json.NewDecoder(strings.NewReader(raw))
 	if err := dec.Decode(&values); err != nil || values == nil {
-		if err == nil {
-			err = errors.New("mapping must be a JSON object")
-		}
-		return nil, fmt.Errorf("config: invalid BMC_SOURCE_PATH_MAPPINGS: %w", err)
+		if err == nil { err = errors.New("mapping must be a JSON object") }
+		return nil, fmt.Errorf("config: invalid %s: %w", key, err)
 	}
 	var extra any
 	if dec.Decode(&extra) == nil {
-		return nil, errors.New("config: invalid BMC_SOURCE_PATH_MAPPINGS: trailing data")
+		return nil, fmt.Errorf("config: invalid %s: trailing data", key)
 	}
 	result := make([]model.PathMapping, 0, len(values))
 	for host, runtime := range values {
 		host = filepath.Clean(strings.TrimSpace(host))
 		runtime = filepath.Clean(strings.TrimSpace(runtime))
 		if !isAbsolutePath(host) || !isAbsolutePath(runtime) || host == string(filepath.Separator) || runtime == string(filepath.Separator) || host == "." || runtime == "." {
-			return nil, fmt.Errorf("config: invalid path mapping %q: paths must be absolute and non-root", host)
+			return nil, fmt.Errorf("config: invalid %s path mapping %q: paths must be absolute and non-root", key, host)
 		}
-		result = append(result, model.PathMapping{HostPath: host, RuntimePath: runtime, ReadOnly: true})
+		result = append(result, model.PathMapping{HostPath: host, RuntimePath: runtime, ReadOnly: readOnly})
 	}
 	return result, nil
 }
+
 
 func isAbsolutePath(p string) bool {
 	return filepath.IsAbs(p) || strings.HasPrefix(p, "/") || (len(p) > 1 && p[1] == ':')

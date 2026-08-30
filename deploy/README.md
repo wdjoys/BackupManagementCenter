@@ -126,13 +126,15 @@ backup.example.com {
 cp deploy/.env.agent.example .env.agent
 ```
 
-填写 Server 的纯 `host:port` 地址（不要写 `https://`），注册令牌、源目录、恢复目录和路径映射。启动：
+填写 Server 的纯 `host:port` 地址（不要写 `https://`）、注册令牌、宿主机源目录、宿主机恢复目录和对应路径映射。UI 与 REST 中始终填写宿主机路径；Agent 仅在执行边界将其转换为容器运行时路径。启动：
 
 ```sh
 docker compose --env-file .env.agent -f deploy/docker-compose.agent.yml up -d --build
 ```
 
-每台 Agent 必须在实际拥有备份源目录的主机上运行。默认显式只读挂载宿主机 `/etc`、`/srv`，映射为容器 `/backup-sources/etc`、`/backup-sources/srv`；恢复目录单独读写挂载。新增源目录时，必须同时增加 Compose 的只读挂载和 `BMC_SOURCE_PATH_MAPPINGS` 映射，禁止挂载整个主机根目录或 `/var/run/docker.sock`。
+每台 Agent 必须在实际拥有备份源目录和恢复目录的主机上运行。默认显式只读挂载宿主机 `/etc`、`/srv`，映射为容器 `/backup-sources/etc`、`/backup-sources/srv`；`BMC_SOURCE_PATH_MAPPINGS` 的每一项都必须对应一个只读挂载，并且映射后的路径必须包含在 `BMC_SOURCE_ROOTS` 中。恢复目录使用单独的读写挂载：示例中的宿主机 `/var/lib/bmc-restore` 映射到容器 `/backup-restore`，`BMC_RESTORE_PATH_MAPPINGS` 的每一项都必须对应一个读写挂载，并且映射后的路径必须包含在 `BMC_RESTORE_ROOTS` 中。新增源目录或恢复目录时，必须同步更新对应挂载、映射和 runtime roots；禁止挂载整个主机根目录或 `/var/run/docker.sock`。
+
+`BMC_RESTORE_PATH_MAPPINGS` 默认为空，适用于 bare-metal 或旧版 Compose：此时恢复请求中的绝对路径按原值作为 Agent 运行环境路径。容器部署若未配置恢复映射，宿主机路径不会自动转换；需要宿主机填写体验时，必须配置与读写挂载逐项对应的恢复映射。
 
 注册完成后立即从 `.env.agent` 删除 `BMC_ENROLLMENT_TOKEN`，再重新创建容器；身份保存在 `bmc-agent-state` 卷，不能删除、复制或在多台 Agent 间共享。
 

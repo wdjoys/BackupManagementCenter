@@ -159,7 +159,7 @@ func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, _ *model.Agent) erro
 func (f *fakeStore) SetAgentStatus(_ context.Context, _ string, _ model.AgentStatus, _ time.Time) error {
 	return nil
 }
-func (f *fakeStore) SaveAgentCapabilities(_ context.Context, _ string, _ []model.ToolInfo, _ []model.PathMapping, _ time.Time) error {
+func (f *fakeStore) SaveAgentCapabilities(_ context.Context, _ string, _ []model.ToolInfo, _ []model.PathMapping, _ []model.PathMapping, _ time.Time) error {
 	return nil
 }
 func (f *fakeStore) GetAgentBySecretHash(_ context.Context, _ string) (*model.Agent, error) {

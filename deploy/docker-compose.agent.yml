@@ -10,7 +10,7 @@
 # 配置说明：
 #   - 生产环境应显式设置源目录、恢复目录和凭据等环境变量。
 #   - 备份源目录以只读方式挂载；恢复目录单独以读写方式挂载。
-#   - 计划统一填写宿主机原始路径，Agent 按 BMC_SOURCE_PATH_MAPPINGS 自动转换。
+#   - 计划和恢复请求统一填写宿主机路径，Agent 按对应 PATH_MAPPINGS 自动转换。
 services:
   bmc-agent:
     # 固定容器名称，便于查看日志和执行运维命令。
@@ -48,6 +48,8 @@ services:
       BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
       # 宿主机源路径到容器运行时路径的 JSON 映射，必须与下面的只读挂载一一对应。
       BMC_SOURCE_PATH_MAPPINGS: '${BMC_SOURCE_PATH_MAPPINGS:-{"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv"}}'
+      # 宿主机恢复路径到容器运行时路径的 JSON 映射，必须与下面的读写挂载一一对应；留空时兼容旧 Agent 行为。
+      BMC_RESTORE_PATH_MAPPINGS: '${BMC_RESTORE_PATH_MAPPINGS:-}'
       # 逗号分隔的容器内恢复目标路径；生产环境必须显式配置并确认挂载路径。
       BMC_RESTORE_ROOTS: ${BMC_RESTORE_ROOTS:-/backup-restore}
       # scratch 目录要求保留的最小可用空间，单位为字节；0 表示不额外限制。

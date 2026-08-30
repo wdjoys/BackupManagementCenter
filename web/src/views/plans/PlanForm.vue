@@ -285,6 +285,7 @@ import {
 } from './Constants'
 import { translateEnum } from '@/i18n'
 import type { Agent, Repository } from '@/api/types'
+import { isAbsolutePath, isWithinMappedRoot } from '@/utils/pathMapping'
 import type { PlanFormModel, PlanKind } from './Types'
 
 const props = defineProps<{
@@ -357,21 +358,14 @@ function portValidator(_rule: unknown, value: unknown, callback: (error?: string
   if (!Number.isFinite(n) || n < 1 || n > 65535) callback(new Error(t('plans.rules.portRange')))
   else callback()
 }
-function isAbsolutePath(value: string): boolean {
-  return value.startsWith('/')
-}
-function isWithinMappedRoot(path: string): boolean {
-  if (sourcePathMappings.value.length === 0) return true
-  return sourcePathMappings.value.some(({ host_path }) => {
-    const root = host_path.replace(/\/+$/, '') || '/'
-    return root === '/' ? path.startsWith('/') : path === root || path.startsWith(`${root}/`)
-  })
+function isWithinSourceMappedRoot(path: string): boolean {
+  return isWithinMappedRoot(path, sourcePathMappings.value)
 }
 function absolutePathValidator(_rule: unknown, value: unknown, callback: (error?: string | Error) => void, ..._rest: unknown[]): void {
   const p = typeof value === 'string' ? value.trim() : ''
   if (!p) callback(new Error(t('plans.rules.pathRequired')))
   else if (!isAbsolutePath(p)) callback(new Error(t('plans.rules.absolutePath')))
-  else if (!isWithinMappedRoot(p)) callback(new Error(t('plans.rules.pathOutsideAllowedRoots')))
+  else if (!isWithinSourceMappedRoot(p)) callback(new Error(t('plans.rules.pathOutsideAllowedRoots')))
   else callback()
 }
 function pathsValidator(_rule: unknown, value: unknown, callback: (error?: string | Error) => void, ..._rest: unknown[]): void {
@@ -379,13 +373,13 @@ function pathsValidator(_rule: unknown, value: unknown, callback: (error?: strin
   const paths: string[] = items.filter((p): p is string => typeof p === 'string')
   if (paths.length === 0) callback(new Error(t('plans.rules.pathsRequired')))
   else if (paths.some((p) => !isAbsolutePath(p))) callback(new Error(t('plans.rules.pathsAbsolute')))
-  else if (paths.some((p) => !isWithinMappedRoot(p))) callback(new Error(t('plans.rules.pathsOutsideAllowedRoots')))
+  else if (paths.some((p) => !isWithinSourceMappedRoot(p))) callback(new Error(t('plans.rules.pathsOutsideAllowedRoots')))
   else callback()
 }
 function excludesValidator(_rule: unknown, value: unknown, callback: (error?: string | Error) => void, ..._rest: unknown[]): void {
   const excludes: unknown[] = Array.isArray(value) ? value : []
   const invalid = excludes.some((exclude) =>
-    typeof exclude === 'string' && isAbsolutePath(exclude) && !isWithinMappedRoot(exclude),
+    typeof exclude === 'string' && isAbsolutePath(exclude) && !isWithinSourceMappedRoot(exclude),
   )
   if (invalid) callback(new Error(t('plans.rules.excludesOutsideAllowedRoots')))
   else callback()

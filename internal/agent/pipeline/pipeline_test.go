@@ -290,3 +290,18 @@ func TestMapBackupSourceMapsSQLitePath(t *testing.T) {
 		t.Fatalf("sqlite path = %q, want %q", got, want)
 	}
 }
+
+func TestMapPathReverseLongestBoundaryAndUnmapped(t *testing.T) {
+    host := filepath.Join(t.TempDir(), "host")
+    runtime := filepath.Join(t.TempDir(), "runtime")
+    childHost := filepath.Join(host, "app")
+    childRuntime := filepath.Join(runtime, "app")
+    mappings := []model.PathMapping{{HostPath: host, RuntimePath: runtime}, {HostPath: childHost, RuntimePath: childRuntime}}
+    got, err := mapPath(filepath.Join(childRuntime, "data"), mappings, true)
+    if err != nil { t.Fatal(err) }
+    want := filepath.Join(childHost, "data")
+    if got != want { t.Fatalf("reverse = %q, want %q", got, want) }
+    outsideRuntime := runtime + "-application"
+    if got, err := mapPath(filepath.Join(outsideRuntime, "x"), mappings, true); err != nil || got != filepath.Join(outsideRuntime, "x") { t.Fatalf("boundary/unmapped = %q, %v", got, err) }
+    if _, err := mapPath(filepath.Join(host, "outside2"), []model.PathMapping{{HostPath: childHost, RuntimePath: childRuntime}}, false); err == nil { t.Fatal("expected unmapped error") }
+}

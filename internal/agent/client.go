@@ -82,6 +82,7 @@ type ConfigProvider interface {
 	GetDevInsecure() bool
 	GetProbeInterval() time.Duration
 	GetSourcePathMappings() []model.PathMapping
+	GetRestorePathMappings() []model.PathMapping
 }
 
 // NewConnectClient assembles the control-stream client. The identity must
@@ -364,23 +365,21 @@ func (c *ConnectClient) sendCapabilities(ctx context.Context, stream bmcv1.Agent
 			Version: tool.Version,
 		})
 	}
-	mappings := c.cfg.GetSourcePathMappings()
-	protoMappings := make([]*bmcv1.PathMapping, 0, len(mappings))
-	for _, mapping := range mappings {
-		protoMappings = append(protoMappings, &bmcv1.PathMapping{
-			HostPath:    mapping.HostPath,
-			RuntimePath: mapping.RuntimePath,
-			ReadOnly:    mapping.ReadOnly,
-		})
+	sourceMappings := c.cfg.GetSourcePathMappings()
+	protoSourceMappings := make([]*bmcv1.PathMapping, 0, len(sourceMappings))
+	for _, mapping := range sourceMappings {
+		protoSourceMappings = append(protoSourceMappings, &bmcv1.PathMapping{HostPath: mapping.HostPath, RuntimePath: mapping.RuntimePath, ReadOnly: mapping.ReadOnly})
+	}
+	restoreMappings := c.cfg.GetRestorePathMappings()
+	protoRestoreMappings := make([]*bmcv1.PathMapping, 0, len(restoreMappings))
+	for _, mapping := range restoreMappings {
+		protoRestoreMappings = append(protoRestoreMappings, &bmcv1.PathMapping{HostPath: mapping.HostPath, RuntimePath: mapping.RuntimePath, ReadOnly: mapping.ReadOnly})
 	}
 	msg := &bmcv1.AgentMessage{
 		MessageId: newMessageID(),
-		Payload: &bmcv1.AgentMessage_CapabilitiesReport{
-			CapabilitiesReport: &bmcv1.CapabilitiesReport{
-				Tools:              protoTools,
-				SourcePathMappings: protoMappings,
-			},
-		},
+		Payload: &bmcv1.AgentMessage_CapabilitiesReport{CapabilitiesReport: &bmcv1.CapabilitiesReport{
+			Tools: protoTools, SourcePathMappings: protoSourceMappings, RestorePathMappings: protoRestoreMappings,
+		}},
 	}
 	if err := stream.Send(msg); err != nil {
 		log.Printf("[ERROR] capabilities send: %v", err)

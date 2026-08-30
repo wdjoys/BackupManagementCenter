@@ -69,6 +69,7 @@ type agentView struct {
 	EnrolledAt         time.Time           `json:"enrolled_at"`
 	Capabilities       []model.ToolInfo    `json:"capabilities"`
 	SourcePathMappings []model.PathMapping `json:"source_path_mappings"`
+	RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
 }
 
 // GET /agents
@@ -85,7 +86,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		out = append(out, agentView{
 			ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch,
 			Version: a.Version, Status: a.Status, Revoked: a.Revoked, LastSeenAt: a.LastSeenAt,
-			EnrolledAt: a.EnrolledAt, Capabilities: a.Capabilities, SourcePathMappings: a.SourcePathMappings,
+			EnrolledAt: a.EnrolledAt, Capabilities: a.Capabilities, SourcePathMappings: a.SourcePathMappings, RestorePathMappings: a.RestorePathMappings,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

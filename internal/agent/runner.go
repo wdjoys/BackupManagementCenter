@@ -26,12 +26,12 @@ type Runner struct {
 	executeFn func(ctx context.Context, d pipeline.Deps, tempDir string, op bmcv1.ExecuteCommand_Operation, params []byte, secrets backup.SecretBundle) (*pipeline.Result, error)
 
 	// In-flight runs: run_id -> cancel func
-	mu       sync.Mutex
-	running  map[string]context.CancelFunc
-	finished *lruCache // run_id -> RunResult (cached for idempotency)
-	repoMu   sync.Mutex
+	mu        sync.Mutex
+	running   map[string]context.CancelFunc
+	finished  *lruCache // run_id -> RunResult (cached for idempotency)
+	repoMu    sync.Mutex
 	repoLocks map[string]*sync.Mutex
-	slots chan struct{}
+	slots     chan struct{}
 
 	prober *Prober // optional; refreshed tool paths before each execution
 }
@@ -53,7 +53,9 @@ func NewRunner(deps pipeline.Deps, dataDir string, identity *Identity) *Runner {
 		repoLocks: make(map[string]*sync.Mutex),
 		executeFn: pipeline.Execute,
 	}
-	if deps.MaxConcurrency > 0 { r.slots = make(chan struct{}, deps.MaxConcurrency) }
+	if deps.MaxConcurrency > 0 {
+		r.slots = make(chan struct{}, deps.MaxConcurrency)
+	}
 	return r
 }
 
@@ -128,9 +130,12 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 
 		// Clone deps with per-run log/progress sinks that stream upstream.
 		deps := r.deps
+		allMappings := append(append([]model.PathMapping(nil), deps.SourcePathMappings...), deps.RestorePathMappings...)
 		var logSeq atomic.Uint64
+
 		deps.Logf = func(level, format string, args ...any) {
 			msg := fmt.Sprintf(format, args...)
+			msg = pipeline.HostDisplayText(msg, allMappings)
 			log.Printf("[run %s] [%s] %s", runID, level, msg)
 			seq := logSeq.Add(1)
 			batch := &bmcv1.AgentMessage{
@@ -227,6 +232,7 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 						msg = pe.Cause.Error()
 					}
 				}
+				msg = pipeline.HostDisplayText(msg, allMappings)
 				log.Printf("[ERROR] pipeline execute run_id=%s operation=%s error_code=%s error=%s", runID, operationName(cmd.Operation), code, msg)
 				runResult = &bmcv1.RunResult{
 					RunId:        runID,

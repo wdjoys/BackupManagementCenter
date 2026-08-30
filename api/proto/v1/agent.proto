@@ -151,8 +151,9 @@ message PathMapping {
 }
 
 message CapabilitiesReport {
-	repeated ToolInfo tools = 1;
-	repeated PathMapping source_path_mappings = 2;
+  repeated ToolInfo tools = 1;
+  repeated PathMapping source_path_mappings = 2;
+  repeated PathMapping restore_path_mappings = 3;
 }
 
 message ExecuteCommand {

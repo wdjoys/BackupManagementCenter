@@ -22,6 +22,7 @@ export interface Agent {
   enrolled_at: string
   capabilities: ToolCapability[]
   source_path_mappings: PathMapping[]
+  restore_path_mappings: PathMapping[]
 }
 
 export interface ToolCapability {

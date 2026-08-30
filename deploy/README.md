@@ -13,7 +13,7 @@
 
 需要 Docker Engine 24+ 和 Docker Compose v2（命令为 `docker compose`）。Server 提供 Web/API（容器端口 8080）和 Agent gRPC（容器端口 9090）；Agent 不监听入站端口，通过出站 gRPC 连接 Server，并直接把备份写入存储目标。
 
-生产环境建议使用正式 TLS 证书。若 80/443 已由 Caddy 占用，可让 Server 使用 `BMC_TLS_MODE=none` 运行明文后端，仅绑定本机回环地址，由 Caddy 终止 TLS 并将 gRPC 以 h2c 转发到 9090。
+生产环境建议使用正式 TLS 证书。若公网入口已由其他 Web 服务统一提供 TLS，可让 Server 使用 `BMC_TLS_MODE=none` 运行内部明文服务，仅绑定本机回环地址，由外部反向代理转发 Web/API 和 gRPC 流量。
 
 ## 2. 准备 Server
 
@@ -40,9 +40,9 @@ curl -fk https://backup.example.com/health/ready
 
 测试环境可用自签证书，但必须让 Agent 信任对应 CA；`BMC_DEV_INSECURE=1` 仅适用于隔离的本地测试，禁止生产使用。
 
-### Caddy 共存 / 非 TLS 后端
+### 外部反向代理终止 TLS
 
-当宿主机已有 Caddy 占用 80/443 时，编辑 `deploy/.env`：
+当公网入口已由其他 Web 服务占用并负责 TLS 时，编辑 `deploy/.env`：
 
 ```dotenv
 BMC_TLS_MODE=none
@@ -51,28 +51,23 @@ BMC_PUBLIC_URL=https://backup.example.com
 
 启动后，Server 应仅暴露 `127.0.0.1:8080` 和 `127.0.0.1:9090`。在 `deploy/.env` 中设置 `BMC_SERVER_BIND=127.0.0.1`、`BMC_SERVER_PORT=8080`、`BMC_GRPC_BIND=127.0.0.1`、`BMC_GRPC_PORT=9090`，不要将明文端口暴露到公网。
 
-若使用 Caddy 且未准备证书文件，还应将 Compose secret 路径设为 `/dev/null`（Compose 仍会解析 secret 文件）：
+若外部反向代理负责证书且 Server 未准备证书文件，还应将 Compose secret 路径设为 `/dev/null`（Compose 仍会解析 secret 文件）：
 
 ```dotenv
 BMC_TLS_CERT_FILE=/dev/null
 BMC_TLS_KEY_FILE=/dev/null
 ```
 
-Caddyfile 必须同时分流 Web 和 gRPC：
+反向代理必须同时转发 Web/API 和 gRPC，并为 gRPC 保留 HTTP/2 能力。代理上游分别指向 `http://127.0.0.1:8080` 和支持明文 HTTP/2 的 `h2c://127.0.0.1:9090`。
 
-```caddyfile
-backup.example.com {
-    @grpc protocol grpc
-    handle @grpc {
-        reverse_proxy h2c://127.0.0.1:9090
-    }
-    handle {
-        reverse_proxy http://127.0.0.1:8080
-    }
-}
+配置示意：
+
+```text
+公网 HTTPS Web/API  →  http://127.0.0.1:8080
+公网 HTTPS gRPC    →  h2c://127.0.0.1:9090
 ```
 
-Caddy 容器部署时，将 BMC 与 Caddy 加入同一外部 Docker 网络，并将上游改为 `h2c://bmc-server:9090` 与 `http://bmc-server:8080`。Agent 此时连接 `backup.example.com:443` 并设置 `BMC_SERVER_TLS=1`。Caddy 负责证书申请和续期；Server 仍必须配置并保护主密钥。
+若反向代理与 BMC 同为容器，将两者加入同一内部 Docker 网络，并将上游分别指向 `http://bmc-server:8080` 和 `h2c://bmc-server:9090`。Agent 此时连接公网入口的 `host:port` 并设置 `BMC_SERVER_TLS=1`。证书申请和续期由外部反向代理负责；Server 仍必须配置并保护主密钥。
 
 ## 3. 部署 Agent
 
@@ -114,7 +109,7 @@ docker compose --env-file .env.agent -f deploy/docker-compose.agent.yml ps
 docker compose --env-file .env.agent -f deploy/docker-compose.agent.yml logs -f bmc-agent
 ```
 
-健康检查失败时先查看日志、DNS、端口和证书。`BMC_SERVER_GRPC_URL` 必须是 `host:port`；经 Caddy 连接时必须存在 `@grpc protocol grpc` 的 h2c 分流。主密钥权限错误时，确保容器用户可读宿主机 Secret（通常将文件属主设为 UID 65532，或按主机安全策略调整权限）。
+健康检查失败时先查看日志、DNS、端口和证书。`BMC_SERVER_GRPC_URL` 必须是 `host:port`；经外部反向代理连接时必须正确转发 gRPC 并保留 HTTP/2。主密钥权限错误时，确保容器用户可读宿主机 Secret（通常将文件属主设为 UID 65532，或按主机安全策略调整权限）。
 
 ## 6. 升级与回滚
 

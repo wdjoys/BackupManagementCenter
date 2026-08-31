@@ -78,6 +78,82 @@ func TestLoadAgentRestorePathMappings(t *testing.T) {
 	}
 }
 
+func TestLoadAgentRestoreRootDerivesMappingAndRoot(t *testing.T) {
+	t.Setenv("BMC_SERVER_GRPC_URL", "server:9090")
+	t.Setenv("BMC_RESTORE_PATH_MAPPINGS", "")
+	t.Setenv("BMC_RESTORE_ROOTS", "")
+	root := filepath.Join(t.TempDir(), "restore", "..", "restore-root")
+	t.Setenv("BMC_RESTORE_ROOT", root)
+
+	cfg, err := LoadAgent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RestorePathMappings) != 1 {
+		t.Fatalf("restore mappings = %#v", cfg.RestorePathMappings)
+	}
+	mapping := cfg.RestorePathMappings[0]
+	if mapping.HostPath != filepath.Clean(root) || mapping.RuntimePath != "/backup-restore" || mapping.ReadOnly {
+		t.Fatalf("mapping = %#v", mapping)
+	}
+	if len(cfg.RestoreRoots) != 1 || cfg.RestoreRoots[0] != "/backup-restore" {
+		t.Fatalf("restore roots = %#v", cfg.RestoreRoots)
+	}
+}
+
+func TestLoadAgentRejectsInvalidRestoreRoot(t *testing.T) {
+	for _, root := range []string{"/", "relative/path", "."} {
+		t.Run(root, func(t *testing.T) {
+			t.Setenv("BMC_SERVER_GRPC_URL", "server:9090")
+			t.Setenv("BMC_RESTORE_PATH_MAPPINGS", "")
+			t.Setenv("BMC_RESTORE_ROOTS", "")
+			t.Setenv("BMC_RESTORE_ROOT", root)
+			if _, err := LoadAgent(); err == nil || !strings.Contains(err.Error(), "BMC_RESTORE_ROOT") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadAgentRestoreConfigurationExplicitValuesOverrideRoot(t *testing.T) {
+	t.Setenv("BMC_SERVER_GRPC_URL", "server:9090")
+	hostRoot := filepath.Join(t.TempDir(), "restore-host")
+	runtimeRoot := filepath.Join(t.TempDir(), "restore-runtime")
+	raw, err := json.Marshal(map[string]string{hostRoot: runtimeRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BMC_RESTORE_ROOT", filepath.Join(t.TempDir(), "automatic-root"))
+	t.Setenv("BMC_RESTORE_PATH_MAPPINGS", string(raw))
+	t.Setenv("BMC_RESTORE_ROOTS", "/explicit-restore")
+
+	cfg, err := LoadAgent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RestorePathMappings) != 1 || cfg.RestorePathMappings[0].HostPath != filepath.Clean(hostRoot) || cfg.RestorePathMappings[0].RuntimePath != filepath.Clean(runtimeRoot) {
+		t.Fatalf("restore mappings = %#v", cfg.RestorePathMappings)
+	}
+	if len(cfg.RestoreRoots) != 1 || cfg.RestoreRoots[0] != filepath.Clean("/explicit-restore") {
+		t.Fatalf("restore roots = %#v", cfg.RestoreRoots)
+	}
+}
+
+func TestLoadAgentRestoreConfigurationEmptyIsCompatible(t *testing.T) {
+	t.Setenv("BMC_SERVER_GRPC_URL", "server:9090")
+	t.Setenv("BMC_RESTORE_ROOT", "")
+	t.Setenv("BMC_RESTORE_PATH_MAPPINGS", "")
+	t.Setenv("BMC_RESTORE_ROOTS", "")
+
+	cfg, err := LoadAgent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RestorePathMappings) != 0 || len(cfg.RestoreRoots) != 0 {
+		t.Fatalf("restore configuration = mappings %#v, roots %#v", cfg.RestorePathMappings, cfg.RestoreRoots)
+	}
+}
+
 func TestLoadAgentRejectsInvalidRestorePathMappings(t *testing.T) {
 	t.Setenv("BMC_SERVER_GRPC_URL", "server:9090")
 	t.Setenv("BMC_RESTORE_PATH_MAPPINGS", `[]`)

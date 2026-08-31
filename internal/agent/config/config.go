@@ -36,7 +36,7 @@ func LoadAgent() (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
-	restoreMappings, err := parsePathMappings("BMC_RESTORE_PATH_MAPPINGS", os.Getenv("BMC_RESTORE_PATH_MAPPINGS"), false)
+	restoreMappings, restoreRoots, err := loadRestoreConfiguration()
 	if err != nil {
 		return Agent{}, err
 	}
@@ -44,8 +44,8 @@ func LoadAgent() (Agent, error) {
 		ServerGRPCURL: os.Getenv("BMC_SERVER_GRPC_URL"), ServerTLS: os.Getenv("BMC_SERVER_TLS") != "0",
 		EnrollToken: os.Getenv("BMC_ENROLLMENT_TOKEN"), StateDir: stateDir, DataDir: os.Getenv("BMC_AGENT_DATA_DIR"),
 		ResticCacheDir: filepath.Clean(envOr("BMC_RESTIC_CACHE_DIR", filepath.Join(stateDir, ".cache", "restic"))),
-		DevInsecure: os.Getenv("BMC_DEV_INSECURE") == "1", ProbeInterval: envInt("BMC_AGENT_PROBE_INTERVAL", 600),
-		SourceRoots: splitPaths(os.Getenv("BMC_SOURCE_ROOTS")), RestoreRoots: splitPaths(os.Getenv("BMC_RESTORE_ROOTS")), SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings,
+		DevInsecure:    os.Getenv("BMC_DEV_INSECURE") == "1", ProbeInterval: envInt("BMC_AGENT_PROBE_INTERVAL", 600),
+		SourceRoots: splitPaths(os.Getenv("BMC_SOURCE_ROOTS")), RestoreRoots: restoreRoots, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings,
 		ScratchMinFreeBytes: envInt64("BMC_SCRATCH_MIN_FREE_BYTES", 0), MaxConcurrency: envInt("BMC_AGENT_MAX_CONCURRENCY", 2),
 	}
 	if a.ServerGRPCURL == "" {
@@ -57,6 +57,44 @@ func LoadAgent() (Agent, error) {
 	return a, nil
 }
 
+func loadRestoreConfiguration() ([]model.PathMapping, []string, error) {
+	pathMappingsRaw := os.Getenv("BMC_RESTORE_PATH_MAPPINGS")
+	restoreRootsRaw := os.Getenv("BMC_RESTORE_ROOTS")
+	restoreRootRaw := strings.TrimSpace(os.Getenv("BMC_RESTORE_ROOT"))
+
+	if strings.TrimSpace(pathMappingsRaw) != "" {
+		mappings, err := parsePathMappings("BMC_RESTORE_PATH_MAPPINGS", pathMappingsRaw, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		return mappings, splitPaths(restoreRootsRaw), nil
+	}
+	if restoreRootRaw == "" {
+		return nil, splitPaths(restoreRootsRaw), nil
+	}
+
+	hostPath := filepath.Clean(restoreRootRaw)
+	if !isAbsolutePath(hostPath) || hostPath == "." || isRootPath(hostPath) {
+		return nil, nil, fmt.Errorf("config: invalid BMC_RESTORE_ROOT %q: path must be absolute and non-root", restoreRootRaw)
+	}
+	return []model.PathMapping{{HostPath: hostPath, RuntimePath: "/backup-restore", ReadOnly: false}}, restoreRootsOrDefault(restoreRootsRaw), nil
+}
+
+func restoreRootsOrDefault(raw string) []string {
+	if roots := splitPaths(raw); len(roots) > 0 {
+		return roots
+	}
+	return []string{"/backup-restore"}
+}
+
+func isRootPath(p string) bool {
+	if p == string(filepath.Separator) {
+		return true
+	}
+	volume := filepath.VolumeName(p)
+	return volume != "" && p == volume+string(filepath.Separator)
+}
+
 func parsePathMappings(key, raw string, readOnly bool) ([]model.PathMapping, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
@@ -64,7 +102,9 @@ func parsePathMappings(key, raw string, readOnly bool) ([]model.PathMapping, err
 	var values map[string]string
 	dec := json.NewDecoder(strings.NewReader(raw))
 	if err := dec.Decode(&values); err != nil || values == nil {
-		if err == nil { err = errors.New("mapping must be a JSON object") }
+		if err == nil {
+			err = errors.New("mapping must be a JSON object")
+		}
 		return nil, fmt.Errorf("config: invalid %s: %w", key, err)
 	}
 	var extra any
@@ -82,7 +122,6 @@ func parsePathMappings(key, raw string, readOnly bool) ([]model.PathMapping, err
 	}
 	return result, nil
 }
-
 
 func isAbsolutePath(p string) bool {
 	return filepath.IsAbs(p) || strings.HasPrefix(p, "/") || (len(p) > 1 && p[1] == ':')

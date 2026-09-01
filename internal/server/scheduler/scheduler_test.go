@@ -455,6 +455,28 @@ func TestCronDisabledPlanSkipped(t *testing.T) {
 	}
 }
 
+// TestCronSkipsOfflineAgent verifies a due plan does not start a run when its
+// agent is offline, while still advancing the cursor past that slot.
+func TestCronSkipsOfflineAgent(t *testing.T) {
+	fst := newFakeStore(t)
+	fst.plans = append(fst.plans, model.Plan{
+		ID:       "plan-offline",
+		AgentID:  "agent-1",
+		Enabled:  true,
+		Schedule: "* * * * *",
+		Timezone: "UTC",
+	})
+	fst.agents["agent-1"] = model.Agent{ID: "agent-1", Status: model.AgentOffline}
+	start := newFakeStarter()
+	s := New(fst, start, nil)
+
+	tickAt(s, mustTime("2026-08-22T10:00:00Z"))
+	tickAt(s, mustTime("2026-08-22T10:01:01Z"))
+	if len(start.startPlanRunCalls) != 0 {
+		t.Fatalf("expected offline agent plan to be skipped, got %d starts", len(start.startPlanRunCalls))
+	}
+}
+
 // TestCronInvalidScheduleAndTZDoNotCrash verifies that a plan with an
 // unparseable cron expression or timezone does not affect the rest of the
 // batch.

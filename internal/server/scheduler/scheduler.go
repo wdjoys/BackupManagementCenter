@@ -39,7 +39,7 @@ const (
 	// enqueue a new restic process every scheduler tick while the failure is
 	// unresolved.
 	repoCheckRetryCooldown = time.Hour
-	defaultTimeout  = 300 * time.Second
+	defaultTimeout         = 300 * time.Second
 )
 
 type Scheduler struct {
@@ -141,6 +141,10 @@ func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
 		return
 	}
 	for _, repo := range repos {
+		if s.agentOffline(ctx, repo.AgentID) {
+			slog.Info("scheduler: skip retention for offline agent", "repositoryID", repo.ID, "agentID", repo.AgentID)
+			continue
+		}
 		runs, err := s.store.ListRuns(ctx, store.RunFilter{RepositoryID: repo.ID, Limit: 100,
 			Statuses: []string{model.RunQueued, model.RunDispatched, model.RunRunning, model.RunSucceeded}})
 		if err != nil {
@@ -196,11 +200,7 @@ func (s *Scheduler) tickPlan(ctx context.Context, now time.Time, p model.Plan) {
 		return
 	}
 
-	// Next fire after `now` in the plan's timezone.
 	next := sched.Next(now.In(loc)).UTC()
-
-	// Cursor is the slot this plan would fulfill if consumed. On first tick
-	// load it from SQLite so a server restart can catch up one missed slot.
 	prev, exists := s.cursors[p.ID]
 	if !exists {
 		if cs, ok := s.store.(interface {
@@ -220,7 +220,9 @@ func (s *Scheduler) tickPlan(ctx context.Context, now time.Time, p model.Plan) {
 	}
 
 	if prev.Before(now) || prev.Equal(now) {
-		if err := s.starter.StartPlanRun(ctx, p.ID, &prev); err != nil {
+		if p.AgentID != "" && s.agentOffline(ctx, p.AgentID) {
+			slog.Info("scheduler: skip plan run for offline agent", "planID", p.ID, "agentID", p.AgentID)
+		} else if err := s.starter.StartPlanRun(ctx, p.ID, &prev); err != nil {
 			if errors.Is(err, store.ErrDuplicateRun) {
 				slog.Info("scheduler: duplicate run, slot already claimed", "planID", p.ID)
 			} else {

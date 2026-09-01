@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -47,6 +48,48 @@ func LoadKey(path string) ([]byte, error) {
 		return nil, fmt.Errorf("secrets: master key must be %d bytes, got %d", KeyLen, n)
 	}
 	return key, nil
+}
+
+// LoadOrCreateKey loads an existing 32-byte key or atomically creates one.
+func LoadOrCreateKey(path string) ([]byte, bool, error) {
+	key, err := LoadKey(path)
+	if err == nil {
+		return key, false, nil
+	}
+	if !os.IsNotExist(errors.Unwrap(err)) {
+		return nil, false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, false, fmt.Errorf("secrets: create master key directory: %w", err)
+	}
+	key = make([]byte, KeyLen)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, false, fmt.Errorf("secrets: generate master key: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		if err := f.Chmod(0o600); err != nil {
+			_ = f.Close()
+			return nil, false, fmt.Errorf("secrets: set master key permissions: %w", err)
+		}
+		_, writeErr := f.Write(key)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return nil, false, fmt.Errorf("secrets: write master key: %w", writeErr)
+		}
+		if closeErr != nil {
+			return nil, false, fmt.Errorf("secrets: close master key: %w", closeErr)
+		}
+		return key, true, nil
+	}
+	if !os.IsExist(err) {
+		return nil, false, fmt.Errorf("secrets: create master key: %w", err)
+	}
+	key, err = LoadKey(path)
+	if err != nil {
+		return nil, false, err
+	}
+	return key, false, nil
 }
 
 func NewSealer(key []byte) (Sealer, error) {
@@ -102,6 +145,7 @@ func (s *AESGCMSealer) Open(table, rowID, column string, data []byte) (string, e
 	}
 	return string(pt), nil
 }
+
 // HashToken returns lowercase hex SHA-256; used for session tokens, agent
 // secrets and enrollment tokens (only hashes are persisted).
 func HashToken(token string) string {

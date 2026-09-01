@@ -5,16 +5,18 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
 type Server struct {
-	ListenAddr    string // BMC_LISTEN_ADDR, default :8080
-	GRPCAddr      string // BMC_GRPC_ADDR, default :9090
-	MetricsAddr   string // BMC_METRICS_ADDR, default 127.0.0.1:9100
-	DataDir       string // BMC_DATA_DIR, default ./data
-	PublicURL     string // BMC_PUBLIC_URL
-	MasterKeyFile string // BMC_MASTER_KEY_FILE
+	ListenAddr        string // BMC_LISTEN_ADDR, default :8080
+	GRPCAddr          string // BMC_GRPC_ADDR, default :9090
+	MetricsAddr       string // BMC_METRICS_ADDR, default 127.0.0.1:9100
+	DataDir           string // BMC_DATA_DIR, default ./data
+	PublicURL         string // BMC_PUBLIC_URL
+	MasterKeyFile     string // BMC_MASTER_KEY_FILE or DataDir/master.key
+	MasterKeyExplicit bool
 	// Telegram failure notifications. Both variables must be set together
 	// to enable; both empty disables; exactly one is a config error.
 	TelegramBotToken string // BMC_TELEGRAM_BOT_TOKEN
@@ -24,23 +26,23 @@ type Server struct {
 	// TLSMode: "auto" (default) serves TLS from TLSCertFile/KeyFile and
 	// requires them in production; "none" serves plain HTTP + plain gRPC for
 	// deployments where a reverse proxy (Caddy/Nginx) terminates all TLS.
-	// The master key stays mandatory in production regardless of mode.
 	TLSMode     string
-	DevInsecure bool // BMC_DEV_INSECURE=1 allows missing TLS/master key (local dev only)
+	DevInsecure bool // BMC_DEV_INSECURE=1 allows missing TLS (local dev only)
 }
 
 func LoadServer() (Server, error) {
+	dataDir := env("BMC_DATA_DIR", "./data")
+	masterKeyFile := os.Getenv("BMC_MASTER_KEY_FILE")
 	c := Server{
-		ListenAddr:    env("BMC_LISTEN_ADDR", ":8080"),
-		GRPCAddr:      env("BMC_GRPC_ADDR", ":9090"),
-		MetricsAddr:   env("BMC_METRICS_ADDR", "127.0.0.1:9100"),
-		DataDir:       env("BMC_DATA_DIR", "./data"),
-		PublicURL:     os.Getenv("BMC_PUBLIC_URL"),
-		MasterKeyFile: os.Getenv("BMC_MASTER_KEY_FILE"),
-		TLSCertFile:   os.Getenv("BMC_TLS_CERT_FILE"),
-		TLSKeyFile:    os.Getenv("BMC_TLS_KEY_FILE"),
-		TLSMode:       env("BMC_TLS_MODE", "auto"),
-		DevInsecure:   env("BMC_DEV_INSECURE", "") == "1",
+		ListenAddr: env("BMC_LISTEN_ADDR", ":8080"), GRPCAddr: env("BMC_GRPC_ADDR", ":9090"),
+		MetricsAddr: env("BMC_METRICS_ADDR", "127.0.0.1:9100"), DataDir: dataDir,
+		PublicURL: os.Getenv("BMC_PUBLIC_URL"), MasterKeyFile: masterKeyFile,
+		MasterKeyExplicit: masterKeyFile != "", TLSCertFile: os.Getenv("BMC_TLS_CERT_FILE"),
+		TLSKeyFile: os.Getenv("BMC_TLS_KEY_FILE"), TLSMode: env("BMC_TLS_MODE", "auto"),
+		DevInsecure: env("BMC_DEV_INSECURE", "") == "1",
+	}
+	if !c.MasterKeyExplicit {
+		c.MasterKeyFile = filepath.Join(dataDir, "master.key")
 	}
 	switch c.TLSMode {
 	case "auto", "none":
@@ -53,15 +55,8 @@ func LoadServer() (Server, error) {
 			return c, fmt.Errorf("config: BMC_PUBLIC_URL must be an absolute http(s) URL")
 		}
 	}
-	plaintext := c.TLSMode == "none"
-	if c.DevInsecure {
-		return c, nil
-	}
-	if !plaintext && (c.TLSCertFile == "" || c.TLSKeyFile == "") {
+	if !c.DevInsecure && c.TLSMode != "none" && (c.TLSCertFile == "" || c.TLSKeyFile == "") {
 		return c, fmt.Errorf("config: BMC_TLS_CERT_FILE and BMC_TLS_KEY_FILE are required (or BMC_TLS_MODE=none behind a TLS proxy, or BMC_DEV_INSECURE=1 for local development)")
-	}
-	if c.MasterKeyFile == "" {
-		return c, fmt.Errorf("config: BMC_MASTER_KEY_FILE is required (or BMC_DEV_INSECURE=1 for local development)")
 	}
 	return c, nil
 }

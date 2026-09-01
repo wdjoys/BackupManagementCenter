@@ -1,12 +1,6 @@
 # Agent 部署模板：在每台被管理的 Linux 主机上单独运行。
-#
-# BMC_SERVER_GRPC_URL 必须填写纯 host:port，不要带 https:// 等协议前缀，
-# 并且该地址必须能被容器解析和访问：
- #   - Agent 与 Server 同一台主机（外部反向代理模式，Server 绑定 127.0.0.1）：
- #       取消 network_mode: host 注释，并填写 127.0.0.1:9090。
-#   - Agent 与 Server 不同主机：
-#       填写 Server 的公网或内网域名/IP，例如 backup.example.com:9090。
-#
+# BMC_SERVER_GRPC_URL 推荐填写 https://host:port 或 http://host:port；旧 host:port + BMC_SERVER_TLS 仍兼容。
+services:
 # 配置说明：
 #   - 生产环境应显式设置源目录、恢复目录和凭据等环境变量。
 #   - 备份源目录以只读方式挂载；恢复目录单独以读写方式挂载。
@@ -32,10 +26,8 @@ services:
     # 同机部署时取消下一行注释，直接使用宿主网络以访问 127.0.0.1:9090。
     # network_mode: host
     environment:
-      # Server Agent gRPC 地址，必须是 host:port 格式；未设置时直接报错。
-      BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC as host:port, no scheme}
-      # 是否启用 Server/Agent gRPC TLS；默认启用。
-      BMC_SERVER_TLS: ${BMC_SERVER_TLS:-1}
+      BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC endpoint}
+      BMC_SERVER_TLS: ${BMC_SERVER_TLS-}
       # 首次注册 Agent 使用的 enrollment token；已注册 Agent 可留空。
       BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
       # Agent 身份、注册信息和持久化状态目录。

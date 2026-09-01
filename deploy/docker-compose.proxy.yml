@@ -1,0 +1,29 @@
+services:
+  bmc-server:
+    image: ${BMC_SERVER_IMAGE:-wdjoys/backup-management-center-server:latest}
+    pull_policy: always
+    build:
+      context: ..
+      dockerfile: Dockerfile.server
+      args:
+        VERSION: ${VERSION:-0.1.0}
+    restart: unless-stopped
+    ports:
+      - "${BMC_SERVER_BIND:-127.0.0.1}:${BMC_SERVER_PORT:-8080}:8080"
+      - "${BMC_GRPC_BIND:-127.0.0.1}:${BMC_GRPC_PORT:-9090}:9090"
+    environment:
+      BMC_TLS_MODE: none
+      BMC_LISTEN_ADDR: ":8080"
+      BMC_GRPC_ADDR: ":9090"
+      BMC_METRICS_ADDR: "127.0.0.1:9100"
+      BMC_DATA_DIR: /var/lib/bmc
+      BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:-https://backup.example.com}
+    volumes:
+      - bmc-data:/var/lib/bmc
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  bmc-data:

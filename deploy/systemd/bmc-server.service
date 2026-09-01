@@ -20,10 +20,12 @@ Environment=BMC_DATA_DIR=/var/lib/bmc
 Environment=BMC_LISTEN_ADDR=:8080
 Environment=BMC_GRPC_ADDR=:9090
 Environment=BMC_METRICS_ADDR=127.0.0.1:9100
-# Required in production — fill in via drop-in (systemctl edit bmc-server):
+# 主密钥默认自动生成到 /var/lib/bmc/master.key；已有外部密钥可通过 drop-in 覆盖：
 # Environment=BMC_MASTER_KEY_FILE=/etc/bmc/master.key
+# 直接 TLS 生产环境通过 drop-in 设置证书和私钥；反向代理模式设置 BMC_TLS_MODE=none：
 # Environment=BMC_TLS_CERT_FILE=/etc/bmc/server.crt
 # Environment=BMC_TLS_KEY_FILE=/etc/bmc/server.key
+# Environment=BMC_TLS_MODE=none
 # Environment=BMC_PUBLIC_URL=https://bmc.example.com
 ExecStart=/usr/local/bin/backup-center-server
 

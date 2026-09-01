@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,14 +41,11 @@ func LoadAgent() (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
-	a := Agent{
-		ServerGRPCURL: os.Getenv("BMC_SERVER_GRPC_URL"), ServerTLS: os.Getenv("BMC_SERVER_TLS") != "0",
-		EnrollToken: os.Getenv("BMC_ENROLLMENT_TOKEN"), StateDir: stateDir, DataDir: os.Getenv("BMC_AGENT_DATA_DIR"),
-		ResticCacheDir: filepath.Clean(envOr("BMC_RESTIC_CACHE_DIR", filepath.Join(stateDir, ".cache", "restic"))),
-		DevInsecure:    os.Getenv("BMC_DEV_INSECURE") == "1", ProbeInterval: envInt("BMC_AGENT_PROBE_INTERVAL", 600),
-		SourceRoots: splitPaths(os.Getenv("BMC_SOURCE_ROOTS")), RestoreRoots: restoreRoots, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings,
-		ScratchMinFreeBytes: envInt64("BMC_SCRATCH_MIN_FREE_BYTES", 0), MaxConcurrency: envInt("BMC_AGENT_MAX_CONCURRENCY", 2),
+	target, tls, err := parseServerEndpoint(os.Getenv("BMC_SERVER_GRPC_URL"), os.Getenv("BMC_SERVER_TLS"))
+	if err != nil {
+		return Agent{}, err
 	}
+	a := Agent{ServerGRPCURL: target, ServerTLS: tls, EnrollToken: os.Getenv("BMC_ENROLLMENT_TOKEN"), StateDir: stateDir, DataDir: os.Getenv("BMC_AGENT_DATA_DIR"), ResticCacheDir: filepath.Clean(envOr("BMC_RESTIC_CACHE_DIR", filepath.Join(stateDir, ".cache", "restic"))), DevInsecure: os.Getenv("BMC_DEV_INSECURE") == "1", ProbeInterval: envInt("BMC_AGENT_PROBE_INTERVAL", 600), SourceRoots: splitPaths(os.Getenv("BMC_SOURCE_ROOTS")), RestoreRoots: restoreRoots, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings, ScratchMinFreeBytes: envInt64("BMC_SCRATCH_MIN_FREE_BYTES", 0), MaxConcurrency: envInt("BMC_AGENT_MAX_CONCURRENCY", 2)}
 	if a.ServerGRPCURL == "" {
 		return a, errors.New("config: BMC_SERVER_GRPC_URL is required")
 	}
@@ -55,6 +53,35 @@ func LoadAgent() (Agent, error) {
 		a.DataDir = filepath.Join(a.StateDir, "scratch")
 	}
 	return a, nil
+}
+
+func parseServerEndpoint(rawURL, legacyTLS string) (string, bool, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return "", false, errors.New("config: BMC_SERVER_GRPC_URL is required")
+	}
+	if rawURL == "" {
+		return "", legacyTLS != "0", nil
+	}
+	if !strings.Contains(rawURL, "://") {
+		if legacyTLS != "" && legacyTLS != "0" && legacyTLS != "1" {
+			return "", false, fmt.Errorf("config: BMC_SERVER_TLS must be 0 or 1")
+		}
+		return rawURL, legacyTLS != "0", nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", false, fmt.Errorf("config: BMC_SERVER_GRPC_URL must be http(s) host:port without path, query or credentials")
+	}
+	tls := u.Scheme == "https"
+	if legacyTLS != "" {
+		if legacyTLS != "0" && legacyTLS != "1" {
+			return "", false, fmt.Errorf("config: BMC_SERVER_TLS must be 0 or 1")
+		}
+		if (legacyTLS == "1") != tls {
+			return "", false, errors.New("config: BMC_SERVER_GRPC_URL scheme conflicts with BMC_SERVER_TLS")
+		}
+	}
+	return u.Host, tls, nil
 }
 
 func loadRestoreConfiguration() ([]model.PathMapping, []string, error) {

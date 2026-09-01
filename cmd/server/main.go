@@ -60,10 +60,13 @@ func main() {
 	// including Telegram settings, uses the production sealer. Opening the
 	// store first silently selected the development NoopSealer.
 	var seal secrets.Sealer
-	if cfg.MasterKeyFile != "" {
-		key, err := secrets.LoadKey(cfg.MasterKeyFile)
+	if !cfg.DevInsecure || cfg.MasterKeyExplicit {
+		key, created, err := secrets.LoadOrCreateKey(cfg.MasterKeyFile)
 		if err != nil {
 			log.Fatalf("[FATAL] %v", err)
+		}
+		if created {
+			log.Printf("[WARN] master key generated at %s; back up this file before storing credentials", cfg.MasterKeyFile)
 		}
 		seal, err = secrets.NewSealer(key)
 		if err != nil {
@@ -157,9 +160,20 @@ func main() {
 				continue
 			}
 			finished := time.Now().UTC()
-			if err := st.TransitionRun(ctx, run.ID, run.Status, model.RunFailed, func(r *model.Run) { r.FinishedAt = &finished; r.ErrorCode = model.ErrAgentDisconnected; r.ErrorMessage = "server restarted during non-retryable operation"; r.LeaseExpiresAt = nil }); err == nil {
-				if rs, ok := st.(interface{ DeleteRunSecrets(context.Context, string) error }); ok { _ = rs.DeleteRunSecrets(ctx, run.ID) }
-				if nerr := notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil { notification.LogFailure(run.ID, nerr) }
+			if err := st.TransitionRun(ctx, run.ID, run.Status, model.RunFailed, func(r *model.Run) {
+				r.FinishedAt = &finished
+				r.ErrorCode = model.ErrAgentDisconnected
+				r.ErrorMessage = "server restarted during non-retryable operation"
+				r.LeaseExpiresAt = nil
+			}); err == nil {
+				if rs, ok := st.(interface {
+					DeleteRunSecrets(context.Context, string) error
+				}); ok {
+					_ = rs.DeleteRunSecrets(ctx, run.ID)
+				}
+				if nerr := notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
+					notification.LogFailure(run.ID, nerr)
+				}
 			}
 		}
 	}
@@ -208,10 +222,10 @@ func main() {
 	}()
 	handler := api.New(&api.Server{
 		ST: st, Bus: bus, Met: met, Jobs: orch,
-		Version: version.Version,
+		Version:   version.Version,
 		PublicURL: cfg.PublicURL,
-		Reg:     reg,
-		Ready:   ready.Load,
+		Reg:       reg,
+		Ready:     ready.Load,
 	})
 
 	httpSrv := &http.Server{

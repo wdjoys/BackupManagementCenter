@@ -170,3 +170,29 @@ func TestLoadAgentRejectsInvalidSourcePathMappings(t *testing.T) {
 		t.Fatal("expected invalid mapping error")
 	}
 }
+
+func TestParseServerEndpoint(t *testing.T) {
+	tests := []struct {
+		raw, legacy, want string
+		tls               bool
+		ok                bool
+	}{
+		{"https://server:9090", "", "server:9090", true, true},
+		{"http://server:9090", "", "server:9090", false, true},
+		{"server:9090", "0", "server:9090", false, true},
+		{"server:9090", "1", "server:9090", true, true},
+		{"https://server:9090", "0", "", false, false},
+		{"https://server:9090/path", "", "", false, false},
+		{"ftp://server:9090", "", "", false, false},
+	}
+	for _, tc := range tests {
+		got, tls, err := parseServerEndpoint(tc.raw, tc.legacy)
+		if tc.ok {
+			if err != nil || got != tc.want || tls != tc.tls {
+				t.Errorf("%q: got %q tls=%v err=%v", tc.raw, got, tls, err)
+			}
+		} else if err == nil {
+			t.Errorf("%q: expected error", tc.raw)
+		}
+	}
+}

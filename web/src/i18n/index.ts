@@ -1,4 +1,5 @@
-import { createI18n } from 'vue-i18n'
+import i18n from 'i18next'
+import { initReactI18next } from 'react-i18next'
 import enUS from './locales/en-US'
 import zhCN from './locales/zh-CN'
 
@@ -18,17 +19,6 @@ const DEFAULT_DATETIME_OPTIONS: Intl.DateTimeFormatOptions = {
   minute: '2-digit',
 }
 
-export const i18n = createI18n({
-  legacy: false,
-  globalInjection: true,
-  locale: DEFAULT_LOCALE,
-  fallbackLocale: DEFAULT_LOCALE,
-  messages: {
-    'en-US': enUS,
-    'zh-CN': zhCN,
-  },
-})
-
 function isSupportedLocale(value: unknown): value is SupportedLocale {
   return typeof value === 'string' && (SUPPORTED_LOCALES as readonly string[]).includes(value)
 }
@@ -42,8 +32,32 @@ function detectBrowserLocale(): SupportedLocale {
   return 'en-US'
 }
 
+let initialLocale: SupportedLocale = DEFAULT_LOCALE
+if (typeof window !== 'undefined') {
+  try {
+    const stored = localStorage.getItem(LOCALE_STORAGE_KEY)
+    initialLocale = isSupportedLocale(stored) ? stored : detectBrowserLocale()
+  } catch {
+    initialLocale = detectBrowserLocale()
+  }
+}
+
+i18n
+  .use(initReactI18next)
+  .init({
+    resources: {
+      'en-US': { translation: enUS },
+      'zh-CN': { translation: zhCN },
+    },
+    lng: initialLocale,
+    fallbackLng: DEFAULT_LOCALE,
+    interpolation: {
+      escapeValue: false,
+    },
+  })
+
 function applyLocale(locale: SupportedLocale): void {
-  i18n.global.locale.value = locale
+  i18n.changeLanguage(locale)
   if (typeof document !== 'undefined') {
     document.documentElement.lang = locale
   }
@@ -73,7 +87,8 @@ export function setLocale(locale: SupportedLocale): void {
 }
 
 export function currentLocale(): SupportedLocale {
-  return i18n.global.locale.value
+  const current = i18n.language
+  return isSupportedLocale(current) ? current : DEFAULT_LOCALE
 }
 
 /** Formats a timestamp using the active UI locale. Invalid input is returned as-is. */
@@ -95,5 +110,7 @@ export function formatDateTime(
     falling back to the raw API value when no translation exists. */
 export function translateEnum(prefix: string, value: string): string {
   const key = `${prefix}.${value}`
-  return i18n.global.te(key) ? i18n.global.t(key) : value
+  return i18n.exists(key) ? i18n.t(key) : value
 }
+
+export default i18n

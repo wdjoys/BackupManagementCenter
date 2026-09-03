@@ -1,49 +1,51 @@
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { create } from 'zustand'
 import { apiGet, apiPost } from '@/api/client'
-import type { AuthUser } from '@/api/types'
+import type { AuthUser, ApiError } from '@/api/types'
 
-export const useAuthStore = defineStore('auth', () => {
-  const me = ref<AuthUser | null>(null)
-  const loading = ref(true)
+interface AuthState {
+  me: AuthUser | null
+  loading: boolean
+  initialized: boolean
+  isLoggedIn: boolean
+  fetchMe: () => Promise<boolean>
+  login: (username: string, password: string) => Promise<void>
+  logout: () => Promise<void>
+  setup: (username: string, password: string) => Promise<void>
+}
 
-  const initialized = computed(() => {
-    // If me is null and loading is done, we've confirmed no session
-    return !loading.value
-  })
+export const useAuthStore = create<AuthState>((set) => ({
+  me: null,
+  loading: true,
+  initialized: false,
+  isLoggedIn: false,
 
-  const isLoggedIn = computed(() => me.value !== null)
-
-  async function fetchMe(): Promise<boolean> {
+  fetchMe: async () => {
     try {
-      me.value = await apiGet<AuthUser>('/auth/me')
+      const user = await apiGet<AuthUser>('/auth/me')
+      set({ me: user, loading: false, initialized: true, isLoggedIn: true })
       return true
-    } catch (err: any) {
-      if (err.status === 401) {
-        me.value = null
+    } catch (err: unknown) {
+      const apiErr = err as ApiError
+      if (apiErr?.status === 401) {
+        set({ me: null, loading: false, initialized: true, isLoggedIn: false })
         return false
       }
-      // Network error or other — keep loading false, treat as not logged in
-      me.value = null
+      set({ me: null, loading: false, initialized: true, isLoggedIn: false })
       return false
-    } finally {
-      loading.value = false
     }
-  }
+  },
 
-  async function login(username: string, password: string): Promise<void> {
+  login: async (username: string, password: string) => {
     await apiPost<AuthUser>('/auth/login', { username, password })
-    me.value = { username }
-  }
+    set({ me: { username }, isLoggedIn: true })
+  },
 
-  async function logout(): Promise<void> {
+  logout: async () => {
     await apiPost('/auth/logout')
-    me.value = null
-  }
+    set({ me: null, isLoggedIn: false })
+  },
 
-  async function setup(username: string, password: string): Promise<void> {
+  setup: async (username: string, password: string) => {
     await apiPost('/setup', { username, password })
   }
-
-  return { me, loading, initialized, isLoggedIn, fetchMe, login, logout, setup }
-})
+}))

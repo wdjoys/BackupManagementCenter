@@ -1,4 +1,4 @@
-# 已有部署兼容模板：保持原服务、Secret 和环境变量，供无操作升级使用。
+# Server 部署模板：推荐由外部反向代理终止公网 TLS 并转发 Web/API 与 gRPC。
 services:
   bmc-server:
     image: ${BMC_SERVER_IMAGE:-wdjoys/backup-management-center-server:latest}
@@ -10,24 +10,17 @@ services:
         VERSION: ${VERSION:-0.1.0}
     restart: unless-stopped
     ports:
-      - "${BMC_SERVER_BIND:-0.0.0.0}:${BMC_SERVER_PORT:-443}:8080"
-      - "${BMC_GRPC_BIND:-0.0.0.0}:${BMC_GRPC_PORT:-9090}:9090"
+      - "${BMC_SERVER_BIND:-127.0.0.1}:${BMC_SERVER_PORT:-8080}:8080"
+      - "${BMC_GRPC_BIND:-127.0.0.1}:${BMC_GRPC_PORT:-9090}:9090"
     environment:
-      BMC_TLS_MODE: ${BMC_TLS_MODE:-auto}
+      BMC_TLS_MODE: none
       BMC_LISTEN_ADDR: ":8080"
       BMC_GRPC_ADDR: ":9090"
       BMC_METRICS_ADDR: "127.0.0.1:9100"
       BMC_DATA_DIR: /var/lib/bmc
       BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:-https://backup.example.com}
-      BMC_MASTER_KEY_FILE: /run/secrets/bmc_master_key
-      BMC_TLS_CERT_FILE: /run/secrets/bmc_tls_cert
-      BMC_TLS_KEY_FILE: /run/secrets/bmc_tls_key
     volumes:
       - bmc-data:/var/lib/bmc
-    secrets:
-      - bmc_master_key
-      - bmc_tls_cert
-      - bmc_tls_key
     read_only: true
     tmpfs:
       - /tmp:mode=0700
@@ -35,10 +28,3 @@ services:
       - no-new-privileges:true
 volumes:
   bmc-data:
-secrets:
-  bmc_master_key:
-    file: ${BMC_MASTER_KEY_FILE:-./secrets/master.key}
-  bmc_tls_cert:
-    file: ${BMC_TLS_CERT_FILE:-/dev/null}
-  bmc_tls_key:
-    file: ${BMC_TLS_KEY_FILE:-/dev/null}

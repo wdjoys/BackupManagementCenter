@@ -1,75 +1,43 @@
-# Agent 部署模板：在每台被管理的 Linux 主机上单独运行。
-# BMC_SERVER_GRPC_URL 推荐填写 https://host:port 或 http://host:port；旧 host:port + BMC_SERVER_TLS 仍兼容。
-services:
-# 配置说明：
-#   - 生产环境应显式设置源目录、恢复目录和凭据等环境变量。
-#   - 备份源目录以只读方式挂载；恢复目录单独以读写方式挂载。
-#   - 计划和恢复请求统一填写宿主机路径，Agent 按对应 PATH_MAPPINGS 或单恢复目录自动映射转换。
+# Agent 部署模板：在每台受管 Linux 主机上独立运行。
+# 挂载规范：备份源目录以只读挂载，恢复目录单独以读写挂载；状态卷不可多主机共享。
 services:
   bmc-agent:
-    # 固定容器名称，便于查看日志和执行运维命令。
     container_name: bmc-agent
-    # 默认拉取 Docker Hub 上的 latest；可通过 BMC_AGENT_IMAGE 覆盖。
     image: ${BMC_AGENT_IMAGE:-wdjoys/backup-management-center-agent:latest}
     build:
-      # 构建上下文指向仓库根目录；Compose 文件位于 deploy/。
       context: ..
       dockerfile: Dockerfile.agent
       args:
-        # 将版本号传递给镜像构建过程；未设置时使用默认版本。
         VERSION: ${VERSION:-0.1.0}
-    # Agent 需要访问宿主机挂载的备份工具和目录，因此以 root 身份运行。
     user: "0:0"
-
-    # 容器异常退出或宿主机重启后自动恢复，但不会在手动停止后自动启动。
     restart: unless-stopped
-    # 同机部署时取消下一行注释，直接使用宿主网络以访问 127.0.0.1:9090。
     # network_mode: host
     environment:
       BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC endpoint}
       BMC_SERVER_TLS: ${BMC_SERVER_TLS-}
-      # 首次注册 Agent 使用的 enrollment token；已注册 Agent 可留空。
       BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
-      # Agent 身份、注册信息和持久化状态目录。
       BMC_AGENT_STATE_DIR: /var/lib/bmc-agent
-      # restic 缓存目录；默认放在 Agent 状态卷中。
       BMC_RESTIC_CACHE_DIR: ${BMC_RESTIC_CACHE_DIR:-/var/lib/bmc-agent/.cache/restic}
-      # Agent 执行过程使用的临时工作目录。
       BMC_AGENT_DATA_DIR: /var/lib/bmc-agent/scratch
-      # 逗号分隔的容器内备份源路径；生产环境必须显式配置并确认挂载路径。
       BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
-      # 宿主机源路径到容器运行时路径的 JSON 映射，必须与下面的只读挂载一一对应。
       BMC_SOURCE_PATH_MAPPINGS: '${BMC_SOURCE_PATH_MAPPINGS:-{"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv"}}'
-      # 宿主机恢复目录；Agent 自动映射为容器内 /backup-restore 并将其设为唯一恢复目标。
       BMC_RESTORE_ROOT: ${BMC_RESTORE_ROOT:-/var/lib/bmc-restore}
-      # 高级恢复映射和白名单可显式覆盖自动配置；Compose 不提供默认值。
       BMC_RESTORE_PATH_MAPPINGS: '${BMC_RESTORE_PATH_MAPPINGS-}'
       BMC_RESTORE_ROOTS: ${BMC_RESTORE_ROOTS-}
-      # scratch 目录要求保留的最小可用空间，单位为字节；0 表示不额外限制。
       BMC_SCRATCH_MIN_FREE_BYTES: ${BMC_SCRATCH_MIN_FREE_BYTES:-0}
-      # Agent 同时执行的最大任务数；默认最多并发执行 2 个任务。
       BMC_AGENT_MAX_CONCURRENCY: ${BMC_AGENT_MAX_CONCURRENCY:-2}
     volumes:
-      # 持久化 Agent 身份、注册状态和 restic 缓存。
       - bmc-agent-state:/var/lib/bmc-agent
-      # 持久化 Agent scratch 工作目录，避免使用容器可写层。
       - bmc-agent-scratch:/var/lib/bmc-agent/scratch
-      # 仅挂载明确需要备份的目录并保持只读；计划填写宿主机原始路径，由 Agent 自动映射。
       - ${BMC_SOURCE_ETC:-/etc}:/backup-sources/etc:ro
       - ${BMC_SOURCE_SRV:-/srv}:/backup-sources/srv:ro
-      # 恢复目标单独使用读写挂载，避免备份源目录被意外修改。
       - ${BMC_RESTORE_ROOT:-/var/lib/bmc-restore}:/backup-restore
-    # 容器根文件系统设为只读；需要写入的目录通过 volume 或 tmpfs 提供。
     read_only: true
     tmpfs:
-      # 为运行时临时文件提供权限受限的内存文件系统。
       - /tmp:uid=65532,gid=65532,mode=0700
     security_opt:
-      # 禁止进程提升权限，降低容器内程序被利用后的影响范围。
       - no-new-privileges:true
 
 volumes:
-  # Agent 状态卷：身份、注册信息和 restic 缓存。
   bmc-agent-state:
-  # Agent scratch 卷：任务执行期间的临时数据。
   bmc-agent-scratch:

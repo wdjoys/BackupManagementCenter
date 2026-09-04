@@ -155,7 +155,8 @@ func (f *fakeStore) ListEnrollmentTokens(_ context.Context) ([]model.EnrollmentT
 func (f *fakeStore) ConsumeEnrollmentToken(_ context.Context, _ string, _ time.Time) (*model.EnrollmentToken, error) {
 	return nil, store.ErrTokenInvalid
 }
-func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, _ *model.Agent) error { return nil }
+func (f *fakeStore) ReEnrollAgent(context.Context, string, string, time.Time) error { return nil }
+func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, _ *model.Agent) error   { return nil }
 func (f *fakeStore) SetAgentStatus(_ context.Context, _ string, _ model.AgentStatus, _ time.Time) error {
 	return nil
 }

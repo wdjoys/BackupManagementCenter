@@ -23,7 +23,7 @@ type Enroller struct {
 }
 
 // Enroll submits the enrollment token and returns the assigned agent ID.
-func (e *Enroller) Enroll(ctx context.Context, enrollToken string, secret []byte) (string, error) {
+func (e *Enroller) Enroll(ctx context.Context, enrollToken string, secret []byte, targetAgentID string) (string, error) {
 	conn, err := e.dial()
 	if err != nil {
 		return "", err
@@ -43,6 +43,7 @@ func (e *Enroller) Enroll(ctx context.Context, enrollToken string, secret []byte
 		Arch:            runtime.GOARCH,
 		Version:         version.Version,
 		Secret:          secret,
+		TargetAgentId:   targetAgentID,
 	}
 	resp, err := client.Enroll(ctx, req)
 	if err != nil {

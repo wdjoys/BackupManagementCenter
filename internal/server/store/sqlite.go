@@ -306,9 +306,9 @@ func (s *sqliteStore) DeleteExpiredSessions(ctx context.Context, now time.Time) 
 
 func (s *sqliteStore) CreateEnrollmentToken(ctx context.Context, t *model.EnrollmentToken) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO enrollment_tokens (id, token_hash, expires_at, used_at)
-		 VALUES (?, ?, ?, ?)`,
-		t.ID, t.TokenHash, t.ExpiresAt.Format(time.RFC3339), nullTime(t.UsedAt),
+		`INSERT INTO enrollment_tokens (id, token_hash, expires_at, used_at, target_agent_id)
+		 VALUES (?, ?, ?, ?, ?)`,
+		t.ID, t.TokenHash, t.ExpiresAt.Format(time.RFC3339), nullTime(t.UsedAt), nullString(t.TargetAgentID),
 	)
 	if err != nil {
 		return fmt.Errorf("create enrollment token: %w", err)
@@ -318,7 +318,7 @@ func (s *sqliteStore) CreateEnrollmentToken(ctx context.Context, t *model.Enroll
 
 func (s *sqliteStore) ListEnrollmentTokens(ctx context.Context) ([]model.EnrollmentToken, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, token_hash, expires_at, used_at FROM enrollment_tokens ORDER BY expires_at DESC",
+		"SELECT id, token_hash, expires_at, used_at, target_agent_id FROM enrollment_tokens ORDER BY expires_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list enrollment tokens: %w", err)
@@ -355,7 +355,7 @@ func (s *sqliteStore) ConsumeEnrollmentToken(ctx context.Context, tokenHash stri
 	}
 
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, token_hash, expires_at, used_at FROM enrollment_tokens WHERE token_hash = ?",
+		"SELECT id, token_hash, expires_at, used_at, target_agent_id FROM enrollment_tokens WHERE token_hash = ?",
 		tokenHash,
 	)
 	return scanEnrollmentToken(row)
@@ -397,11 +397,13 @@ func (s *sqliteStore) SetAgentStatus(ctx context.Context, agentID string, st mod
 
 func (s *sqliteStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, sourceMappings []model.PathMapping, restoreMappings []model.PathMapping, at time.Time) error {
 	data, err := json.Marshal(struct {
-		Tools []model.ToolInfo `json:"tools"`
-		SourcePathMappings []model.PathMapping `json:"source_path_mappings"`
+		Tools               []model.ToolInfo    `json:"tools"`
+		SourcePathMappings  []model.PathMapping `json:"source_path_mappings"`
 		RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
 	}{Tools: tools, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings})
-	if err != nil { return fmt.Errorf("marshal capabilities: %w", err) }
+	if err != nil {
+		return fmt.Errorf("marshal capabilities: %w", err)
+	}
 	_, err = s.db.ExecContext(ctx,
 		"UPDATE agents SET capabilities_json = ?, last_seen_at = ? WHERE id = ?",
 		string(data), at.Format(time.RFC3339), agentID,
@@ -459,7 +461,36 @@ func (s *sqliteStore) RevokeAgent(ctx context.Context, id string) error {
 	}
 	return nil
 }
-
+func (s *sqliteStore) ReEnrollAgent(ctx context.Context, agentID string, tokenHash string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("re-enroll agent begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	var revoked int
+	if err := tx.QueryRowContext(ctx, "SELECT revoked FROM agents WHERE id = ?", agentID).Scan(&revoked); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("re-enroll agent lookup: %w", err)
+	}
+	if revoked != 0 {
+		return fmt.Errorf("%s", model.ErrAgentRevoked)
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE agents SET token_hash = ?, status = 'offline', last_seen_at = ? WHERE id = ? AND revoked = 0", tokenHash, now.UTC().Format(time.RFC3339), agentID)
+	if err != nil {
+		return fmt.Errorf("re-enroll agent update: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("re-enroll agent commit: %w", err)
+	}
+	return nil
+}
 func (s *sqliteStore) RenameAgent(ctx context.Context, id, name string) error {
 	res, err := s.db.ExecContext(ctx, "UPDATE agents SET name = ? WHERE id = ?", name, id)
 	if err != nil {
@@ -1656,18 +1687,16 @@ func scanSession(row interface{ Scan(dest ...any) error }) (*model.Session, erro
 
 func scanEnrollmentToken(row interface{ Scan(dest ...any) error }) (*model.EnrollmentToken, error) {
 	var id, tokenHash, expiresAt string
-	var usedAt sql.NullString
-	if err := row.Scan(&id, &tokenHash, &expiresAt, &usedAt); err != nil {
+	var usedAt, targetAgentID sql.NullString
+	if err := row.Scan(&id, &tokenHash, &expiresAt, &usedAt, &targetAgentID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("scan enrollment token: %w", err)
 	}
 	return &model.EnrollmentToken{
-		ID:        id,
-		TokenHash: tokenHash,
-		ExpiresAt: parseTime(expiresAt),
-		UsedAt:    parseTimePtr(usedAt),
+		ID: id, TokenHash: tokenHash, ExpiresAt: parseTime(expiresAt),
+		UsedAt: parseTimePtr(usedAt), TargetAgentID: targetAgentID.String,
 	}, nil
 }
 
@@ -1693,30 +1722,38 @@ func scanAgent(row interface{ Scan(dest ...any) error }) (*model.Agent, error) {
 			_ = json.Unmarshal([]byte(capsJSON), &tools)
 		} else {
 			var caps struct {
-				Tools []model.ToolInfo `json:"tools"`
-				SourcePathMappings []model.PathMapping `json:"source_path_mappings"`
+				Tools               []model.ToolInfo    `json:"tools"`
+				SourcePathMappings  []model.PathMapping `json:"source_path_mappings"`
 				RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
 			}
 			_ = json.Unmarshal([]byte(capsJSON), &caps)
 			tools, mappings, restoreMappings = caps.Tools, caps.SourcePathMappings, caps.RestorePathMappings
 		}
 	}
-	if tools == nil { tools = []model.ToolInfo{} }
-	if mappings == nil { mappings = []model.PathMapping{} }
-	if restoreMappings == nil { restoreMappings = []model.PathMapping{} }
+	if tools == nil {
+		tools = []model.ToolInfo{}
+	}
+	if mappings == nil {
+		mappings = []model.PathMapping{}
+	}
+	if restoreMappings == nil {
+		restoreMappings = []model.PathMapping{}
+	}
 
 	return &model.Agent{
-		ID:                 id,
-		Name:               name,
-		Hostname:           hostname,
-		OS:                 os,
-		Arch:               arch,
-		Version:            version,
-		Status:             model.AgentStatus(status),
-		LastSeenAt:         parseTimePtr(lastSeenNull),
+		ID:           id,
+		Name:         name,
+		Hostname:     hostname,
+		OS:           os,
+		Arch:         arch,
+		Version:      version,
+		Status:       model.AgentStatus(status),
+		LastSeenAt:   parseTimePtr(lastSeenNull),
 		Capabilities: tools, SourcePathMappings: mappings, RestorePathMappings: restoreMappings,
 		CapabilitiesJSON: capsJSON,
-		Revoked:            revoked != 0,
+		EnrolledAt:       parseTime(enrolledAt),
+		TokenHash:        tokenHash,
+		Revoked:          revoked != 0,
 	}, nil
 }
 

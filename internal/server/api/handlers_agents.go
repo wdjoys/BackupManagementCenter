@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -57,18 +59,18 @@ func newToken32() (string, error) {
 // ---- Agents ----
 
 type agentView struct {
-	ID                 string              `json:"id"`
-	Name               string              `json:"name"`
-	Hostname           string              `json:"hostname"`
-	OS                 string              `json:"os"`
-	Arch               string              `json:"arch"`
-	Version            string              `json:"version"`
-	Status             model.AgentStatus   `json:"status"`
-	Revoked            bool                `json:"revoked"`
-	LastSeenAt         *time.Time          `json:"last_seen_at,omitempty"`
-	EnrolledAt         time.Time           `json:"enrolled_at"`
-	Capabilities       []model.ToolInfo    `json:"capabilities"`
-	SourcePathMappings []model.PathMapping `json:"source_path_mappings"`
+	ID                  string              `json:"id"`
+	Name                string              `json:"name"`
+	Hostname            string              `json:"hostname"`
+	OS                  string              `json:"os"`
+	Arch                string              `json:"arch"`
+	Version             string              `json:"version"`
+	Status              model.AgentStatus   `json:"status"`
+	Revoked             bool                `json:"revoked"`
+	LastSeenAt          *time.Time          `json:"last_seen_at,omitempty"`
+	EnrolledAt          time.Time           `json:"enrolled_at"`
+	Capabilities        []model.ToolInfo    `json:"capabilities"`
+	SourcePathMappings  []model.PathMapping `json:"source_path_mappings"`
 	RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
 }
 
@@ -150,22 +152,46 @@ type enrollmentTokenView struct {
 
 // POST /enrollment-tokens — returns the plaintext token exactly once.
 func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		TargetAgentID string `json:"target_agent_id"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+			writeErr(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+			return
+		}
+	}
+	if input.TargetAgentID != "" {
+		agent, err := s.ST.GetAgent(r.Context(), input.TargetAgentID)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "agent_not_found", "agent not found")
+			return
+		}
+		if agent.Revoked {
+			writeErr(w, http.StatusBadRequest, model.ErrAgentRevoked, "agent is revoked")
+			return
+		}
+		if agent.Status == model.AgentOnline {
+			writeErr(w, http.StatusBadRequest, model.ErrAgentOnline, "agent must be offline")
+			return
+		}
+	}
 	token, err := newToken32()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	t := &model.EnrollmentToken{
-		ID:        newUUID(),
-		TokenHash: secrets.HashToken(token),
-		ExpiresAt: time.Now().UTC().Add(15 * time.Minute),
-	}
+	t := &model.EnrollmentToken{ID: newUUID(), TokenHash: secrets.HashToken(token), ExpiresAt: time.Now().UTC().Add(15 * time.Minute), TargetAgentID: input.TargetAgentID}
 	if err := s.ST.CreateEnrollmentToken(r.Context(), t); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	s.Jobs.Audit(r.Context(), "admin", actorID(r), "enrollment.create_token", "enrollment_token", t.ID, nil)
-	writeJSON(w, http.StatusOK, map[string]any{"token": token, "expires_at": t.ExpiresAt})
+	action := "enrollment.create_token"
+	if input.TargetAgentID != "" {
+		action = "enrollment.create_takeover_token"
+	}
+	s.Jobs.Audit(r.Context(), "admin", actorID(r), action, "enrollment_token", t.ID, map[string]any{"target_agent_id": input.TargetAgentID})
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "expires_at": t.ExpiresAt, "target_agent_id": input.TargetAgentID})
 }
 
 // GET /enrollment-tokens

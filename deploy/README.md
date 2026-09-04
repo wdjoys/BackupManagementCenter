@@ -45,7 +45,7 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - Agent 首次注册成功后，建议清空 `.env.agent` 中的 `BMC_ENROLLMENT_TOKEN` 并重建容器（`docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml up -d`）。
 - 备份源目录（`/etc`、`/srv`）以只读方式（`:ro`）挂载；恢复目标目录（默认 `/var/lib/bmc-restore`）以读写方式挂载。
 - `bmc-agent-state` 卷用于持久化 Agent 身份，不可多主机共享。
-
+- **重新安装接管（Takeover）**：若 Agent 状态卷丢失或需更换新机器接管原 Agent 数据，请在 Server Web UI 的 Agent 列表（离线状态）点击“重新安装接管”生成专用令牌，并在 `.env.agent` 中设置 `BMC_TARGET_AGENT_ID=<原AgentID>` 与 `BMC_ENROLLMENT_TOKEN=<接管令牌>`。启动后服务端会自动复用原 ID、保留全部仓库与计划并轮换密钥，接管成功后同样建议清空这两个变量。
 ## 3. 旧部署迁移
 
 对于使用旧版 `docker-compose.yml`（直接 TLS 或 Secret 注入主密钥）的已有部署：

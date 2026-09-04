@@ -28,7 +28,7 @@ func (a cfgAdapter) GetDevInsecure() bool     { return a.c.DevInsecure }
 func (a cfgAdapter) GetProbeInterval() time.Duration {
 	return time.Duration(a.c.ProbeInterval) * time.Second
 }
-func (a cfgAdapter) GetSourcePathMappings() []model.PathMapping { return a.c.SourcePathMappings }
+func (a cfgAdapter) GetSourcePathMappings() []model.PathMapping  { return a.c.SourcePathMappings }
 func (a cfgAdapter) GetRestorePathMappings() []model.PathMapping { return a.c.RestorePathMappings }
 func main() {
 
@@ -54,7 +54,7 @@ func main() {
 			log.Fatalf("[FATAL] secret decode: %v", err)
 		}
 		ectx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		agentID, err := e.Enroll(ectx, cfg.EnrollToken, secret)
+		agentID, err := e.Enroll(ectx, cfg.EnrollToken, secret, cfg.TargetAgentID)
 		cancel()
 		if err != nil {
 			log.Fatalf("[FATAL] enroll: %v", err)

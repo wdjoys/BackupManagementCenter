@@ -42,8 +42,10 @@ const (
 const (
 	ErrServerRestarted          = "server_restarted"
 	ErrAgentUnavailable         = "agent_unavailable"
-	ErrRepositoryLocked         = "repository_locked"
+	ErrAgentOnline              = "agent_online"
+	ErrAgentRevoked             = "agent_revoked"
 	ErrRepositoryMissing        = "repository_missing"
+	ErrRepositoryLocked         = "repository_locked"
 	ErrPartialSourceRead        = "partial_source_read"
 	ErrWrongRepositoryPassword  = "wrong_repository_password"
 	ErrCancelled                = "cancelled"
@@ -88,21 +90,21 @@ const (
 )
 
 type Agent struct {
-	ID                 string        `json:"id"`
-	Name               string        `json:"name"`
-	Hostname           string        `json:"hostname"`
-	OS                 string        `json:"os"`
-	Arch               string        `json:"arch"`
-	Version            string        `json:"version"`
-	Status             AgentStatus   `json:"status"`
-	LastSeenAt         *time.Time    `json:"last_seen_at,omitempty"`
-	EnrolledAt         time.Time     `json:"enrolled_at"`
-	TokenHash          string        `json:"-"` // SHA-256 hex of the agent secret
-	Capabilities       []ToolInfo    `json:"capabilities"`
-	SourcePathMappings []PathMapping `json:"source_path_mappings"`
+	ID                  string        `json:"id"`
+	Name                string        `json:"name"`
+	Hostname            string        `json:"hostname"`
+	OS                  string        `json:"os"`
+	Arch                string        `json:"arch"`
+	Version             string        `json:"version"`
+	Status              AgentStatus   `json:"status"`
+	LastSeenAt          *time.Time    `json:"last_seen_at,omitempty"`
+	EnrolledAt          time.Time     `json:"enrolled_at"`
+	TokenHash           string        `json:"-"` // SHA-256 hex of the agent secret
+	Capabilities        []ToolInfo    `json:"capabilities"`
+	SourcePathMappings  []PathMapping `json:"source_path_mappings"`
 	RestorePathMappings []PathMapping `json:"restore_path_mappings"`
-	CapabilitiesJSON   string        `json:"-"`
-	Revoked            bool          `json:"revoked"`
+	CapabilitiesJSON    string        `json:"-"`
+	Revoked             bool          `json:"revoked"`
 }
 
 // PathMapping 描述宿主机路径到 Agent 运行环境路径的映射。
@@ -118,12 +120,12 @@ type ToolInfo struct {
 	Path    string `json:"path,omitempty"`
 	Version string `json:"version,omitempty"`
 }
-
 type EnrollmentToken struct {
-	ID        string
-	TokenHash string // SHA-256 hex
-	ExpiresAt time.Time
-	UsedAt    *time.Time
+	ID            string
+	TokenHash     string // SHA-256 hex
+	ExpiresAt     time.Time
+	UsedAt        *time.Time
+	TargetAgentID string
 }
 
 // StorageTarget is a cloud drive destination accessed via rclone. Config is

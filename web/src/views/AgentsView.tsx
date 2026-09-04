@@ -34,8 +34,8 @@ import {
   Check,
   Loader2,
   AlertTriangle,
+  ShieldAlert,
 } from 'lucide-react'
-
 export const AgentsView: React.FC = () => {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -44,7 +44,6 @@ export const AgentsView: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
-
   // Token Dialog
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false)
   const [tokenLoading, setTokenLoading] = useState(false)
@@ -108,6 +107,26 @@ export const AgentsView: React.FC = () => {
     }
   }
 
+  const handleTakeover = async (agent: Agent) => {
+    setTokenDialogOpen(true)
+    setTokenLoading(true)
+    setTokenData(null)
+    setCopied(false)
+    try {
+      const res = await apiPost<EnrollmentTokenResponse>('/enrollment-tokens', {
+        target_agent_id: agent.id,
+      })
+      setTokenData(res)
+    } catch (err: unknown) {
+      const apiErr = err as ApiError
+      toastError(
+        apiErr?.message || t('agents.tokenDialog.generateFailed') || 'Token generation failed'
+      )
+      setTokenDialogOpen(false)
+    } finally {
+      setTokenLoading(false)
+    }
+  }
   const copyToken = async () => {
     if (!tokenData) return
     try {
@@ -304,6 +323,17 @@ export const AgentsView: React.FC = () => {
                                 <FileText className="h-3.5 w-3.5" />
                                 {t('agents.viewLogs')}
                               </Button>
+                              {agent.status === 'offline' && !agent.revoked && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 text-xs text-amber-400 hover:text-amber-300 gap-1"
+                                  onClick={() => handleTakeover(agent)}
+                                >
+                                  <ShieldAlert className="h-3.5 w-3.5" />
+                                  {t('agents.takeover') || 'Reinstall Takeover'}
+                                </Button>
+                              )}
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -412,6 +442,14 @@ export const AgentsView: React.FC = () => {
                 </AlertDescription>
               </Alert>
 
+              {tokenData.target_agent_id && (
+                <Alert className="border-sky-500/30 bg-sky-500/10 text-sky-400 py-2.5">
+                  <AlertDescription className="text-xs">
+                    {t('agents.tokenDialog.takeoverHint', { id: tokenData.target_agent_id }) ||
+                      `This token is specifically for taking over and restoring existing repositories and plans for Agent "${tokenData.target_agent_id}".`}
+                  </AlertDescription>
+                </Alert>
+              )}
               <div className="space-y-1.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t('agents.tokenDialog.token')}
@@ -429,6 +467,17 @@ export const AgentsView: React.FC = () => {
                 </div>
               </div>
 
+              {tokenData.target_agent_id && (
+                <div className="space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {t('agents.tokenDialog.envConfig') || 'Agent Host Environment Configuration Example'}
+                  </span>
+                  <div className="rounded-md border border-border bg-muted/40 p-2.5 font-mono text-xs text-foreground leading-relaxed select-all">
+                    <div>BMC_TARGET_AGENT_ID={tokenData.target_agent_id}</div>
+                    <div>BMC_ENROLLMENT_TOKEN={tokenData.token}</div>
+                  </div>
+                </div>
+              )}
               <div className="text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">
                   {t('agents.tokenDialog.expiresAt')}:{' '}

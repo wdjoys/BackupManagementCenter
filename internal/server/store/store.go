@@ -44,6 +44,7 @@ type Store interface {
 	// ConsumeEnrollmentToken atomically marks an unused, unexpired token used;
 	// returns ErrTokenInvalid when unknown/used/expired.
 	ConsumeEnrollmentToken(ctx context.Context, tokenHash string, now time.Time) (*model.EnrollmentToken, error)
+	ReEnrollAgent(ctx context.Context, agentID string, tokenHash string, now time.Time) error
 
 	// Agents
 	UpsertAgentOnConnect(ctx context.Context, a *model.Agent) error // by ID; updates host/os/arch/version/last_seen/status

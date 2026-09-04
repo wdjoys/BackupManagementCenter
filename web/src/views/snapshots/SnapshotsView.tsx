@@ -65,6 +65,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
+  X,
 } from 'lucide-react'
 
 interface DryRunResult {
@@ -1023,8 +1024,9 @@ export const SnapshotsView: React.FC = () => {
                 size="sm"
                 onClick={() => setConfirmPromptOpen(false)}
                 disabled={restoreLoading}
-                className="h-8 text-xs"
+                className="h-8 text-xs gap-1.5"
               >
+                <X className="h-3.5 w-3.5" />
                 {t('common.cancel')}
               </Button>
               <Button
@@ -1034,7 +1036,11 @@ export const SnapshotsView: React.FC = () => {
                 disabled={restoreLoading || !confirmationInput.trim()}
                 className="h-8 text-xs gap-1.5"
               >
-                {restoreLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {restoreLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
                 {t('snapshots.prompt.execute')}
               </Button>
             </DialogFooter>
@@ -1077,8 +1083,9 @@ export const SnapshotsView: React.FC = () => {
                 size="sm"
                 onClick={() => setDeletePromptOpen(false)}
                 disabled={deletingSnapshot}
-                className="h-8 text-xs"
+                className="h-8 text-xs gap-1.5"
               >
+                <X className="h-3.5 w-3.5" />
                 {t('common.cancel')}
               </Button>
               <Button
@@ -1089,7 +1096,11 @@ export const SnapshotsView: React.FC = () => {
                 disabled={deletingSnapshot || deleteConfirmInput.trim() !== snapshotToDelete?.id}
                 className="h-8 text-xs gap-1.5"
               >
-                {deletingSnapshot && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {deletingSnapshot ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
                 {t('snapshots.delete.confirm')}
               </Button>
             </DialogFooter>

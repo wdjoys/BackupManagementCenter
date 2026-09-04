@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Progress } from '@/components/ui/progress'
-import { ShieldAlert, Eye, EyeOff, Loader2 } from 'lucide-react'
+import { ShieldAlert, Eye, EyeOff, Loader2, UserPlus } from 'lucide-react'
 import { LocaleSwitcher } from '@/components/LocaleSwitcher'
 import { useAuthStore } from '@/stores/auth'
 import { toastSuccess } from '@/lib/toast'
@@ -207,8 +207,12 @@ export const SetupView: React.FC = () => {
                 )}
               </div>
 
-              <Button type="submit" disabled={loading} className="w-full h-9 text-xs mt-2">
-                {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              <Button type="submit" disabled={loading} className="w-full h-9 text-xs mt-2 gap-2">
+                {loading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <UserPlus className="h-4 w-4" />
+                )}
                 {t('auth.setup_button') || t('auth.setup')}
               </Button>
             </form>

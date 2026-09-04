@@ -48,6 +48,11 @@ import {
   FileCode,
   CheckCircle2,
   Info,
+  RotateCcw,
+  Unlink,
+  X,
+  Save,
+  Check,
 } from 'lucide-react'
 
 export const StorageView: React.FC = () => {
@@ -545,7 +550,11 @@ export const StorageView: React.FC = () => {
                                       className="h-7 text-xs text-primary gap-1"
                                       onClick={() => handleRetryRepo(repo)}
                                     >
-                                      {actionLoading && <Loader2 className="h-3 w-3 animate-spin" />}
+                                      {actionLoading ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <RotateCcw className="h-3 w-3" />
+                                      )}
                                       {t('common.retry')}
                                     </Button>
                                   )}
@@ -556,6 +565,7 @@ export const StorageView: React.FC = () => {
                                     className="h-7 text-xs text-rose-400 hover:text-rose-300 gap-1"
                                     onClick={() => openUnbindRepo(repo)}
                                   >
+                                    <Unlink className="h-3 w-3" />
                                     {t('storage.repositoryDialog.unbind')}
                                   </Button>
                                 </div>
@@ -770,17 +780,22 @@ export const StorageView: React.FC = () => {
                 size="sm"
                 onClick={() => setEditTargetDialogOpen(false)}
                 disabled={editTargetLoading}
-                className="h-8 text-xs"
+                className="h-8 text-xs gap-1.5"
               >
+                <X className="h-3.5 w-3.5" />
                 {t('common.cancel')}
               </Button>
               <Button
                 type="submit"
                 size="sm"
                 disabled={editTargetLoading || !targetNewName.trim()}
-                className="h-8 text-xs"
+                className="h-8 text-xs gap-1.5"
               >
-                {editTargetLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                {editTargetLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" />
+                )}
                 {t('common.save')}
               </Button>
             </DialogFooter>
@@ -880,8 +895,9 @@ export const StorageView: React.FC = () => {
                 size="sm"
                 onClick={() => setBindDialogOpen(false)}
                 disabled={bindLoading}
-                className="h-8 text-xs"
+                className="h-8 text-xs gap-1.5"
               >
+                <X className="h-3.5 w-3.5" />
                 {t('common.close')}
               </Button>
               <Button
@@ -891,7 +907,11 @@ export const StorageView: React.FC = () => {
                 disabled={bindLoading || !bindForm.agent_id || !bindForm.storage_target_id}
                 className="h-8 text-xs gap-1.5"
               >
-                {bindLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {bindLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
                 {t('storage.bindDialog.bindButton') || t('common.confirm')}
               </Button>
             </DialogFooter>

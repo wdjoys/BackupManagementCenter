@@ -1,5 +1,5 @@
 import React from 'react'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useTranslation } from 'react-i18next'
 
@@ -33,7 +33,8 @@ export const AppErrorState: React.FC<AppErrorStateProps> = ({
       )}
       {onRetry && (
         <div className="mt-4">
-          <Button variant="outline" size="sm" onClick={onRetry}>
+          <Button variant="outline" size="sm" onClick={onRetry} className="gap-1.5">
+            <RefreshCw className="h-3.5 w-3.5" />
             {t('common.retry')}
           </Button>
         </div>

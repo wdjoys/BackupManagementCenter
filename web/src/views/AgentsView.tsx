@@ -32,6 +32,7 @@ import {
   ChevronRight,
   Copy,
   Check,
+  X,
   Loader2,
   AlertTriangle,
   ShieldAlert,
@@ -522,17 +523,22 @@ export const AgentsView: React.FC = () => {
                 size="sm"
                 onClick={() => setRenameDialogOpen(false)}
                 disabled={renaming}
-                className="h-8 text-xs"
+                className="h-8 text-xs gap-1.5"
               >
+                <X className="h-3.5 w-3.5" />
                 {t('common.cancel')}
               </Button>
               <Button
                 type="submit"
                 size="sm"
                 disabled={renaming || !renameValue.trim()}
-                className="h-8 text-xs"
+                className="h-8 text-xs gap-1.5"
               >
-                {renaming && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                {renaming ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
                 {t('common.save')}
               </Button>
             </DialogFooter>

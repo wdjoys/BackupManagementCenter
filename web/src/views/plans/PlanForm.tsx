@@ -27,7 +27,7 @@ import type { Agent, Repository } from '@/api/types'
 import { isAbsolutePath, isWithinMappedRoot } from '@/utils/pathMapping'
 import type { PlanFormModel, PlanKind } from './Types'
 import { toastWarning } from '@/lib/toast'
-import { FolderTree, Loader2 } from 'lucide-react'
+import { FolderTree, Loader2, Save, X } from 'lucide-react'
 
 interface PlanFormProps {
   model: PlanFormModel
@@ -644,12 +644,17 @@ export const PlanForm: React.FC<PlanFormProps> = ({
           size="sm"
           onClick={onCancel}
           disabled={submitting}
-          className="h-8 text-xs"
+          className="h-8 text-xs gap-1.5"
         >
+          <X className="h-3.5 w-3.5" />
           {t('common.cancel')}
         </Button>
         <Button type="submit" size="sm" disabled={submitting} className="h-8 text-xs gap-1.5">
-          {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {submitting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Save className="h-3.5 w-3.5" />
+          )}
           {t('common.save')}
         </Button>
       </div>

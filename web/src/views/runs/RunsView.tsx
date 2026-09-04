@@ -29,7 +29,7 @@ import {
   operationTagType,
   formatDuration,
 } from '@/utils/runDisplay'
-import { RefreshCw, Search, XSquare, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
+import { RefreshCw, Search, XSquare, ChevronLeft, ChevronRight, Loader2, RotateCcw } from 'lucide-react'
 
 export const RunsView: React.FC = () => {
   const { t } = useTranslation()
@@ -292,8 +292,9 @@ export const RunsView: React.FC = () => {
                 variant="outline"
                 size="sm"
                 onClick={handleReset}
-                className="h-8 text-xs"
+                className="h-8 text-xs gap-1"
               >
+                <RotateCcw className="h-3 w-3" />
                 {t('common.reset')}
               </Button>
             </div>

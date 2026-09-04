@@ -10,7 +10,7 @@ import type { TelegramSettings, TelegramSettingsUpdate, ApiError } from '@/api/t
 import { toastSuccess, toastError } from '@/lib/toast'
 import { AppErrorState } from '@/components/AppErrorState'
 import { ConfirmActionDialog } from '@/components/ConfirmActionDialog'
-import { Send, Trash2, CheckCircle2, Loader2, KeyRound } from 'lucide-react'
+import { Send, Trash2, CheckCircle2, Loader2, KeyRound, Save } from 'lucide-react'
 
 export const SettingsView: React.FC = () => {
   const { t } = useTranslation()
@@ -199,8 +199,8 @@ export const SettingsView: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 pt-2">
-              <Button type="submit" disabled={saving} className="h-9 text-xs">
-                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              <Button type="submit" disabled={saving} className="h-9 text-xs gap-1.5">
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
                 {t('common.save') || 'Save Settings'}
               </Button>
             </div>

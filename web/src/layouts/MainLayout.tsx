@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { LocaleSwitcher } from '@/components/LocaleSwitcher'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import { useAuthStore } from '@/stores/auth'
 import { toastSuccess, toastError } from '@/lib/toast'
 import { cn } from '@/lib/utils'
@@ -115,7 +116,10 @@ export const MainLayout: React.FC = () => {
 
         <div className="p-3 border-t border-border flex items-center justify-between">
           <span className="text-[11px] text-muted-foreground">v0.1.0</span>
-          <LocaleSwitcher compact />
+          <div className="flex items-center gap-1">
+            <ThemeToggle compact />
+            <LocaleSwitcher compact />
+          </div>
         </div>
       </aside>
 
@@ -160,8 +164,11 @@ export const MainLayout: React.FC = () => {
                     })}
                   </nav>
                   <div className="p-4 border-t border-border flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">Language</span>
-                    <LocaleSwitcher compact />
+                    <span className="text-xs text-muted-foreground">Preference</span>
+                    <div className="flex items-center gap-1">
+                      <ThemeToggle compact />
+                      <LocaleSwitcher compact />
+                    </div>
                   </div>
                 </div>
               </SheetContent>
@@ -173,10 +180,10 @@ export const MainLayout: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            <ThemeToggle compact />
             <div className="hidden sm:block">
               <LocaleSwitcher />
             </div>
-
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="sm" className="gap-2 text-xs">

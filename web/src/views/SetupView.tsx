@@ -12,6 +12,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Progress } from '@/components/ui/progress'
 import { ShieldAlert, Eye, EyeOff, Loader2, UserPlus } from 'lucide-react'
 import { LocaleSwitcher } from '@/components/LocaleSwitcher'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import { useAuthStore } from '@/stores/auth'
 import { toastSuccess } from '@/lib/toast'
 import type { ApiError } from '@/api/types'
@@ -94,7 +95,8 @@ export const SetupView: React.FC = () => {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4">
-      <div className="absolute right-4 top-4">
+      <div className="absolute right-4 top-4 flex items-center gap-1">
+        <ThemeToggle compact />
         <LocaleSwitcher />
       </div>
 

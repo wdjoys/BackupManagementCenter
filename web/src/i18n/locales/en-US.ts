@@ -25,7 +25,11 @@ export default {
     "switch_language": "Switch Language",
     "allAgents": "All Agents",
     "all": "All",
-    "load_failed": "Failed to load"
+    "load_failed": "Failed to load",
+    "theme": "Theme",
+    "theme_light": "Light Mode",
+    "theme_dark": "Dark Mode",
+    "theme_system": "System"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -70,6 +74,12 @@ export default {
     "chat_id_help": "Target chat, group, or channel ID",
     "clear_confirm_title": "Clear Telegram Configuration",
     "clear_confirm_desc": "Are you sure you want to stop receiving Telegram failure alerts?"
+  },
+  "theme": {
+    "toggle": "Toggle theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
   },
   "layout": {
     "defaultUser": "User",

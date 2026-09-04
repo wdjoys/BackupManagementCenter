@@ -25,7 +25,11 @@ export default {
     "switch_language": "切换语言",
     "allAgents": "全部 Agent",
     "all": "全部",
-    "load_failed": "加载失败"
+    "load_failed": "加载失败",
+    "theme": "主题",
+    "theme_light": "浅色模式",
+    "theme_dark": "暗黑模式",
+    "theme_system": "跟随系统"
   },
   "nav": {
     "dashboard": "仪表盘",
@@ -70,6 +74,12 @@ export default {
     "chat_id_help": "目标群组、频道或个人的 Chat ID",
     "clear_confirm_title": "确认清除 Telegram 配置",
     "clear_confirm_desc": "清除后将停止向 Telegram 推送备份失败通知，确认清除吗？"
+  },
+  "theme": {
+    "toggle": "切换主题",
+    "light": "浅色模式",
+    "dark": "暗黑模式",
+    "system": "跟随系统"
   },
   "layout": {
     "defaultUser": "用户",

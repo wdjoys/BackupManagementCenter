@@ -464,8 +464,8 @@ export const RunDetailView: React.FC = () => {
       )}
 
       {/* Terminal Log Console */}
-      <Card className="border-border bg-[#0d1117] shadow-xl overflow-hidden">
-        <CardHeader className="py-3 px-4 border-b border-border/80 bg-muted/20 flex flex-row items-center justify-between space-y-0">
+      <Card className="border-border bg-card shadow-xl overflow-hidden">
+        <CardHeader className="py-3 px-4 border-b border-border bg-muted/40 flex flex-row items-center justify-between space-y-0">
           <div className="flex items-center gap-2">
             <Terminal className="h-4 w-4 text-primary" />
             <CardTitle className="text-xs font-mono font-medium text-foreground">
@@ -513,7 +513,7 @@ export const RunDetailView: React.FC = () => {
               logs.map((log) => {
                 const isError = log.level === 'error' || log.level === 'warn'
                 return (
-                  <div key={log.seq} className="flex gap-3 leading-relaxed hover:bg-white/5 py-0.5 px-1 rounded">
+                  <div key={log.seq} className="flex gap-3 leading-relaxed hover:bg-muted/50 py-0.5 px-1 rounded">
                     <span className="text-[11px] text-muted-foreground/60 select-none w-10 shrink-0 text-right">
                       {log.seq}
                     </span>
@@ -522,7 +522,7 @@ export const RunDetailView: React.FC = () => {
                     </span>
                     <span
                       className={`break-all ${
-                        isError ? 'text-rose-400' : 'text-slate-300'
+                        isError ? 'text-rose-600 dark:text-rose-400 font-medium' : 'text-foreground'
                       }`}
                     >
                       {log.message}

@@ -58,10 +58,10 @@ export const MainLayout: React.FC = () => {
   const handleLogout = async () => {
     try {
       await logout()
-      toastSuccess(t('auth.logout_success') || 'Logged out successfully')
+      toastSuccess(t('auth.logout_success'))
       navigate('/login')
     } catch {
-      toastError(t('auth.logout_failed') || 'Logout failed')
+      toastError(t('auth.logout_failed'))
     }
   }
 
@@ -74,7 +74,7 @@ export const MainLayout: React.FC = () => {
       <aside className="hidden md:flex w-60 flex-col border-r border-border bg-card/40 backdrop-blur-md">
         <div className="flex h-14 items-center gap-2.5 px-4 border-b border-border">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/20 text-primary">
-            <ShieldCheck className="h-5 w-5" />
+            <ShieldCheck className="h-5 w-5" aria-hidden="true" />
           </div>
           <div className="flex flex-col">
             <span className="font-semibold text-sm tracking-tight">BMC Console</span>
@@ -107,6 +107,7 @@ export const MainLayout: React.FC = () => {
                     'h-4 w-4 shrink-0 transition-colors',
                     active ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
                   )}
+                  aria-hidden="true"
                 />
                 <span>{t(item.titleKey)}</span>
               </NavLink>
@@ -131,13 +132,13 @@ export const MainLayout: React.FC = () => {
             {/* Mobile Sheet Trigger */}
             <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
               <SheetTrigger asChild>
-                <Button variant="ghost" size="icon" className="md:hidden">
-                  <Menu className="h-5 w-5" />
+                <Button variant="ghost" size="icon" className="md:hidden" aria-label={t('common.toggle_menu')}>
+                  <Menu className="h-5 w-5" aria-hidden="true" />
                 </Button>
               </SheetTrigger>
               <SheetContent side="left" className="w-64 p-0 bg-card border-r border-border">
                 <SheetHeader className="p-4 border-b border-border flex flex-row items-center gap-2 space-y-0">
-                  <ShieldCheck className="h-5 w-5 text-primary" />
+                  <ShieldCheck className="h-5 w-5 text-primary" aria-hidden="true" />
                   <SheetTitle className="text-sm font-semibold">BMC Console</SheetTitle>
                 </SheetHeader>
                 <div className="flex flex-col h-[calc(100%-60px)] justify-between">
@@ -157,14 +158,14 @@ export const MainLayout: React.FC = () => {
                               : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
                           )}
                         >
-                          <Icon className="h-4 w-4" />
+                          <Icon className="h-4 w-4" aria-hidden="true" />
                           <span>{t(item.titleKey)}</span>
                         </NavLink>
                       )
                     })}
                   </nav>
                   <div className="p-4 border-t border-border flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">Preference</span>
+                    <span className="text-xs text-muted-foreground">{t('common.preference')}</span>
                     <div className="flex items-center gap-1">
                       <ThemeToggle compact />
                       <LocaleSwitcher compact />
@@ -188,21 +189,21 @@ export const MainLayout: React.FC = () => {
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="sm" className="gap-2 text-xs">
                   <div className="flex h-6 w-6 items-center justify-center rounded-full bg-secondary text-foreground">
-                    <User className="h-3.5 w-3.5" />
+                    <User className="h-3.5 w-3.5" aria-hidden="true" />
                   </div>
-                  <span className="hidden sm:inline font-medium">{me?.username || 'User'}</span>
+                  <span className="hidden sm:inline font-medium">{me?.username || t('auth.user_default')}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
                 <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                  {t('auth.logged_in_as') || 'Logged in as'} <span className="font-semibold text-foreground">{me?.username}</span>
+                  {t('auth.logged_in_as')} <span className="font-semibold text-foreground">{me?.username}</span>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => navigate('/settings')}
                   className="cursor-pointer text-xs"
                 >
-                  <Settings className="mr-2 h-4 w-4" />
+                  <Settings className="mr-2 h-4 w-4" aria-hidden="true" />
                   <span>{t('nav.settings')}</span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
@@ -210,8 +211,8 @@ export const MainLayout: React.FC = () => {
                   onClick={handleLogout}
                   className="cursor-pointer text-xs text-destructive focus:text-destructive"
                 >
-                  <LogOut className="mr-2 h-4 w-4" />
-                  <span>{t('auth.logout') || 'Logout'}</span>
+                  <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+                  <span>{t('auth.logout')}</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

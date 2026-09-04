@@ -14,12 +14,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { apiGet, apiPost, apiDelete, apiPatch } from '@/api/client'
+import { apiGet, apiPost, apiDelete, apiPatch, isApiClientError } from '@/api/client'
 import { translateEnum, formatDateTime } from '@/i18n'
-import type { Agent, EnrollmentTokenResponse, ApiError } from '@/api/types'
+import type { Agent, EnrollmentTokenResponse } from '@/api/types'
 import { AppEmptyState } from '@/components/AppEmptyState'
 import { AppErrorState } from '@/components/AppErrorState'
 import { StatusBadge } from '@/components/StatusBadge'
+import { PageLoadingState } from '@/components/PageLoadingState'
 import { ConfirmActionDialog } from '@/components/ConfirmActionDialog'
 import { toastSuccess, toastError } from '@/lib/toast'
 import {
@@ -37,6 +38,7 @@ import {
   AlertTriangle,
   ShieldAlert,
 } from 'lucide-react'
+
 export const AgentsView: React.FC = () => {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -45,6 +47,7 @@ export const AgentsView: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
+
   // Token Dialog
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false)
   const [tokenLoading, setTokenLoading] = useState(false)
@@ -68,8 +71,7 @@ export const AgentsView: React.FC = () => {
       const data = await apiGet<Agent[]>('/agents')
       setAgents(data)
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      setError(apiErr?.message || t('agents.loadFailed') || 'Failed to load agents')
+      setError(isApiClientError(err) ? err.message : t('agents.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -100,8 +102,7 @@ export const AgentsView: React.FC = () => {
       const res = await apiPost<EnrollmentTokenResponse>('/enrollment-tokens', {})
       setTokenData(res)
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      toastError(apiErr?.message || t('agents.tokenDialog.generateFailed') || 'Token generation failed')
+      toastError(isApiClientError(err) ? err.message : t('agents.tokenDialog.generateFailed'))
       setTokenDialogOpen(false)
     } finally {
       setTokenLoading(false)
@@ -119,24 +120,21 @@ export const AgentsView: React.FC = () => {
       })
       setTokenData(res)
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      toastError(
-        apiErr?.message || t('agents.tokenDialog.generateFailed') || 'Token generation failed'
-      )
-      setTokenDialogOpen(false)
+      toastError(isApiClientError(err) ? err.message : t('agents.tokenDialog.generateFailed'))
     } finally {
       setTokenLoading(false)
     }
   }
+
   const copyToken = async () => {
     if (!tokenData) return
     try {
       await navigator.clipboard.writeText(tokenData.token)
       setCopied(true)
-      toastSuccess(t('common.copied') || 'Token copied to clipboard')
+      toastSuccess(t('common.copied'))
       setTimeout(() => setCopied(false), 2000)
     } catch {
-      toastError(t('common.copyFailed') || 'Failed to copy token')
+      toastError(t('common.copyFailed'))
     }
   }
 
@@ -146,18 +144,17 @@ export const AgentsView: React.FC = () => {
     setRenameDialogOpen(true)
   }
 
-  const handleRenameConfirm = async (e: React.FormEvent) => {
+  const handleRenameConfirm = async (e: React.SyntheticEvent) => {
     e.preventDefault()
     if (!targetAgent || !renameValue.trim()) return
     setRenaming(true)
     try {
-      await apiPatch(`/agents/${targetAgent.id}`, { name: renameValue.trim() })
-      toastSuccess(t('agents.renamed') || 'Agent renamed successfully')
+      await apiPatch<Agent>(`/agents/${targetAgent.id}`, { name: renameValue.trim() })
+      toastSuccess(t('agents.renamed'))
       setRenameDialogOpen(false)
       await loadAgents()
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      toastError(apiErr?.message || t('agents.renameFailed') || 'Failed to rename agent')
+      toastError(isApiClientError(err) ? err.message : t('agents.renameFailed'))
     } finally {
       setRenaming(false)
     }
@@ -172,26 +169,21 @@ export const AgentsView: React.FC = () => {
     if (!agentToRevoke) return
     try {
       await apiDelete(`/agents/${agentToRevoke.id}`)
-      toastSuccess(t('agents.revoked') || 'Agent revoked successfully')
+      toastSuccess(t('agents.revoked'))
       await loadAgents()
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      toastError(apiErr?.message || t('agents.revokeFailed') || 'Failed to revoke agent')
+      toastError(isApiClientError(err) ? err.message : t('agents.revokeFailed'))
     }
   }
 
   if (loading) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    )
+    return <PageLoadingState />
   }
 
   if (error) {
     return (
       <AppErrorState
-        title={t('agents.title') || 'Agents'}
+        title={t('agents.title')}
         message={error}
         onRetry={loadAgents}
       />
@@ -206,7 +198,7 @@ export const AgentsView: React.FC = () => {
             {t('agents.title')}
           </h2>
           <p className="text-xs text-muted-foreground">
-            {t('agents.subtitle') || 'Connected host agents and tool capabilities'}
+            {t('agents.subtitle')}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -215,7 +207,7 @@ export const AgentsView: React.FC = () => {
             onClick={handleGenerateToken}
             className="h-8 text-xs gap-1.5 bg-primary text-primary-foreground"
           >
-            <Key className="h-3.5 w-3.5" />
+            <Key className="h-3.5 w-3.5" aria-hidden="true" />
             {t('agents.generateToken')}
           </Button>
           <Button
@@ -224,7 +216,7 @@ export const AgentsView: React.FC = () => {
             onClick={loadAgents}
             className="h-8 text-xs gap-1.5"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
             {t('common.refresh')}
           </Button>
         </div>
@@ -234,185 +226,263 @@ export const AgentsView: React.FC = () => {
         <CardContent className="p-0">
           {agents.length > 0 ? (
             <div className="rounded-md overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-border hover:bg-transparent">
-                    <TableHead className="w-9"></TableHead>
-                    <TableHead className="text-xs font-medium">{t('common.name')}</TableHead>
-                    <TableHead className="text-xs font-medium">{t('agents.columns.hostname')}</TableHead>
-                    <TableHead className="text-xs font-medium">{t('agents.columns.os')}</TableHead>
-                    <TableHead className="text-xs font-medium">{t('agents.columns.arch')}</TableHead>
-                    <TableHead className="text-xs font-medium">{t('agents.columns.version')}</TableHead>
-                    <TableHead className="text-xs font-medium">{t('common.status')}</TableHead>
-                    <TableHead className="text-xs font-medium">{t('agents.columns.lastSeen')}</TableHead>
-                    <TableHead className="text-xs font-medium">{t('agents.columns.enrolledAt')}</TableHead>
-                    <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {agents.map((agent) => {
-                    const isExpanded = expandedRows.has(agent.id)
-                    return (
-                      <React.Fragment key={agent.id}>
-                        <TableRow className="border-border hover:bg-muted/30">
-                          <TableCell className="p-2">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 text-muted-foreground"
-                              onClick={() => toggleExpand(agent.id)}
-                            >
-                              {isExpanded ? (
-                                <ChevronDown className="h-3.5 w-3.5" />
-                              ) : (
-                                <ChevronRight className="h-3.5 w-3.5" />
-                              )}
-                            </Button>
-                          </TableCell>
-                          <TableCell className="font-medium text-xs text-foreground">
-                            <div className="flex items-center gap-1.5">
-                              <span>{agent.name}</span>
+              {/* Desktop Table */}
+              <div className="hidden md:block overflow-x-auto">
+                <Table className="min-w-[850px]">
+                  <TableHeader>
+                    <TableRow className="border-border hover:bg-transparent">
+                      <TableHead className="w-9"></TableHead>
+                      <TableHead className="text-xs font-medium">{t('common.name')}</TableHead>
+                      <TableHead className="text-xs font-medium">{t('agents.columns.hostname')}</TableHead>
+                      <TableHead className="text-xs font-medium">{t('agents.columns.os')}</TableHead>
+                      <TableHead className="text-xs font-medium">{t('agents.columns.arch')}</TableHead>
+                      <TableHead className="text-xs font-medium">{t('agents.columns.version')}</TableHead>
+                      <TableHead className="text-xs font-medium">{t('common.status')}</TableHead>
+                      <TableHead className="text-xs font-medium">{t('agents.columns.lastSeen')}</TableHead>
+                      <TableHead className="text-xs font-medium">{t('agents.columns.enrolledAt')}</TableHead>
+                      <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {agents.map((agent) => {
+                      const isExpanded = expandedRows.has(agent.id)
+                      return (
+                        <React.Fragment key={agent.id}>
+                          <TableRow className="border-border hover:bg-muted/30">
+                            <TableCell className="p-2">
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-5 w-5 text-muted-foreground hover:text-foreground"
-                                onClick={() => openRename(agent)}
-                                title={t('agents.rename')}
+                                className="h-6 w-6 text-muted-foreground"
+                                onClick={() => toggleExpand(agent.id)}
+                                aria-label={t('agents.toggleExpand')}
                               >
-                                <Edit2 className="h-3 w-3" />
+                                {isExpanded ? (
+                                  <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                                ) : (
+                                  <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                                )}
                               </Button>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            {agent.hostname}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{agent.os}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{agent.arch}</TableCell>
-                          <TableCell className="text-xs">
-                            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                              {agent.version}
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            {agent.revoked ? (
-                              <StatusBadge tone="secondary">
-                                {t('status.revoked')}
-                              </StatusBadge>
-                            ) : (
-                              <StatusBadge
-                                tone={agent.status === 'online' ? 'success' : 'destructive'}
-                                dot
-                              >
-                                {translateEnum('status', agent.status)}
-                              </StatusBadge>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            {formatDateTime(agent.last_seen_at)}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            {formatDateTime(agent.enrolled_at)}
-                          </TableCell>
-                          <TableCell className="text-xs text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 text-xs text-primary gap-1"
-                                onClick={() => navigate(`/logs?agent_id=${agent.id}`)}
-                              >
-                                <FileText className="h-3.5 w-3.5" />
-                                {t('agents.viewLogs')}
-                              </Button>
-                              {agent.status === 'offline' && !agent.revoked && (
+                            </TableCell>
+                            <TableCell className="font-medium text-xs text-foreground">
+                              <div className="flex items-center gap-1.5">
+                                <span>{agent.name}</span>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                                  onClick={() => openRename(agent)}
+                                  title={t('agents.rename')}
+                                  aria-label={t('agents.rename')}
+                                >
+                                  <Edit2 className="h-3 w-3" aria-hidden="true" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {agent.hostname}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{agent.os}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{agent.arch}</TableCell>
+                            <TableCell className="text-xs">
+                              <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                                {agent.version}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {agent.revoked ? (
+                                <StatusBadge tone="secondary">
+                                  {t('status.revoked')}
+                                </StatusBadge>
+                              ) : (
+                                <StatusBadge
+                                  tone={agent.status === 'online' ? 'success' : 'destructive'}
+                                  dot
+                                >
+                                  {translateEnum('status', agent.status)}
+                                </StatusBadge>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {formatDateTime(agent.last_seen_at)}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {formatDateTime(agent.enrolled_at)}
+                            </TableCell>
+                            <TableCell className="text-xs text-right">
+                              <div className="flex items-center justify-end gap-1">
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  className="h-7 text-xs text-amber-400 hover:text-amber-300 gap-1"
-                                  onClick={() => handleTakeover(agent)}
+                                  className="h-7 text-xs text-primary gap-1"
+                                  onClick={() => navigate(`/logs?agent_id=${agent.id}`)}
                                 >
-                                  <ShieldAlert className="h-3.5 w-3.5" />
-                                  {t('agents.takeover') || 'Reinstall Takeover'}
+                                  <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                                  {t('agents.viewLogs')}
                                 </Button>
-                              )}
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 text-xs text-rose-400 hover:text-rose-300 gap-1"
-                                disabled={agent.revoked}
-                                onClick={() => openRevoke(agent)}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                                {t('agents.revoke')}
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-
-                        {/* Capabilities Expand Area */}
-                        {isExpanded && (
-                          <TableRow className="bg-muted/10 border-border">
-                            <TableCell colSpan={10} className="p-4 pl-12">
-                              <div className="space-y-3">
-                                <span className="text-xs font-semibold text-foreground tracking-tight">
-                                  {t('agents.capabilities.title') || 'Detected Tool Capabilities'}
-                                </span>
-                                {agent.capabilities && agent.capabilities.length > 0 ? (
-                                  <div className="rounded border border-border/80 overflow-hidden max-w-2xl bg-card/40">
-                                    <Table>
-                                      <TableHeader>
-                                        <TableRow className="border-border">
-                                          <TableHead className="text-[11px] h-8 font-medium">
-                                            {t('agents.capabilities.tool')}
-                                          </TableHead>
-                                          <TableHead className="text-[11px] h-8 font-medium">
-                                            {t('agents.columns.version')}
-                                          </TableHead>
-                                          <TableHead className="text-[11px] h-8 font-medium">
-                                            {t('agents.capabilities.path')}
-                                          </TableHead>
-                                        </TableRow>
-                                      </TableHeader>
-                                      <TableBody>
-                                        {agent.capabilities.map((cap) => (
-                                          <TableRow key={cap.name} className="border-border">
-                                            <TableCell className="text-xs font-medium py-1.5">
-                                              {cap.name}
-                                            </TableCell>
-                                            <TableCell className="text-xs text-muted-foreground py-1.5">
-                                              {cap.version || '—'}
-                                            </TableCell>
-                                            <TableCell className="text-[11px] font-mono text-muted-foreground py-1.5">
-                                              {cap.path}
-                                            </TableCell>
-                                          </TableRow>
-                                        ))}
-                                      </TableBody>
-                                    </Table>
-                                  </div>
-                                ) : (
-                                  <p className="text-xs text-muted-foreground">
-                                    {t('agents.capabilities.empty') || 'No capabilities reported'}
-                                  </p>
+                                {agent.status === 'offline' && !agent.revoked && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 text-xs text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 gap-1"
+                                    onClick={() => handleTakeover(agent)}
+                                  >
+                                    <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                                    {t('agents.takeover')}
+                                  </Button>
                                 )}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                                  disabled={agent.revoked}
+                                  onClick={() => openRevoke(agent)}
+                                  aria-label={t('agents.revoke')}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                  {t('agents.revoke')}
+                                </Button>
                               </div>
                             </TableCell>
                           </TableRow>
-                        )}
-                      </React.Fragment>
-                    )
-                  })}
-                </TableBody>
-              </Table>
+
+                          {/* Capabilities Expand Area */}
+                          {isExpanded && (
+                            <TableRow className="bg-muted/10 border-border">
+                              <TableCell colSpan={10} className="p-4 pl-12">
+                                <div className="space-y-3">
+                                  <span className="text-xs font-semibold text-foreground tracking-tight">
+                                    {t('agents.capabilities.title')}
+                                  </span>
+                                  {agent.capabilities && agent.capabilities.length > 0 ? (
+                                    <div className="rounded border border-border/80 overflow-hidden max-w-2xl bg-card/40">
+                                      <Table>
+                                        <TableHeader>
+                                          <TableRow className="border-border">
+                                            <TableHead className="text-[11px] h-8 font-medium">
+                                              {t('agents.capabilities.tool')}
+                                            </TableHead>
+                                            <TableHead className="text-[11px] h-8 font-medium">
+                                              {t('agents.columns.version')}
+                                            </TableHead>
+                                            <TableHead className="text-[11px] h-8 font-medium">
+                                              {t('agents.capabilities.path')}
+                                            </TableHead>
+                                          </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                          {agent.capabilities.map((cap) => (
+                                            <TableRow key={cap.name} className="border-border">
+                                              <TableCell className="text-xs font-medium py-1.5">
+                                                {cap.name}
+                                              </TableCell>
+                                              <TableCell className="text-xs text-muted-foreground py-1.5">
+                                                {cap.version || '—'}
+                                              </TableCell>
+                                              <TableCell className="text-xs font-mono text-muted-foreground py-1.5">
+                                                {cap.path || '—'}
+                                              </TableCell>
+                                            </TableRow>
+                                          ))}
+                                        </TableBody>
+                                      </Table>
+                                    </div>
+                                  ) : (
+                                    <p className="text-xs text-muted-foreground italic">
+                                      {t('agents.capabilities.empty')}
+                                    </p>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </React.Fragment>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* Mobile Cards */}
+              <div className="md:hidden divide-y divide-border">
+                {agents.map((agent) => (
+                  <div key={agent.id} className="p-3 space-y-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 font-semibold text-foreground">
+                        <span>{agent.name}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                          onClick={() => openRename(agent)}
+                          aria-label={t('agents.rename')}
+                        >
+                          <Edit2 className="h-3 w-3" aria-hidden="true" />
+                        </Button>
+                      </div>
+                      {agent.revoked ? (
+                        <StatusBadge tone="secondary">
+                          {t('status.revoked')}
+                        </StatusBadge>
+                      ) : (
+                        <StatusBadge
+                          tone={agent.status === 'online' ? 'success' : 'destructive'}
+                          dot
+                        >
+                          {translateEnum('status', agent.status)}
+                        </StatusBadge>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-1 text-[11px] text-muted-foreground font-mono">
+                      <div>
+                        <span>Host: </span>{agent.hostname}
+                      </div>
+                      <div className="text-right">
+                        <span>v</span>{agent.version}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-primary gap-1"
+                        onClick={() => navigate(`/logs?agent_id=${agent.id}`)}
+                      >
+                        <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                        {t('agents.viewLogs')}
+                      </Button>
+                      {agent.status === 'offline' && !agent.revoked && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-xs text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 gap-1"
+                          onClick={() => handleTakeover(agent)}
+                        >
+                          <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                          {t('agents.takeover')}
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                        disabled={agent.revoked}
+                        onClick={() => openRevoke(agent)}
+                        aria-label={t('agents.revoke')}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        {t('agents.revoke')}
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="p-8">
               <AppEmptyState
-                title={t('agents.noAgents') || 'No Agents Connected'}
-                description={
-                  t('agents.noAgents_desc') ||
-                  'Generate an enrollment token to connect host agents to this server.'
-                }
+                title={t('agents.noAgents')}
+                description={t('agents.noAgents_desc')}
               />
             </div>
           )}
@@ -427,27 +497,26 @@ export const AgentsView: React.FC = () => {
               {t('agents.tokenDialog.title')}
             </DialogTitle>
             <DialogDescription className="text-xs">
-              {t('agents.tokenDialog.subtitle') || 'Use this one-time token to enroll an agent'}
+              {t('agents.tokenDialog.subtitle')}
             </DialogDescription>
           </DialogHeader>
           {tokenLoading ? (
             <div className="flex h-32 items-center justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              <Loader2 className="h-6 w-6 animate-spin text-primary" aria-hidden="true" />
             </div>
           ) : tokenData ? (
             <div className="space-y-4 pt-2">
-              <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-400 py-2.5">
-                <AlertTriangle className="h-4 w-4 text-amber-400" />
+              <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 py-2.5">
+                <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
                 <AlertDescription className="text-xs">
                   {t('agents.tokenDialog.onceWarning')}
                 </AlertDescription>
               </Alert>
 
               {tokenData.target_agent_id && (
-                <Alert className="border-sky-500/30 bg-sky-500/10 text-sky-400 py-2.5">
+                <Alert className="border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400 py-2.5">
                   <AlertDescription className="text-xs">
-                    {t('agents.tokenDialog.takeoverHint', { id: tokenData.target_agent_id }) ||
-                      `This token is specifically for taking over and restoring existing repositories and plans for Agent "${tokenData.target_agent_id}".`}
+                    {t('agents.tokenDialog.takeoverHint', { id: tokenData.target_agent_id })}
                   </AlertDescription>
                 </Alert>
               )}
@@ -455,23 +524,26 @@ export const AgentsView: React.FC = () => {
                 <span className="text-xs font-medium text-muted-foreground">
                   {t('agents.tokenDialog.token')}
                 </span>
-                <div
+                <Button
+                  type="button"
+                  variant="ghost"
                   onClick={copyToken}
-                  className="flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground cursor-pointer hover:bg-muted/70 transition-colors"
+                  className="w-full flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground hover:bg-muted/70 transition-colors h-auto text-left"
+                  aria-label={t('agents.copyToken')}
                 >
                   <span className="truncate pr-2">{tokenData.token}</span>
                   {copied ? (
-                    <Check className="h-4 w-4 text-emerald-400 shrink-0" />
+                    <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden="true" />
                   ) : (
-                    <Copy className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <Copy className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
                   )}
-                </div>
+                </Button>
               </div>
 
               {tokenData.target_agent_id && (
                 <div className="space-y-1.5">
                   <span className="text-xs font-medium text-muted-foreground">
-                    {t('agents.tokenDialog.envConfig') || 'Agent Host Environment Configuration Example'}
+                    {t('agents.tokenDialog.envConfig')}
                   </span>
                   <div className="rounded-md border border-border bg-muted/40 p-2.5 font-mono text-xs text-foreground leading-relaxed select-all">
                     <div>BMC_TARGET_AGENT_ID={tokenData.target_agent_id}</div>
@@ -488,7 +560,7 @@ export const AgentsView: React.FC = () => {
 
               <DialogFooter className="pt-2">
                 <Button onClick={copyToken} className="w-full h-8 text-xs gap-1.5">
-                  {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copied ? <Check className="h-3.5 w-3.5" aria-hidden="true" /> : <Copy className="h-3.5 w-3.5" aria-hidden="true" />}
                   {t('agents.tokenDialog.copyButton')}
                 </Button>
               </DialogFooter>
@@ -525,7 +597,7 @@ export const AgentsView: React.FC = () => {
                 disabled={renaming}
                 className="h-8 text-xs gap-1.5"
               >
-                <X className="h-3.5 w-3.5" />
+                <X className="h-3.5 w-3.5" aria-hidden="true" />
                 {t('common.cancel')}
               </Button>
               <Button
@@ -535,9 +607,9 @@ export const AgentsView: React.FC = () => {
                 className="h-8 text-xs gap-1.5"
               >
                 {renaming ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
                 ) : (
-                  <Check className="h-3.5 w-3.5" />
+                  <Check className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
                 {t('common.save')}
               </Button>

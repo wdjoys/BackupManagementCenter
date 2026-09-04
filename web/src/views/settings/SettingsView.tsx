@@ -5,10 +5,11 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { apiGet, apiPut, apiDelete } from '@/api/client'
-import type { TelegramSettings, TelegramSettingsUpdate, ApiError } from '@/api/types'
+import { apiGet, apiPut, apiDelete, isApiClientError } from '@/api/client'
+import type { TelegramSettings, TelegramSettingsUpdate } from '@/api/types'
 import { toastSuccess, toastError } from '@/lib/toast'
 import { AppErrorState } from '@/components/AppErrorState'
+import { PageLoadingState } from '@/components/PageLoadingState'
 import { ConfirmActionDialog } from '@/components/ConfirmActionDialog'
 import { Send, Trash2, CheckCircle2, Loader2, KeyRound, Save } from 'lucide-react'
 
@@ -35,8 +36,7 @@ export const SettingsView: React.FC = () => {
       setChatId(data.chat_id || '')
       setBotToken('')
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      setFetchError(apiErr?.message || t('settings.load_failed') || 'Failed to load settings')
+      setFetchError(isApiClientError(err) ? err.message : t('settings.load_failed'))
     } finally {
       setLoading(false)
     }
@@ -46,16 +46,16 @@ export const SettingsView: React.FC = () => {
     loadSettings()
   }, [])
 
-  const handleSave = async (e: React.FormEvent) => {
+  const handleSave = async (e: React.SyntheticEvent) => {
     e.preventDefault()
     setValidationError(null)
 
     if (!botToken.trim()) {
-      setValidationError(t('validation.bot_token_required') || 'Bot Token is required')
+      setValidationError(t('validation.bot_token_required'))
       return
     }
     if (!chatId.trim()) {
-      setValidationError(t('validation.chat_id_required') || 'Chat ID is required')
+      setValidationError(t('validation.chat_id_required'))
       return
     }
 
@@ -66,11 +66,10 @@ export const SettingsView: React.FC = () => {
         chat_id: chatId.trim(),
       }
       await apiPut('/settings/telegram', payload)
-      toastSuccess(t('settings.saved_success') || 'Telegram notification settings saved')
+      toastSuccess(t('settings.saved_success'))
       await loadSettings()
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      toastError(apiErr?.message || t('settings.save_failed') || 'Failed to save settings')
+      toastError(isApiClientError(err) ? err.message : t('settings.save_failed'))
     } finally {
       setSaving(false)
     }
@@ -79,26 +78,21 @@ export const SettingsView: React.FC = () => {
   const handleClear = async () => {
     try {
       await apiDelete('/settings/telegram')
-      toastSuccess(t('settings.cleared_success') || 'Settings cleared successfully')
+      toastSuccess(t('settings.cleared_success'))
       await loadSettings()
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      toastError(apiErr?.message || t('settings.clear_failed') || 'Failed to clear settings')
+      toastError(isApiClientError(err) ? err.message : t('settings.clear_failed'))
     }
   }
 
   if (loading) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    )
+    return <PageLoadingState />
   }
 
   if (fetchError) {
     return (
       <AppErrorState
-        title={t('settings.load_failed') || 'Error Loading Settings'}
+        title={t('settings.load_failed')}
         message={fetchError}
         onRetry={loadSettings}
       />
@@ -109,36 +103,36 @@ export const SettingsView: React.FC = () => {
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-bold tracking-tight text-foreground">
-          {t('settings.title') || 'Settings'}
+          {t('settings.title')}
         </h2>
         <p className="text-xs text-muted-foreground">
-          {t('settings.subtitle') || 'Configure alert integrations and notifications'}
+          {t('settings.subtitle')}
         </p>
       </div>
 
       <Card className="border-border bg-card/60 shadow-md">
         <CardHeader>
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/15 text-sky-400">
-              <Send className="h-4 w-4" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/15 text-sky-600 dark:text-sky-400">
+              <Send className="h-4 w-4" aria-hidden="true" />
             </div>
             <div>
               <CardTitle className="text-sm font-semibold">
-                {t('settings.telegram_title') || 'Telegram Bot Notifications'}
+                {t('settings.telegram_title')}
               </CardTitle>
               <CardDescription className="text-xs">
-                {t('settings.telegram_desc') || 'Receive backup execution summaries and failure alerts'}
+                {t('settings.telegram_desc')}
               </CardDescription>
             </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
           {settings?.configured && (
-            <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-400">
+            <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
               <div className="flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
                 <span>
-                  {t('settings.status_configured') || 'Telegram notifications are currently active'}
+                  {t('settings.status_configured')}
                 </span>
               </div>
               <Button
@@ -147,8 +141,8 @@ export const SettingsView: React.FC = () => {
                 className="h-7 text-xs"
                 onClick={() => setClearDialogOpen(true)}
               >
-                <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-                {t('settings.clear_config') || 'Clear'}
+                <Trash2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+                {t('settings.clear_config')}
               </Button>
             </div>
           )}
@@ -162,8 +156,8 @@ export const SettingsView: React.FC = () => {
 
             <div className="space-y-1.5">
               <Label htmlFor="botToken" className="text-xs flex items-center gap-1.5">
-                <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
-                {t('settings.bot_token') || 'Bot Token'}
+                <KeyRound className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                {t('settings.bot_token')}
               </Label>
               <Input
                 id="botToken"
@@ -176,13 +170,13 @@ export const SettingsView: React.FC = () => {
                 className="h-9 text-xs"
               />
               <p className="text-[11px] text-muted-foreground">
-                {t('settings.bot_token_help') || 'Provided by @BotFather upon bot creation'}
+                {t('settings.bot_token_help')}
               </p>
             </div>
 
             <div className="space-y-1.5">
               <Label htmlFor="chatId" className="text-xs">
-                {t('settings.chat_id') || 'Chat ID'}
+                {t('settings.chat_id')}
               </Label>
               <Input
                 id="chatId"
@@ -194,14 +188,18 @@ export const SettingsView: React.FC = () => {
                 className="h-9 text-xs"
               />
               <p className="text-[11px] text-muted-foreground">
-                {t('settings.chat_id_help') || 'Target group or channel conversation identifier'}
+                {t('settings.chat_id_help')}
               </p>
             </div>
 
             <div className="flex items-center gap-2 pt-2">
               <Button type="submit" disabled={saving} className="h-9 text-xs gap-1.5">
-                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                {t('common.save') || 'Save Settings'}
+                {saving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                {t('common.save')}
               </Button>
             </div>
           </form>
@@ -211,11 +209,8 @@ export const SettingsView: React.FC = () => {
       <ConfirmActionDialog
         open={clearDialogOpen}
         onOpenChange={setClearDialogOpen}
-        title={t('settings.clear_confirm_title') || 'Clear Telegram Settings?'}
-        description={
-          t('settings.clear_confirm_desc') ||
-          'Alert notifications will be disabled until reconfigured.'
-        }
+        title={t('settings.clear_confirm_title')}
+        description={t('settings.clear_confirm_desc')}
         destructive
         onConfirm={handleClear}
       />

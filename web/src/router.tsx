@@ -1,32 +1,30 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 import { AppGuard } from '@/router/AppGuard'
 import { MainLayout } from '@/layouts/MainLayout'
-import { LoginView } from '@/views/LoginView'
-import { SetupView } from '@/views/SetupView'
-import { DashboardView } from '@/views/DashboardView'
-import { AgentsView } from '@/views/AgentsView'
-import { StorageView } from '@/views/storage/StorageView'
-import { PlansView } from '@/views/plans/PlansView'
-import { RunsView } from '@/views/runs/RunsView'
-import { RunDetailView } from '@/views/runs/RunDetailView'
-import { SnapshotsView } from '@/views/snapshots/SnapshotsView'
-import { LogsView } from '@/views/LogsView'
-import { SettingsView } from '@/views/settings/SettingsView'
-
+import { PageLoadingState } from '@/components/PageLoadingState'
+// Route-level code splitting: pages are loaded dynamically via route `lazy` to optimize initial bundle size.
 export const router = createBrowserRouter([
   {
     element: <AppGuard />,
+    HydrateFallback: PageLoadingState,
     children: [
       {
         path: '/login',
-        element: <LoginView />,
+        lazy: async () => {
+          const { LoginView } = await import('@/views/LoginView')
+          return { Component: LoginView }
+        },
       },
       {
         path: '/setup',
-        element: <SetupView />,
+        lazy: async () => {
+          const { SetupView } = await import('@/views/SetupView')
+          return { Component: SetupView }
+        },
       },
       {
         element: <MainLayout />,
+        HydrateFallback: PageLoadingState,
         children: [
           {
             path: '/',
@@ -34,39 +32,66 @@ export const router = createBrowserRouter([
           },
           {
             path: '/dashboard',
-            element: <DashboardView />,
+            lazy: async () => {
+              const { DashboardView } = await import('@/views/DashboardView')
+              return { Component: DashboardView }
+            },
           },
           {
             path: '/agents',
-            element: <AgentsView />,
+            lazy: async () => {
+              const { AgentsView } = await import('@/views/AgentsView')
+              return { Component: AgentsView }
+            },
           },
           {
             path: '/storage',
-            element: <StorageView />,
+            lazy: async () => {
+              const { StorageView } = await import('@/views/storage/StorageView')
+              return { Component: StorageView }
+            },
           },
           {
             path: '/plans',
-            element: <PlansView />,
+            lazy: async () => {
+              const { PlansView } = await import('@/views/plans/PlansView')
+              return { Component: PlansView }
+            },
           },
           {
             path: '/runs',
-            element: <RunsView />,
+            lazy: async () => {
+              const { RunsView } = await import('@/views/runs/RunsView')
+              return { Component: RunsView }
+            },
           },
           {
             path: '/runs/:id',
-            element: <RunDetailView />,
+            lazy: async () => {
+              const { RunDetailView } = await import('@/views/runs/RunDetailView')
+              return { Component: RunDetailView }
+            },
           },
           {
             path: '/snapshots',
-            element: <SnapshotsView />,
+            lazy: async () => {
+              const { SnapshotsView } = await import('@/views/snapshots/SnapshotsView')
+              return { Component: SnapshotsView }
+            },
           },
           {
             path: '/logs',
-            element: <LogsView />,
+            lazy: async () => {
+              const { LogsView } = await import('@/views/LogsView')
+              return { Component: LogsView }
+            },
           },
           {
             path: '/settings',
-            element: <SettingsView />,
+            lazy: async () => {
+              const { SettingsView } = await import('@/views/settings/SettingsView')
+              return { Component: SettingsView }
+            },
           },
         ],
       },

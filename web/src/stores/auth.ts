@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { apiGet, apiPost } from '@/api/client'
-import type { AuthUser, ApiError } from '@/api/types'
+import { apiGet, apiPost, isApiClientError } from '@/api/client'
+import type { AuthUser } from '@/api/types'
 
 interface AuthState {
   me: AuthUser | null
@@ -25,8 +25,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ me: user, loading: false, initialized: true, isLoggedIn: true })
       return true
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      if (apiErr?.status === 401) {
+      if (isApiClientError(err) && err.status === 401) {
         set({ me: null, loading: false, initialized: true, isLoggedIn: false })
         return false
       }

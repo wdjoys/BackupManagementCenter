@@ -1,6 +1,27 @@
-import type { ApiError } from './types'
+import type { ApiErrorPayload } from './types'
 
 const BASE_URL = '/api/v1'
+
+export class ApiClientError extends Error {
+  readonly code: string
+  readonly status: number
+
+  constructor(message: string, code: string, status: number) {
+    super(message)
+    this.name = 'ApiClientError'
+    this.code = code
+    this.status = status
+    Object.setPrototypeOf(this, new.target.prototype)
+  }
+}
+
+export function isApiClientError(value: unknown): value is ApiClientError {
+  return value instanceof ApiClientError
+}
+
+export function isAbortError(value: unknown): boolean {
+  return typeof DOMException !== 'undefined' && value instanceof DOMException && value.name === 'AbortError'
+}
 
 /**
  * Parse a cookie value by name from document.cookie.
@@ -61,21 +82,23 @@ export async function api<T = unknown>(
   if (contentType.includes('application/json')) {
     const body = await response.json()
     if (!response.ok) {
-      const err = body.error as ApiError | undefined
-      throw Object.assign(new Error(err?.message || response.statusText), {
-        code: err?.code || 'unknown',
-        status: response.status,
-      })
+      const err = body?.error as ApiErrorPayload | undefined
+      throw new ApiClientError(
+        err?.message || response.statusText || 'Request failed',
+        err?.code || 'unknown',
+        response.status,
+      )
     }
     return body as T
   }
 
-  // Non-JSON success
+  // Non-JSON failure
   if (!response.ok) {
-    throw Object.assign(new Error(response.statusText), {
-      code: 'unknown',
-      status: response.status,
-    })
+    throw new ApiClientError(
+      response.statusText || 'Request failed',
+      'unknown',
+      response.status,
+    )
   }
 
   const text = await response.text()
@@ -83,7 +106,11 @@ export async function api<T = unknown>(
 }
 
 // Convenience helpers
-export const apiGet = <T>(path: string, params?: Record<string, string | number | undefined>) => {
+export const apiGet = <T>(
+  path: string,
+  params?: Record<string, string | number | undefined>,
+  options?: Omit<RequestInit, 'method' | 'body'>,
+): Promise<T> => {
   let url = path
   if (params) {
     const qs = Object.entries(params)
@@ -92,11 +119,13 @@ export const apiGet = <T>(path: string, params?: Record<string, string | number 
       .join('&')
     if (qs) url += `?${qs}`
   }
-  return api<T>(url)
+  return api<T>(url, { ...options, method: 'GET' })
 }
+
 export const apiGetWithMeta = async <T>(
   path: string,
   params?: Record<string, string | number | undefined>,
+  options?: Omit<RequestInit, 'method' | 'body'>,
 ): Promise<{ data: T; meta: ApiResponseMeta }> => {
   let url = path
   if (params) {
@@ -107,7 +136,7 @@ export const apiGetWithMeta = async <T>(
     if (qs) url += `?${qs}`
   }
   let meta: ApiResponseMeta = { cache: null, verifiedAt: null }
-  const data = await api<T>(url, {}, (responseMeta) => {
+  const data = await api<T>(url, { ...options, method: 'GET' }, (responseMeta) => {
     meta = responseMeta
   })
   return { data, meta }
@@ -118,6 +147,7 @@ export const apiPost = <T>(path: string, body?: unknown) =>
 
 export const apiPut = <T>(path: string, body: unknown) =>
   api<T>(path, { method: 'PUT', body: JSON.stringify(body) })
+
 export const apiPatch = <T>(path: string, body: unknown) =>
   api<T>(path, { method: 'PATCH', body: JSON.stringify(body) })
 

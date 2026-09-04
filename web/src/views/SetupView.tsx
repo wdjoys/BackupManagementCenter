@@ -14,21 +14,21 @@ import { ShieldAlert, Eye, EyeOff, Loader2, UserPlus } from 'lucide-react'
 import { LocaleSwitcher } from '@/components/LocaleSwitcher'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { useAuthStore } from '@/stores/auth'
+import { isApiClientError } from '@/api/client'
 import { toastSuccess } from '@/lib/toast'
-import type { ApiError } from '@/api/types'
 
-function calculatePasswordStrength(pass: string): { score: number; label: string; color: string } {
-  if (!pass) return { score: 0, label: '', color: 'bg-muted' }
+function calculatePasswordStrength(pass: string): { score: number; labelKey: string; color: string } {
+  if (!pass) return { score: 0, labelKey: '', color: 'bg-muted' }
   let score = 0
   if (pass.length >= 8) score += 25
   if (pass.length >= 12) score += 25
   if (/[a-z]/.test(pass) && /[A-Z]/.test(pass)) score += 25
   if (/[0-9]/.test(pass) && /[^a-zA-Z0-9]/.test(pass)) score += 25
 
-  if (score <= 25) return { score, label: 'Weak', color: 'bg-rose-500' }
-  if (score <= 50) return { score, label: 'Fair', color: 'bg-amber-500' }
-  if (score <= 75) return { score, label: 'Good', color: 'bg-primary' }
-  return { score: 100, label: 'Strong', color: 'bg-emerald-500' }
+  if (score <= 25) return { score, labelKey: 'auth.strength_weak', color: 'bg-rose-500' }
+  if (score <= 50) return { score, labelKey: 'auth.strength_fair', color: 'bg-amber-500' }
+  if (score <= 75) return { score, labelKey: 'auth.strength_good', color: 'bg-primary' }
+  return { score: 100, labelKey: 'auth.strength_strong', color: 'bg-emerald-500' }
 }
 
 export const SetupView: React.FC = () => {
@@ -83,11 +83,10 @@ export const SetupView: React.FC = () => {
     setLoading(true)
     try {
       await setup(data.username, data.password)
-      toastSuccess(t('auth.setup_success') || 'Initial setup complete! Please sign in.')
+      toastSuccess(t('auth.setup_success'))
       navigate('/login', { replace: true })
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      setServerError(apiErr?.message || t('auth.setup_failed') || 'Setup initialization failed')
+      setServerError(isApiClientError(err) ? err.message : t('auth.setup_failed'))
     } finally {
       setLoading(false)
     }
@@ -103,13 +102,13 @@ export const SetupView: React.FC = () => {
       <div className="w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center space-y-2 text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary shadow-inner">
-            <ShieldAlert className="h-7 w-7" />
+            <ShieldAlert className="h-7 w-7" aria-hidden="true" />
           </div>
           <h1 className="text-xl font-bold tracking-tight text-foreground">
-            {t('auth.setup_title') || 'Initial System Setup'}
+            {t('auth.setup_title')}
           </h1>
           <p className="text-xs text-muted-foreground">
-            {t('auth.setup_subtitle') || 'Create the primary administrator account'}
+            {t('auth.setup_subtitle')}
           </p>
         </div>
 
@@ -117,7 +116,7 @@ export const SetupView: React.FC = () => {
           <CardHeader className="pb-4">
             <CardTitle className="text-sm font-semibold">{t('auth.setup')}</CardTitle>
             <CardDescription className="text-xs">
-              {t('auth.setup_desc') || 'Configure master credentials'}
+              {t('auth.setup_desc')}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -169,15 +168,16 @@ export const SetupView: React.FC = () => {
                     size="icon"
                     className="absolute right-0.5 top-0.5 h-8 w-8 text-muted-foreground hover:text-foreground"
                     onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? t('auth.hidePassword') : t('auth.showPassword')}
                   >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    {showPassword ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}
                   </Button>
                 </div>
                 {passwordVal && (
                   <div className="space-y-1 pt-1">
                     <div className="flex justify-between text-[10px] text-muted-foreground">
-                      <span>{t('auth.password_strength') || 'Strength'}</span>
-                      <span className="font-medium">{strength.label}</span>
+                      <span>{t('auth.password_strength')}</span>
+                      <span className="font-medium">{strength.labelKey ? t(strength.labelKey) : ''}</span>
                     </div>
                     <Progress value={strength.score} className="h-1 bg-muted" />
                   </div>
@@ -211,11 +211,11 @@ export const SetupView: React.FC = () => {
 
               <Button type="submit" disabled={loading} className="w-full h-9 text-xs mt-2 gap-2">
                 {loading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                 ) : (
-                  <UserPlus className="h-4 w-4" />
+                  <UserPlus className="h-4 w-4" aria-hidden="true" />
                 )}
-                {t('auth.setup_button') || t('auth.setup')}
+                {t('auth.setup_button')}
               </Button>
             </form>
           </CardContent>

@@ -29,7 +29,15 @@ export default {
     "theme": "主题",
     "theme_light": "浅色模式",
     "theme_dark": "暗黑模式",
-    "theme_system": "跟随系统"
+    "theme_system": "跟随系统",
+    "preference": "首选项",
+    "removeTag": "移除 {{tag}}",
+    "toggle_menu": "切换菜单",
+    "previous": "上一页",
+    "next": "下一页"
+  },
+  "app": {
+    "initializing": "正在初始化 BMC 控制台..."
   },
   "nav": {
     "dashboard": "仪表盘",
@@ -126,7 +134,14 @@ export default {
     "logout": "退出登录",
     "logged_in_as": "当前登录：",
     "logout_success": "已退出登录",
-    "logout_failed": "退出登录失败"
+    "logout_failed": "退出登录失败",
+    "showPassword": "显示密码",
+    "hidePassword": "隐藏密码",
+    "strength_weak": "较弱",
+    "strength_fair": "一般",
+    "strength_good": "良好",
+    "strength_strong": "极佳",
+    "user_default": "用户"
   },
   "dashboard": {
     "title": "仪表盘",
@@ -198,7 +213,9 @@ export default {
     "revokeFailed": "撤销失败",
     "subtitle": "受管执行节点及其在线状态与探测能力",
     "noAgents": "暂无 Agent",
-    "noAgents_desc": "请在受管机器部署 Agent 并使用 Enrollment Token 完成注册"
+    "noAgents_desc": "请在受管机器部署 Agent 并使用 Enrollment Token 完成注册",
+    "copyToken": "复制注册令牌",
+    "toggleExpand": "展开/收起详情"
   },
   "status": {
     "online": "在线",
@@ -499,7 +516,9 @@ export default {
     "emptyRuns": "暂无运行记录",
     "emptyRuns_desc": "当备份计划触发或手动发起运行时将在此显示",
     "cancelConfirmTitle": "确认取消运行",
-    "cancelConfirmDesc": "取消后正在执行的备份流水线将中止，确定取消此任务吗？"
+    "cancelConfirmDesc": "取消后正在执行的备份流水线将中止，确定取消此任务吗？",
+    "rowsPerPage": "每页条数：",
+    "offset": "偏移量："
   },
   "time": {
     "hourShort": "时",
@@ -590,6 +609,7 @@ export default {
       "id": "ID",
       "type": "类型",
       "sourceSeq": "来源序号",
+      "seq": "序号",
       "time": "时间",
       "level": "级别",
       "message": "消息"
@@ -655,8 +675,10 @@ export default {
       "agent": "Agent",
       "paths": "原始路径",
       "size": "大小",
-      "modified": "修改时间"
+      "modified": "修改时间",
+      "path": "路径"
     },
+    "selectedItems": "已选包含项 ({count})",
     "fileTypes": {
       "dir": "目录",
       "file": "文件"

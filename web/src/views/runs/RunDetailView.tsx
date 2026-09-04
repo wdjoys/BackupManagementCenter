@@ -5,12 +5,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { apiGet } from '@/api/client'
+import { apiGet, isApiClientError, isAbortError } from '@/api/client'
 import { formatDateTime, translateEnum } from '@/i18n'
-import type { Run, RunProgress, RunLog, Plan, Agent, ApiError } from '@/api/types'
+import type { Run, RunProgress, RunLog, Plan, Agent } from '@/api/types'
 import { AppErrorState } from '@/components/AppErrorState'
 import { StatusBadge } from '@/components/StatusBadge'
+import { PageLoadingState } from '@/components/PageLoadingState'
 import { toastSuccess, toastError } from '@/lib/toast'
 import {
   statusTagType,
@@ -47,7 +47,7 @@ interface WsLogMessage {
 type WsMessage = WsStateMessage | WsProgressMessage | WsLogMessage
 
 const MAX_LOG_ROWS = 5000
-const MAX_RECONNECT = 1
+const MAX_RECONNECT = 5
 
 function isTerminal(status?: string): boolean {
   return status === 'succeeded' || status === 'failed' || status === 'cancelled'
@@ -75,6 +75,9 @@ export const RunDetailView: React.FC = () => {
   const logsWrapRef = useRef<HTMLDivElement | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectCountRef = useRef(0)
+  const terminalRef = useRef(false)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const logsAbortControllerRef = useRef<AbortController | null>(null)
 
   const loadRun = async () => {
     if (!id) return
@@ -83,9 +86,10 @@ export const RunDetailView: React.FC = () => {
     try {
       const data = await apiGet<Run>(`/runs/${id}`)
       setRun(data)
+      terminalRef.current = isTerminal(data.status)
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      setError(apiErr?.message || t('runDetail.loadFailed') || 'Failed to load run details')
+      if (isAbortError(err)) return
+      setError(isApiClientError(err) ? err.message : t('runDetail.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -107,16 +111,20 @@ export const RunDetailView: React.FC = () => {
   const loadInitialLogs = async () => {
     if (!id) return
     setLoadingLogs(true)
+    logsAbortControllerRef.current?.abort()
+    const controller = new AbortController()
+    logsAbortControllerRef.current = controller
     try {
-      const data = await apiGet<RunLog[]>(`/runs/${id}/logs`, { limit: 500 })
+      const data = await apiGet<RunLog[]>(`/runs/${id}/logs`, { limit: 500 }, { signal: controller.signal })
       setLogs(data)
-      if (data.length > 0) {
-        setHasMoreLogs(true)
-      }
-    } catch {
-      // Log endpoint optional
+      setHasMoreLogs(data.length >= 500)
+    } catch (err: unknown) {
+      if (isAbortError(err)) return
+      // Non-critical
     } finally {
-      setLoadingLogs(false)
+      if (logsAbortControllerRef.current === controller) {
+        setLoadingLogs(false)
+      }
     }
   }
 
@@ -189,6 +197,7 @@ export const RunDetailView: React.FC = () => {
 
         socket.onopen = () => {
           if (!active) return
+          reconnectCountRef.current = 0
           setWsConnected(true)
         }
 
@@ -198,7 +207,12 @@ export const RunDetailView: React.FC = () => {
             const msg = JSON.parse(event.data) as WsMessage
             if (msg.type === 'state') {
               setRun(msg.run)
-              if (isTerminal(msg.run.status)) {
+              terminalRef.current = isTerminal(msg.run.status)
+              if (terminalRef.current) {
+                if (reconnectTimerRef.current) {
+                  clearTimeout(reconnectTimerRef.current)
+                  reconnectTimerRef.current = null
+                }
                 socket.close()
               }
             } else if (msg.type === 'progress') {
@@ -226,12 +240,16 @@ export const RunDetailView: React.FC = () => {
         socket.onclose = () => {
           if (!active) return
           setWsConnected(false)
-          // Terminal status doesn't reconnect
-          if (run && isTerminal(run.status)) return
+          if (terminalRef.current) return
+
+          if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current)
+            reconnectTimerRef.current = null
+          }
 
           if (reconnectCountRef.current < MAX_RECONNECT) {
             reconnectCountRef.current += 1
-            setTimeout(connectWs, 3000)
+            reconnectTimerRef.current = window.setTimeout(connectWs, 3000)
           }
         }
 
@@ -248,6 +266,11 @@ export const RunDetailView: React.FC = () => {
 
     return () => {
       active = false
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      logsAbortControllerRef.current?.abort()
       if (wsRef.current) {
         wsRef.current.close()
         wsRef.current = null
@@ -271,26 +294,22 @@ export const RunDetailView: React.FC = () => {
     try {
       await navigator.clipboard.writeText(snapshotId)
       setCopiedSnapshot(true)
-      toastSuccess(t('common.copied') || 'Snapshot ID copied')
+      toastSuccess(t('common.copied'))
       setTimeout(() => setCopiedSnapshot(false), 2000)
     } catch {
-      toastError(t('common.copyFailed') || 'Failed to copy snapshot ID')
+      toastError(t('common.copyFailed'))
     }
   }
 
   if (loading) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    )
+    return <PageLoadingState />
   }
 
   if (error || !run) {
     return (
       <AppErrorState
-        title={t('runDetail.title') || 'Run Details'}
-        message={error || 'Run not found'}
+        title={t('runDetail.title')}
+        message={error || t('runDetail.loadFailed')}
         onRetry={loadRun}
       />
     )
@@ -306,8 +325,9 @@ export const RunDetailView: React.FC = () => {
             size="icon"
             onClick={() => navigate('/runs')}
             className="h-8 w-8"
+            aria-label={t('common.previous')}
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
           </Button>
           <div>
             <div className="flex items-center gap-2">
@@ -327,14 +347,14 @@ export const RunDetailView: React.FC = () => {
 
         <div className="flex items-center gap-2">
           {wsConnected ? (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-emerald-400">
-              <Radio className="h-3 w-3 animate-pulse" />
-              <span>{t('runDetail.liveConnected') || 'Live Stream'}</span>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+              <Radio className="h-3 w-3 animate-pulse" aria-hidden="true" />
+              <span>{t('runDetail.liveConnected')}</span>
             </div>
           ) : (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-border bg-muted/40 text-[11px] text-muted-foreground">
-              <span className="h-2 w-2 rounded-full bg-muted-foreground/50" />
-              <span>{t('runDetail.disconnected') || 'Static'}</span>
+              <span className="h-2 w-2 rounded-full bg-muted-foreground/50" aria-hidden="true" />
+              <span>{t('runDetail.disconnected')}</span>
             </div>
           )}
         </div>
@@ -360,17 +380,21 @@ export const RunDetailView: React.FC = () => {
           <div className="space-y-1">
             <span className="text-[11px] text-muted-foreground">{t('runDetail.labels.snapshot')}</span>
             {run.snapshot_id ? (
-              <div
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
                 onClick={() => copySnapshot(run.snapshot_id!)}
-                className="flex items-center gap-1.5 font-mono text-xs text-primary cursor-pointer hover:underline"
+                className="h-6 p-0 font-mono text-xs text-primary hover:underline gap-1.5 justify-start"
+                aria-label={t('snapshots.copySnapshotId')}
               >
                 <span className="truncate">{run.snapshot_id.substring(0, 10)}...</span>
                 {copiedSnapshot ? (
-                  <Check className="h-3 w-3 text-emerald-400" />
+                  <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
                 ) : (
-                  <Copy className="h-3 w-3" />
+                  <Copy className="h-3 w-3" aria-hidden="true" />
                 )}
-              </div>
+              </Button>
             ) : (
               <p className="text-xs text-muted-foreground font-mono">—</p>
             )}
@@ -403,18 +427,12 @@ export const RunDetailView: React.FC = () => {
           </div>
 
           {run.error_code && (
-            <div className="space-y-1">
-              <span className="text-[11px] text-destructive">{t('runDetail.labels.error')}</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <p className="text-xs font-mono text-rose-400 truncate cursor-help">
-                    {run.error_code}
-                  </p>
-                </TooltipTrigger>
-                <TooltipContent className="text-xs max-w-sm">
-                  {run.error_message || run.error_code}
-                </TooltipContent>
-              </Tooltip>
+            <div className="space-y-1 col-span-2 sm:col-span-4 border-t border-border pt-3">
+              <span className="text-[11px] text-destructive font-medium">{t('runDetail.labels.error')}</span>
+              <div className="rounded bg-destructive/10 border border-destructive/20 p-2 text-xs font-mono text-destructive">
+                <span className="font-bold">[{run.error_code}] </span>
+                <span>{run.error_message || t('common.error_occurred')}</span>
+              </div>
             </div>
           )}
         </CardContent>
@@ -426,7 +444,7 @@ export const RunDetailView: React.FC = () => {
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <CardTitle className="text-xs font-semibold">
-                {t('runDetail.progress.title') || 'Execution Progress'}
+                {t('runDetail.progress.title')}
               </CardTitle>
               <span className="text-xs font-mono font-medium text-primary">
                 {run.progress.percent}%
@@ -467,9 +485,9 @@ export const RunDetailView: React.FC = () => {
       <Card className="border-border bg-card shadow-xl overflow-hidden">
         <CardHeader className="py-3 px-4 border-b border-border bg-muted/40 flex flex-row items-center justify-between space-y-0">
           <div className="flex items-center gap-2">
-            <Terminal className="h-4 w-4 text-primary" />
+            <Terminal className="h-4 w-4 text-primary" aria-hidden="true" />
             <CardTitle className="text-xs font-mono font-medium text-foreground">
-              {t('runDetail.logs.title', { count: logs.length }) || `Logs (${logs.length})`}
+              {t('runDetail.logs.title', { count: logs.length })}
             </CardTitle>
           </div>
           <div className="flex items-center gap-4">
@@ -483,7 +501,7 @@ export const RunDetailView: React.FC = () => {
                 htmlFor="auto-scroll"
                 className="text-[11px] text-muted-foreground cursor-pointer"
               >
-                {t('runDetail.logs.autoScroll') || 'Auto-scroll'}
+                {t('runDetail.logs.autoScroll')}
               </label>
             </div>
             {hasMoreLogs && (
@@ -495,11 +513,11 @@ export const RunDetailView: React.FC = () => {
                 className="h-6 text-[11px] px-2 gap-1"
               >
                 {loadingLogs ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                 ) : (
-                  <RotateCcw className="h-3 w-3" />
+                  <RotateCcw className="h-3 w-3" aria-hidden="true" />
                 )}
-                {t('runDetail.logs.loadMore') || 'Load Earlier'}
+                {t('runDetail.logs.loadMore')}
               </Button>
             )}
           </div>
@@ -532,8 +550,8 @@ export const RunDetailView: React.FC = () => {
               })
             ) : (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                <FileText className="h-4 w-4 mr-2 opacity-50" />
-                <span>{t('runDetail.logs.empty') || 'No output received yet.'}</span>
+                <FileText className="h-4 w-4 mr-2 opacity-50" aria-hidden="true" />
+                <span>{t('runDetail.logs.empty')}</span>
               </div>
             )}
           </div>

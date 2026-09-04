@@ -6,7 +6,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
-import { Globe } from 'lucide-react'
+import { Globe, Check } from 'lucide-react'
 import {
   SUPPORTED_LOCALES,
   currentLocale,
@@ -42,8 +42,9 @@ export const LocaleSwitcher: React.FC<LocaleSwitcherProps> = ({ compact = false 
           size={compact ? 'icon' : 'sm'}
           className="text-muted-foreground hover:text-foreground"
           title={t('common.switch_language')}
+          aria-label={t('common.switch_language')}
         >
-          <Globe className="h-4 w-4" />
+          <Globe className="h-4 w-4" aria-hidden="true" />
           {!compact && (
             <span className="ml-2 text-xs font-normal">
               {LOCALE_LABELS[activeLocale]}
@@ -61,7 +62,7 @@ export const LocaleSwitcher: React.FC<LocaleSwitcherProps> = ({ compact = false 
           >
             <span>{LOCALE_LABELS[locale]}</span>
             {locale === activeLocale && (
-              <span className="text-[10px] text-primary font-medium">✓</span>
+              <Check className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
             )}
           </DropdownMenuItem>
         ))}

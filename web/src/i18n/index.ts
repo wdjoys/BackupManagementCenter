@@ -41,6 +41,9 @@ if (typeof window !== 'undefined') {
     initialLocale = detectBrowserLocale()
   }
 }
+if (typeof document !== 'undefined') {
+  document.documentElement.lang = initialLocale
+}
 
 i18n
   .use(initReactI18next)

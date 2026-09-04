@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Select,
   SelectContent,
@@ -12,13 +13,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { apiGet } from '@/api/client'
+import { apiGet, isApiClientError, isAbortError } from '@/api/client'
 import { formatDateTime } from '@/i18n'
-import type { SystemLog, Agent, ApiError } from '@/api/types'
+import type { SystemLog, Agent } from '@/api/types'
 import { AppEmptyState } from '@/components/AppEmptyState'
 import { AppErrorState } from '@/components/AppErrorState'
 import { StatusBadge, type BadgeTone } from '@/components/StatusBadge'
-import { RefreshCw, RotateCcw, Loader2, Info, Server, Activity } from 'lucide-react'
+import { PageLoadingState } from '@/components/PageLoadingState'
+import { RefreshCw, RotateCcw, Loader2, Server, Activity, Info } from 'lucide-react'
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error']
 const LOG_TYPES = ['system', 'auth', 'plan', 'agent', 'run', 'storage']
@@ -44,6 +46,7 @@ export const LogsView: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   // Initialize query sync
   useEffect(() => {
@@ -74,6 +77,10 @@ export const LogsView: React.FC = () => {
       return
     }
 
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     setLoading(true)
     setError(null)
     try {
@@ -90,7 +97,7 @@ export const LogsView: React.FC = () => {
         params.before_id = minId
       }
 
-      const data = await apiGet<SystemLog[]>(endpoint, params)
+      const data = await apiGet<SystemLog[]>(endpoint, params, { signal: controller.signal })
       if (reset) {
         setLogs(data)
       } else {
@@ -104,12 +111,20 @@ export const LogsView: React.FC = () => {
       }
       setHasMore(data.length >= 500)
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      setError(apiErr?.message || t('logs.loadFailed') || 'Failed to load logs')
+      if (isAbortError(err)) return
+      setError(isApiClientError(err) ? err.message : t('logs.loadFailed'))
     } finally {
-      setLoading(false)
+      if (abortControllerRef.current === controller) {
+        setLoading(false)
+      }
     }
   }
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort()
+    }
+  }, [])
 
   useEffect(() => {
     loadLogs(true)
@@ -151,7 +166,7 @@ export const LogsView: React.FC = () => {
             {t('logs.title')}
           </h2>
           <p className="text-xs text-muted-foreground">
-            {t('logs.subtitle') || 'Audit records, dispatch events, and system process telemetry'}
+            {t('logs.subtitle')}
           </p>
         </div>
         <Button
@@ -161,7 +176,7 @@ export const LogsView: React.FC = () => {
           disabled={loading}
           className="h-8 text-xs gap-1.5 self-start sm:self-auto"
         >
-          <RefreshCw className="h-3.5 w-3.5" />
+          <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
           {t('common.refresh')}
         </Button>
       </div>
@@ -170,32 +185,21 @@ export const LogsView: React.FC = () => {
       <Card className="border-border bg-card/40 shadow-sm">
         <CardContent className="p-4 flex flex-wrap items-center gap-3">
           {/* Scope Toggle */}
-          <div className="inline-flex rounded-md border border-border p-0.5 bg-muted/40">
-            <button
-              type="button"
-              onClick={() => handleScopeChange('server')}
-              className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded transition-colors ${
-                scope === 'server'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <Server className="h-3.5 w-3.5" />
-              <span>{t('logs.server')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleScopeChange('agent')}
-              className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded transition-colors ${
-                scope === 'agent'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <Activity className="h-3.5 w-3.5" />
-              <span>{t('logs.agent')}</span>
-            </button>
-          </div>
+          <Tabs
+            value={scope}
+            onValueChange={(val) => handleScopeChange(val as 'server' | 'agent')}
+          >
+            <TabsList className="h-8 p-0.5">
+              <TabsTrigger value="server" className="text-xs h-7 px-3 gap-1.5">
+                <Server className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{t('logs.server')}</span>
+              </TabsTrigger>
+              <TabsTrigger value="agent" className="text-xs h-7 px-3 gap-1.5">
+                <Activity className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{t('logs.agent')}</span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
 
           {/* Agent Selector when scope === agent */}
           {scope === 'agent' && (
@@ -205,7 +209,7 @@ export const LogsView: React.FC = () => {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="none" className="text-xs">
-                  {t('logs.selectAgent') || 'Select an Agent'}
+                  {t('logs.selectAgent')}
                 </SelectItem>
                 {agents.map((a) => (
                   <SelectItem key={a.id} value={a.id} className="text-xs">
@@ -280,68 +284,98 @@ export const LogsView: React.FC = () => {
                 disabled={loading}
                 className="h-7 text-xs gap-1.5"
               >
-                {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                {t('logs.loadMore') || 'Load More'}
+                {loading ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-3 w-3" aria-hidden="true" />}
+                {t('logs.loadMore')}
               </Button>
             )}
           </CardHeader>
           <CardContent className="p-0">
             {loading && logs.length === 0 ? (
-              <div className="flex h-48 items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              </div>
+              <PageLoadingState compact />
             ) : filteredLogs.length > 0 ? (
               <div className="rounded-md overflow-hidden">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-border hover:bg-transparent">
-                      <TableHead className="text-xs font-medium w-16">ID</TableHead>
-                      <TableHead className="text-xs font-medium w-24">{t('logs.columns.type')}</TableHead>
-                      {scope === 'agent' && (
-                        <TableHead className="text-xs font-medium w-20">Seq</TableHead>
-                      )}
-                      <TableHead className="text-xs font-medium w-44">{t('logs.columns.time')}</TableHead>
-                      <TableHead className="text-xs font-medium w-20">{t('logs.columns.level')}</TableHead>
-                      <TableHead className="text-xs font-medium">{t('logs.columns.message')}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredLogs.map((item) => (
-                      <TableRow key={item.id} className="border-border hover:bg-muted/30">
-                        <TableCell className="text-xs font-mono text-muted-foreground py-2">
-                          {item.id}
-                        </TableCell>
-                        <TableCell className="text-xs py-2">
-                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                {/* Desktop Table */}
+                <div className="hidden md:block overflow-x-auto">
+                  <Table className="min-w-[800px]">
+                    <TableHeader>
+                      <TableRow className="border-border hover:bg-transparent">
+                        <TableHead className="text-xs font-medium w-16">{t('logs.columns.id')}</TableHead>
+                        <TableHead className="text-xs font-medium w-24">{t('logs.columns.type')}</TableHead>
+                        {scope === 'agent' && (
+                          <TableHead className="text-xs font-medium w-20">{t('logs.columns.seq')}</TableHead>
+                        )}
+                        <TableHead className="text-xs font-medium w-44">{t('logs.columns.time')}</TableHead>
+                        <TableHead className="text-xs font-medium w-20">{t('logs.columns.level')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('logs.columns.message')}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredLogs.map((item) => (
+                        <TableRow key={item.id} className="border-border hover:bg-muted/30">
+                          <TableCell className="text-xs font-mono text-muted-foreground py-2">
+                            {item.id}
+                          </TableCell>
+                          <TableCell className="text-xs py-2">
+                            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                              {item.type}
+                            </span>
+                          </TableCell>
+                          {scope === 'agent' && (
+                            <TableCell className="text-xs font-mono text-muted-foreground py-2">
+                              {item.source_seq ?? '—'}
+                            </TableCell>
+                          )}
+                          <TableCell className="text-xs font-mono text-muted-foreground py-2">
+                            {formatDateTime(item.timestamp)}
+                          </TableCell>
+                          <TableCell className="text-xs py-2">
+                            <StatusBadge tone={LEVEL_TONES[item.level] || 'secondary'}>
+                              {item.level.toUpperCase()}
+                            </StatusBadge>
+                          </TableCell>
+                          <TableCell className="text-xs font-mono text-foreground break-all py-2">
+                            {item.message}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {/* Mobile Cards */}
+                <div className="md:hidden divide-y divide-border">
+                  {filteredLogs.map((item) => (
+                    <div key={item.id} className="p-3 space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-muted-foreground text-[11px]">
+                          {formatDateTime(item.timestamp)}
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
                             {item.type}
                           </span>
-                        </TableCell>
-                        {scope === 'agent' && (
-                          <TableCell className="text-xs font-mono text-muted-foreground py-2">
-                            {item.source_seq ?? '—'}
-                          </TableCell>
-                        )}
-                        <TableCell className="text-xs font-mono text-muted-foreground py-2">
-                          {formatDateTime(item.timestamp)}
-                        </TableCell>
-                        <TableCell className="text-xs py-2">
                           <StatusBadge tone={LEVEL_TONES[item.level] || 'secondary'}>
                             {item.level.toUpperCase()}
                           </StatusBadge>
-                        </TableCell>
-                        <TableCell className="text-xs font-mono text-foreground break-all py-2">
-                          {item.message}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                        </div>
+                      </div>
+                      {scope === 'agent' && item.source_seq != null && (
+                        <div className="text-[11px] text-muted-foreground font-mono">
+                          {t('logs.columns.seq')}: #{item.source_seq}
+                        </div>
+                      )}
+                      <p className="font-mono text-foreground break-all text-xs">
+                        {item.message}
+                      </p>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : (
               <div className="p-8">
                 <AppEmptyState
-                  title={t('logs.empty') || 'No Logs Recorded'}
-                  description={t('logs.empty_desc') || 'Log entries matching active filters will appear here.'}
+                  title={t('logs.empty')}
+                  description={t('logs.empty_desc')}
                 />
               </div>
             )}

@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -14,13 +14,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { apiGet, apiPost } from '@/api/client'
+import { apiGet, apiPost, isApiClientError, isAbortError } from '@/api/client'
 import { formatDateTime, translateEnum } from '@/i18n'
-import type { Run, Agent, Plan, ApiError } from '@/api/types'
+import type { Run, Agent, Plan } from '@/api/types'
 import { AppEmptyState } from '@/components/AppEmptyState'
 import { AppErrorState } from '@/components/AppErrorState'
 import { StatusBadge } from '@/components/StatusBadge'
 import { ConfirmActionDialog } from '@/components/ConfirmActionDialog'
+import { PageLoadingState } from '@/components/PageLoadingState'
 import { toastSuccess, toastError } from '@/lib/toast'
 import {
   STATUS_VALUE_KEYS,
@@ -29,11 +30,30 @@ import {
   operationTagType,
   formatDuration,
 } from '@/utils/runDisplay'
-import { RefreshCw, Search, XSquare, ChevronLeft, ChevronRight, Loader2, RotateCcw } from 'lucide-react'
+import { RefreshCw, Search, XSquare, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
+
+export interface RunFilters {
+  planId: string
+  agentId: string
+  status: string
+  operation: string
+}
+
+export interface RunQuery {
+  filters: RunFilters
+  limit: number
+  offset: number
+}
+
+const DEFAULT_FILTERS: RunFilters = {
+  planId: '',
+  agentId: 'all',
+  status: 'all',
+  operation: 'all',
+}
 
 export const RunsView: React.FC = () => {
   const { t } = useTranslation()
-  const navigate = useNavigate()
 
   const [runs, setRuns] = useState<Run[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
@@ -42,19 +62,25 @@ export const RunsView: React.FC = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Filters
+  // Filters state
+  const [filters, setFilters] = useState<RunFilters>(DEFAULT_FILTERS)
   const [planIdInput, setPlanIdInput] = useState('')
-  const [selectedAgent, setSelectedAgent] = useState('all')
-  const [selectedStatus, setSelectedStatus] = useState('all')
-  const [selectedOp, setSelectedOp] = useState('all')
 
-  // Pagination
+  // Pagination state
   const [limit, setLimit] = useState(20)
   const [offset, setOffset] = useState(0)
 
   // Cancel run dialog
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false)
   const [runToCancel, setRunToCancel] = useState<Run | null>(null)
+
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const currentQueryRef = useRef<RunQuery>({
+    filters: DEFAULT_FILTERS,
+    limit: 20,
+    offset: 0,
+  })
+  const didMountRef = useRef(false)
 
   const statusOptions = useMemo(
     () =>
@@ -82,26 +108,34 @@ export const RunsView: React.FC = () => {
     return map
   }, [plans])
 
-  const loadRuns = async (newOffset = offset) => {
+  const loadRuns = async (query: RunQuery) => {
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    currentQueryRef.current = query
+
     setLoading(true)
     setError(null)
     try {
       const params: Record<string, string | number | undefined> = {
-        limit,
-        offset: newOffset,
-        plan_id: planIdInput.trim() || undefined,
-        agent_id: selectedAgent === 'all' ? undefined : selectedAgent,
-        status: selectedStatus === 'all' ? undefined : selectedStatus,
-        operation: selectedOp === 'all' ? undefined : selectedOp,
+        limit: query.limit,
+        offset: query.offset,
+        plan_id: query.filters.planId.trim() || undefined,
+        agent_id: query.filters.agentId === 'all' ? undefined : query.filters.agentId,
+        status: query.filters.status === 'all' ? undefined : query.filters.status,
+        operation: query.filters.operation === 'all' ? undefined : query.filters.operation,
       }
-      const data = await apiGet<Run[]>('/runs', params)
+      const data = await apiGet<Run[]>('/runs', params, { signal: controller.signal })
       setRuns(data)
-      setOffset(newOffset)
+      setOffset(query.offset)
+      setLimit(query.limit)
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      setError(apiErr?.message || t('runs.loadFailed') || 'Failed to load runs')
+      if (isAbortError(err)) return
+      setError(isApiClientError(err) ? err.message : t('runs.loadFailed'))
     } finally {
-      setLoading(false)
+      if (abortControllerRef.current === controller) {
+        setLoading(false)
+      }
     }
   }
 
@@ -120,31 +154,69 @@ export const RunsView: React.FC = () => {
 
   useEffect(() => {
     loadMeta()
-    loadRuns(0)
+    loadRuns({
+      filters: DEFAULT_FILTERS,
+      limit: 20,
+      offset: 0,
+    })
+    return () => {
+      abortControllerRef.current?.abort()
+    }
   }, [])
 
-  // 400ms debounce on planIdInput
+  // 400ms debounce on planIdInput (skipping first render)
   useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true
+      return
+    }
     const timer = setTimeout(() => {
-      loadRuns(0)
+      const nextFilters: RunFilters = { ...filters, planId: planIdInput }
+      setFilters(nextFilters)
+      loadRuns({ filters: nextFilters, limit, offset: 0 })
     }, 400)
     return () => clearTimeout(timer)
   }, [planIdInput])
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
-    loadRuns(0)
+    const nextFilters: RunFilters = { ...filters, planId: planIdInput }
+    setFilters(nextFilters)
+    loadRuns({ filters: nextFilters, limit, offset: 0 })
   }
 
   const handleReset = () => {
     setPlanIdInput('')
-    setSelectedAgent('all')
-    setSelectedStatus('all')
-    setSelectedOp('all')
-    setOffset(0)
-    setTimeout(() => {
-      loadRuns(0)
-    }, 0)
+    setFilters(DEFAULT_FILTERS)
+    loadRuns({ filters: DEFAULT_FILTERS, limit, offset: 0 })
+  }
+
+  const handleAgentChange = (val: string) => {
+    const nextFilters: RunFilters = { ...filters, agentId: val }
+    setFilters(nextFilters)
+    loadRuns({ filters: nextFilters, limit, offset: 0 })
+  }
+
+  const handleStatusChange = (val: string) => {
+    const nextFilters: RunFilters = { ...filters, status: val }
+    setFilters(nextFilters)
+    loadRuns({ filters: nextFilters, limit, offset: 0 })
+  }
+
+  const handleOpChange = (val: string) => {
+    const nextFilters: RunFilters = { ...filters, operation: val }
+    setFilters(nextFilters)
+    loadRuns({ filters: nextFilters, limit, offset: 0 })
+  }
+
+  const handleLimitChange = (val: string) => {
+    const newLimit = Number(val)
+    setLimit(newLimit)
+    loadRuns({ filters, limit: newLimit, offset: 0 })
+  }
+
+  const handlePageChange = (newOffset: number) => {
+    loadRuns({ filters, limit, offset: newOffset })
   }
 
   const isCancelable = (status: string) => {
@@ -161,13 +233,10 @@ export const RunsView: React.FC = () => {
     if (!runToCancel) return
     try {
       await apiPost(`/runs/${runToCancel.id}/cancel`, {})
-      toastSuccess(t('runs.cancelled') || 'Run cancel request submitted')
-      await loadRuns(offset)
+      toastSuccess(t('runs.cancelled'))
+      await loadRuns(currentQueryRef.current)
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      toastError(apiErr?.message || t('runs.cancelFailed') || 'Failed to cancel run')
-    } finally {
-      // cleanup
+      toastError(isApiClientError(err) ? err.message : t('runs.cancelFailed'))
     }
   }
 
@@ -179,16 +248,17 @@ export const RunsView: React.FC = () => {
             {t('runs.title')}
           </h2>
           <p className="text-xs text-muted-foreground">
-            {t('runs.subtitle') || 'Audit history, state progression, and real-time execution logs'}
+            {t('runs.subtitle')}
           </p>
         </div>
         <Button
           variant="outline"
           size="sm"
-          onClick={() => loadRuns(offset)}
+          onClick={() => loadRuns(currentQueryRef.current)}
+          disabled={loading}
           className="h-8 text-xs gap-1.5 self-start sm:self-auto"
         >
-          <RefreshCw className="h-3.5 w-3.5" />
+          <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
           {t('common.refresh')}
         </Button>
       </div>
@@ -200,7 +270,7 @@ export const RunsView: React.FC = () => {
             <div className="space-y-1">
               <Label className="text-[11px] text-muted-foreground">{t('runs.filters.plan')}</Label>
               <Input
-                placeholder={t('runs.filters.planIdPlaceholder') || 'Filter by plan ID...'}
+                placeholder={t('runs.filters.planIdPlaceholder')}
                 value={planIdInput}
                 onChange={(e) => setPlanIdInput(e.target.value)}
                 className="h-8 text-xs font-mono"
@@ -209,19 +279,13 @@ export const RunsView: React.FC = () => {
 
             <div className="space-y-1">
               <Label className="text-[11px] text-muted-foreground">{t('runs.filters.agent')}</Label>
-              <Select
-                value={selectedAgent}
-                onValueChange={(val) => {
-                  setSelectedAgent(val)
-                  loadRuns(0)
-                }}
-              >
+              <Select value={filters.agentId} onValueChange={handleAgentChange}>
                 <SelectTrigger className="h-8 text-xs">
                   <SelectValue placeholder={t('runs.filters.agent')} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all" className="text-xs">
-                    {t('common.all') || 'All Agents'}
+                    {t('common.allAgents')}
                   </SelectItem>
                   {agents.map((a) => (
                     <SelectItem key={a.id} value={a.id} className="text-xs">
@@ -234,19 +298,13 @@ export const RunsView: React.FC = () => {
 
             <div className="space-y-1">
               <Label className="text-[11px] text-muted-foreground">{t('runs.filters.status')}</Label>
-              <Select
-                value={selectedStatus}
-                onValueChange={(val) => {
-                  setSelectedStatus(val)
-                  loadRuns(0)
-                }}
-              >
+              <Select value={filters.status} onValueChange={handleStatusChange}>
                 <SelectTrigger className="h-8 text-xs">
                   <SelectValue placeholder={t('runs.filters.status')} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all" className="text-xs">
-                    {t('common.all') || 'All Statuses'}
+                    {t('common.all')}
                   </SelectItem>
                   {statusOptions.map((s) => (
                     <SelectItem key={s.value} value={s.value} className="text-xs">
@@ -259,19 +317,13 @@ export const RunsView: React.FC = () => {
 
             <div className="space-y-1">
               <Label className="text-[11px] text-muted-foreground">{t('runs.filters.operation')}</Label>
-              <Select
-                value={selectedOp}
-                onValueChange={(val) => {
-                  setSelectedOp(val)
-                  loadRuns(0)
-                }}
-              >
+              <Select value={filters.operation} onValueChange={handleOpChange}>
                 <SelectTrigger className="h-8 text-xs">
                   <SelectValue placeholder={t('runs.filters.operation')} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all" className="text-xs">
-                    {t('common.all') || 'All Operations'}
+                    {t('common.all')}
                   </SelectItem>
                   {operationOptions.map((o) => (
                     <SelectItem key={o.value} value={o.value} className="text-xs">
@@ -282,9 +334,9 @@ export const RunsView: React.FC = () => {
               </Select>
             </div>
 
-            <div className="flex items-end gap-2">
+            <div className="flex items-end gap-2 col-span-1 sm:col-span-2 md:col-span-4 lg:col-span-1">
               <Button type="submit" size="sm" className="h-8 text-xs flex-1 gap-1">
-                <Search className="h-3 w-3" />
+                <Search className="h-3 w-3" aria-hidden="true" />
                 {t('common.search')}
               </Button>
               <Button
@@ -294,7 +346,7 @@ export const RunsView: React.FC = () => {
                 onClick={handleReset}
                 className="h-8 text-xs gap-1"
               >
-                <RotateCcw className="h-3 w-3" />
+                <RotateCcw className="h-3 w-3" aria-hidden="true" />
                 {t('common.reset')}
               </Button>
             </div>
@@ -303,107 +355,175 @@ export const RunsView: React.FC = () => {
       </Card>
 
       {error ? (
-        <AppErrorState title={t('runs.title')} message={error} onRetry={() => loadRuns(offset)} />
+        <AppErrorState title={t('runs.title')} message={error} onRetry={() => loadRuns(currentQueryRef.current)} />
       ) : (
         <Card className="border-border bg-card/60 shadow-sm">
           <CardContent className="p-0">
-            {loading ? (
-              <div className="flex h-48 items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              </div>
+            {loading && runs.length === 0 ? (
+              <PageLoadingState compact />
             ) : runs.length > 0 ? (
               <div className="rounded-md overflow-hidden">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-border hover:bg-transparent">
-                      <TableHead className="text-xs font-medium">{t('runs.columns.queuedAt')}</TableHead>
-                      <TableHead className="text-xs font-medium">{t('dashboard.plan')}</TableHead>
-                      <TableHead className="text-xs font-medium">{t('runs.filters.operation')}</TableHead>
-                      <TableHead className="text-xs font-medium">{t('common.status')}</TableHead>
-                      <TableHead className="text-xs font-medium">{t('runs.columns.snapshot')}</TableHead>
-                      <TableHead className="text-xs font-medium">{t('runs.columns.duration')}</TableHead>
-                      <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {runs.map((run) => {
-                      const plan = planMap.get(run.plan_id)
-                      const planLabel = plan ? plan.name : run.plan_id
-                      const canCancel = isCancelable(run.status)
-                      return (
-                        <TableRow
-                          key={run.id}
-                          onClick={() => navigate(`/runs/${run.id}`)}
-                          className="border-border hover:bg-muted/40 cursor-pointer"
-                        >
-                          <TableCell className="text-xs text-muted-foreground font-mono">
-                            {formatDateTime(run.queued_at)}
-                          </TableCell>
-                          <TableCell className="font-medium text-xs text-foreground">
+                {/* Desktop table */}
+                <div className="hidden md:block overflow-x-auto">
+                  <Table className="min-w-[850px]">
+                    <TableHeader>
+                      <TableRow className="border-border hover:bg-transparent">
+                        <TableHead className="text-xs font-medium">{t('runs.columns.queuedAt')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('dashboard.plan')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('runs.filters.operation')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('common.status')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('runs.columns.snapshot')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('runs.columns.duration')}</TableHead>
+                        <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {runs.map((run) => {
+                        const plan = planMap.get(run.plan_id)
+                        const planLabel = plan ? plan.name : run.plan_id
+                        const canCancel = isCancelable(run.status)
+                        return (
+                          <TableRow key={run.id} className="border-border hover:bg-muted/40">
+                            <TableCell className="text-xs text-muted-foreground font-mono">
+                              <Link
+                                to={`/runs/${run.id}`}
+                                className="hover:text-primary hover:underline"
+                              >
+                                {formatDateTime(run.queued_at)}
+                              </Link>
+                            </TableCell>
+                            <TableCell className="font-medium text-xs text-foreground">
+                              <Link
+                                to={`/runs/${run.id}`}
+                                className="hover:text-primary hover:underline"
+                              >
+                                {planLabel}
+                              </Link>
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              <StatusBadge tone={operationTagType(run.operation)}>
+                                {translateEnum('runs.operations', run.operation)}
+                              </StatusBadge>
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              <StatusBadge
+                                tone={statusTagType(run.status)}
+                                dot={run.status === 'running' || run.status === 'dispatched'}
+                              >
+                                {translateEnum('status', run.status)}
+                              </StatusBadge>
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground font-mono">
+                              {run.snapshot_id ? (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="truncate block max-w-[100px] underline decoration-dotted">
+                                      {run.snapshot_id.substring(0, 8)}...
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="text-[11px] font-mono">
+                                    {run.snapshot_id}
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : (
+                                '—'
+                              )}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground font-mono">
+                              {formatDuration(run.started_at, run.finished_at)}
+                            </TableCell>
+                            <TableCell className="text-xs text-right">
+                              {canCancel && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={(e) => openCancelDialog(e, run)}
+                                  className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                                  aria-label={t('runs.cancel')}
+                                >
+                                  <XSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                                  {t('common.cancel')}
+                                </Button>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {/* Mobile Cards */}
+                <div className="md:hidden divide-y divide-border">
+                  {runs.map((run) => {
+                    const plan = planMap.get(run.plan_id)
+                    const planLabel = plan ? plan.name : run.plan_id
+                    const canCancel = isCancelable(run.status)
+                    return (
+                      <div key={run.id} className="p-3 space-y-2 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <Link
+                            to={`/runs/${run.id}`}
+                            className="font-semibold text-foreground hover:text-primary hover:underline"
+                          >
                             {planLabel}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <StatusBadge tone={operationTagType(run.operation)}>
-                              {translateEnum('runs.operations', run.operation)}
-                            </StatusBadge>
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <StatusBadge
-                              tone={statusTagType(run.status)}
-                              dot={run.status === 'running' || run.status === 'dispatched'}
-                            >
-                              {translateEnum('status', run.status)}
-                            </StatusBadge>
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground font-mono">
-                            {run.snapshot_id ? (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span className="truncate block max-w-[100px] underline decoration-dotted">
-                                    {run.snapshot_id.substring(0, 8)}...
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent className="text-[11px] font-mono">
-                                  {run.snapshot_id}
-                                </TooltipContent>
-                              </Tooltip>
-                            ) : (
-                              '—'
-                            )}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground font-mono">
+                          </Link>
+                          <StatusBadge
+                            tone={statusTagType(run.status)}
+                            dot={run.status === 'running' || run.status === 'dispatched'}
+                          >
+                            {translateEnum('status', run.status)}
+                          </StatusBadge>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1 text-[11px] text-muted-foreground font-mono">
+                          <div>
+                            <span className="text-muted-foreground/70">{t('runs.columns.queuedAt')}: </span>
+                            {formatDateTime(run.queued_at)}
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground/70">{t('runs.columns.duration')}: </span>
                             {formatDuration(run.started_at, run.finished_at)}
-                          </TableCell>
-                          <TableCell className="text-xs text-right">
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between pt-1">
+                          <StatusBadge tone={operationTagType(run.operation)}>
+                            {translateEnum('runs.operations', run.operation)}
+                          </StatusBadge>
+                          <div className="flex items-center gap-2">
                             {canCancel && (
                               <Button
                                 variant="ghost"
                                 size="sm"
                                 onClick={(e) => openCancelDialog(e, run)}
-                                className="h-7 text-xs text-rose-400 hover:text-rose-300 gap-1"
+                                className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                                aria-label={t('runs.cancel')}
                               >
-                                <XSquare className="h-3.5 w-3.5" />
+                                <XSquare className="h-3.5 w-3.5" aria-hidden="true" />
                                 {t('common.cancel')}
                               </Button>
                             )}
-                          </TableCell>
-                        </TableRow>
-                      )
-                    })}
-                  </TableBody>
-                </Table>
+                            <Button
+                              asChild
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs"
+                            >
+                              <Link to={`/runs/${run.id}`}>
+                                {t('common.actions')}
+                              </Link>
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
 
                 {/* Pagination footer */}
                 <div className="flex items-center justify-between p-3 border-t border-border bg-card/40">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Rows per page:</span>
-                    <Select
-                      value={String(limit)}
-                      onValueChange={(val) => {
-                        setLimit(Number(val))
-                        loadRuns(0)
-                      }}
-                    >
+                    <span className="text-xs text-muted-foreground">{t('runs.rowsPerPage')}</span>
+                    <Select value={String(limit)} onValueChange={handleLimitChange}>
                       <SelectTrigger className="h-7 w-16 text-xs">
                         <SelectValue />
                       </SelectTrigger>
@@ -417,25 +537,27 @@ export const RunsView: React.FC = () => {
 
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground">
-                      Offset: {offset} – {offset + runs.length}
+                      {t('runs.offset')} {offset} – {offset + runs.length}
                     </span>
                     <Button
                       variant="outline"
                       size="icon"
-                      disabled={offset === 0}
-                      onClick={() => loadRuns(Math.max(0, offset - limit))}
+                      disabled={offset === 0 || loading}
+                      onClick={() => handlePageChange(Math.max(0, offset - limit))}
                       className="h-7 w-7"
+                      aria-label={t('common.previous')}
                     >
-                      <ChevronLeft className="h-3.5 w-3.5" />
+                      <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
                     </Button>
                     <Button
                       variant="outline"
                       size="icon"
-                      disabled={runs.length < limit}
-                      onClick={() => loadRuns(offset + limit)}
+                      disabled={runs.length < limit || loading}
+                      onClick={() => handlePageChange(offset + limit)}
                       className="h-7 w-7"
+                      aria-label={t('common.next')}
                     >
-                      <ChevronRight className="h-3.5 w-3.5" />
+                      <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
                     </Button>
                   </div>
                 </div>
@@ -443,11 +565,8 @@ export const RunsView: React.FC = () => {
             ) : (
               <div className="p-8">
                 <AppEmptyState
-                  title={t('runs.emptyRuns') || 'No Runs Found'}
-                  description={
-                    t('runs.emptyRuns_desc') ||
-                    'Run executions will appear here when scheduled plans or manual runs trigger.'
-                  }
+                  title={t('runs.emptyRuns')}
+                  description={t('runs.emptyRuns_desc')}
                 />
               </div>
             )}
@@ -455,17 +574,13 @@ export const RunsView: React.FC = () => {
         </Card>
       )}
 
-      {/* Cancel Run Dialog */}
+      {/* Cancel Confirmation Dialog */}
       <ConfirmActionDialog
         open={cancelDialogOpen}
         onOpenChange={setCancelDialogOpen}
-        title={t('runs.cancelConfirmTitle') || 'Cancel Active Run?'}
-        description={
-          runToCancel
-            ? t('runs.cancelConfirmDesc', { id: runToCancel.id.substring(0, 8) }) ||
-              `Are you sure you want to request cancellation for run ${runToCancel.id.substring(0, 8)}?`
-            : ''
-        }
+        title={t('runs.cancelConfirmTitle')}
+        description={t('runs.cancelConfirmDesc')}
+        confirmText={t('runs.cancel')}
         destructive
         onConfirm={handleCancelConfirm}
       />

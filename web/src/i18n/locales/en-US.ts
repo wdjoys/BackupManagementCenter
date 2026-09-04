@@ -29,7 +29,15 @@ export default {
     "theme": "Theme",
     "theme_light": "Light Mode",
     "theme_dark": "Dark Mode",
-    "theme_system": "System"
+    "theme_system": "System",
+    "preference": "Preference",
+    "removeTag": "Remove {{tag}}",
+    "toggle_menu": "Toggle menu",
+    "previous": "Previous",
+    "next": "Next"
+  },
+  "app": {
+    "initializing": "Initializing BMC Console..."
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -126,7 +134,14 @@ export default {
     "logout": "Logout",
     "logged_in_as": "Logged in as",
     "logout_success": "Logged out successfully",
-    "logout_failed": "Logout failed"
+    "logout_failed": "Logout failed",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "strength_weak": "Weak",
+    "strength_fair": "Fair",
+    "strength_good": "Good",
+    "strength_strong": "Strong",
+    "user_default": "User"
   },
   "dashboard": {
     "title": "Dashboard",
@@ -198,7 +213,9 @@ export default {
     "revokeFailed": "Revoke failed",
     "subtitle": "Managed host agents, health statuses, and probing tools",
     "noAgents": "No agents connected",
-    "noAgents_desc": "Deploy an agent on a host and enroll using a token"
+    "noAgents_desc": "Deploy an agent on a host and enroll using a token",
+    "copyToken": "Copy enrollment token",
+    "toggleExpand": "Toggle details"
   },
   "status": {
     "online": "Online",
@@ -499,7 +516,9 @@ export default {
     "emptyRuns": "No execution records",
     "emptyRuns_desc": "Execution records will appear here when plans are triggered",
     "cancelConfirmTitle": "Cancel Execution",
-    "cancelConfirmDesc": "Are you sure you want to cancel this active running job?"
+    "cancelConfirmDesc": "Are you sure you want to cancel this active running job?",
+    "rowsPerPage": "Rows per page:",
+    "offset": "Offset:"
   },
   "time": {
     "hourShort": "h",
@@ -590,6 +609,7 @@ export default {
       "id": "ID",
       "type": "Type",
       "sourceSeq": "Source #",
+      "seq": "Seq",
       "time": "Time",
       "level": "Level",
       "message": "Message"
@@ -655,8 +675,10 @@ export default {
       "agent": "Agent",
       "paths": "Original paths",
       "size": "Size",
-      "modified": "Modified"
+      "modified": "Modified",
+      "path": "Path"
     },
+    "selectedItems": "Selected Included Items ({count})",
     "fileTypes": {
       "dir": "dir",
       "file": "file"

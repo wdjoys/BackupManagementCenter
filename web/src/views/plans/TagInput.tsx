@@ -20,7 +20,7 @@ export const TagInput: React.FC<TagInputProps> = ({
   const { t } = useTranslation()
   const [draft, setDraft] = useState('')
 
-  const placeholderText = placeholder ?? (t('common.tagInputPlaceholder') || 'Type and press Enter')
+  const placeholderText = placeholder ?? t('common.tagInputPlaceholder')
 
   const add = () => {
     const trimmed = draft.trim()
@@ -59,8 +59,9 @@ export const TagInput: React.FC<TagInputProps> = ({
                   type="button"
                   onClick={() => removeAt(index)}
                   className="rounded-full hover:bg-muted p-0.5 transition-colors"
+                  aria-label={t('common.removeTag', { tag: item })}
                 >
-                  <X className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                  <X className="h-3 w-3 text-muted-foreground hover:text-foreground" aria-hidden="true" />
                 </button>
               )}
             </Badge>

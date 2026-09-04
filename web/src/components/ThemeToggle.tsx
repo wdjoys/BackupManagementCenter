@@ -7,7 +7,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
-import { Sun, Moon, Laptop } from 'lucide-react'
+import { Sun, Moon, Laptop, Check } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 interface ThemeToggleProps {
@@ -25,11 +25,12 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({ compact = false }) => 
           variant="ghost"
           size={compact ? 'icon' : 'sm'}
           className="text-muted-foreground hover:text-foreground relative"
-          title={t('theme.toggle') || 'Toggle theme'}
+          title={t('theme.toggle')}
+          aria-label={t('theme.toggle')}
         >
-          <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-          <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
-          <span className="sr-only">{t('theme.toggle') || 'Toggle theme'}</span>
+          <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" aria-hidden="true" />
+          <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" aria-hidden="true" />
+          <span className="sr-only">{t('theme.toggle')}</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-32">
@@ -38,11 +39,11 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({ compact = false }) => 
           className="cursor-pointer text-xs justify-between"
         >
           <div className="flex items-center gap-2">
-            <Sun className="h-3.5 w-3.5 text-muted-foreground" />
-            <span>{t('theme.light') || 'Light'}</span>
+            <Sun className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+            <span>{t('theme.light')}</span>
           </div>
           {theme === 'light' && (
-            <span className="text-[10px] text-primary font-medium">✓</span>
+            <Check className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
           )}
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -50,11 +51,11 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({ compact = false }) => 
           className="cursor-pointer text-xs justify-between"
         >
           <div className="flex items-center gap-2">
-            <Moon className="h-3.5 w-3.5 text-muted-foreground" />
-            <span>{t('theme.dark') || 'Dark'}</span>
+            <Moon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+            <span>{t('theme.dark')}</span>
           </div>
           {theme === 'dark' && (
-            <span className="text-[10px] text-primary font-medium">✓</span>
+            <Check className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
           )}
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -62,11 +63,11 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({ compact = false }) => 
           className="cursor-pointer text-xs justify-between"
         >
           <div className="flex items-center gap-2">
-            <Laptop className="h-3.5 w-3.5 text-muted-foreground" />
-            <span>{t('theme.system') || 'System'}</span>
+            <Laptop className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+            <span>{t('theme.system')}</span>
           </div>
           {theme === 'system' && (
-            <span className="text-[10px] text-primary font-medium">✓</span>
+            <Check className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
           )}
         </DropdownMenuItem>
       </DropdownMenuContent>

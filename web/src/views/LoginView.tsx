@@ -13,8 +13,8 @@ import { ShieldCheck, Eye, EyeOff, Loader2, LogIn } from 'lucide-react'
 import { LocaleSwitcher } from '@/components/LocaleSwitcher'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { useAuthStore } from '@/stores/auth'
+import { isApiClientError } from '@/api/client'
 import { toastSuccess } from '@/lib/toast'
-import type { ApiError } from '@/api/types'
 
 export const LoginView: React.FC = () => {
   const { t } = useTranslation()
@@ -50,7 +50,7 @@ export const LoginView: React.FC = () => {
     setLoading(true)
     try {
       await login(data.username, data.password)
-      toastSuccess(t('auth.login_success') || 'Signed in successfully')
+      toastSuccess(t('auth.login_success'))
       let from = '/dashboard'
       if (location.state && typeof location.state === 'object' && 'from' in location.state) {
         const stateFrom = location.state.from
@@ -60,8 +60,7 @@ export const LoginView: React.FC = () => {
       }
       navigate(from, { replace: true })
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      setServerError(apiErr?.message || t('auth.login_failed') || 'Invalid username or password')
+      setServerError(isApiClientError(err) ? err.message : t('auth.login_failed'))
     } finally {
       setLoading(false)
     }
@@ -77,13 +76,13 @@ export const LoginView: React.FC = () => {
       <div className="w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center space-y-2 text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary shadow-inner">
-            <ShieldCheck className="h-7 w-7" />
+            <ShieldCheck className="h-7 w-7" aria-hidden="true" />
           </div>
           <h1 className="text-xl font-bold tracking-tight text-foreground">
             Backup Management Center
           </h1>
           <p className="text-xs text-muted-foreground">
-            {t('auth.login_subtitle') || 'Enter your credentials to access the console'}
+            {t('auth.login_subtitle')}
           </p>
         </div>
 
@@ -91,7 +90,7 @@ export const LoginView: React.FC = () => {
           <CardHeader className="pb-4">
             <CardTitle className="text-sm font-semibold">{t('auth.login')}</CardTitle>
             <CardDescription className="text-xs">
-              {t('auth.login_desc') || 'System administrator sign-in'}
+              {t('auth.login_desc')}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -143,8 +142,9 @@ export const LoginView: React.FC = () => {
                     size="icon"
                     className="absolute right-0.5 top-0.5 h-8 w-8 text-muted-foreground hover:text-foreground"
                     onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? t('auth.hidePassword') : t('auth.showPassword')}
                   >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    {showPassword ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}
                   </Button>
                 </div>
                 {errors.password && (
@@ -156,11 +156,11 @@ export const LoginView: React.FC = () => {
 
               <Button type="submit" disabled={loading} className="w-full h-9 text-xs mt-2 gap-2">
                 {loading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                 ) : (
-                  <LogIn className="h-4 w-4" />
+                  <LogIn className="h-4 w-4" aria-hidden="true" />
                 )}
-                {t('auth.login_button') || t('auth.login')}
+                {t('auth.login_button')}
               </Button>
             </form>
           </CardContent>

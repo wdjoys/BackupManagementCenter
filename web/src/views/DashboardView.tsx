@@ -3,11 +3,12 @@ import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
-import { apiGet } from '@/api/client'
+import { apiGet, isApiClientError } from '@/api/client'
 import { formatDateTime } from '@/i18n'
-import type { Dashboard, ApiError } from '@/api/types'
+import type { Dashboard } from '@/api/types'
 import { AppEmptyState } from '@/components/AppEmptyState'
 import { AppErrorState } from '@/components/AppErrorState'
+import { PageLoadingState } from '@/components/PageLoadingState'
 import { StatusBadge } from '@/components/StatusBadge'
 import {
   Server,
@@ -17,7 +18,6 @@ import {
   Calendar,
   Database,
   RefreshCw,
-  Loader2,
 } from 'lucide-react'
 
 export const DashboardView: React.FC = () => {
@@ -41,8 +41,7 @@ export const DashboardView: React.FC = () => {
       const data = await apiGet<Dashboard>('/dashboard')
       setDashboard(data)
     } catch (err: unknown) {
-      const apiErr = err as ApiError
-      setError(apiErr?.message || t('common.load_failed') || 'Failed to load dashboard metrics')
+      setError(isApiClientError(err) ? err.message : t('common.load_failed'))
     } finally {
       setLoading(false)
     }
@@ -53,17 +52,13 @@ export const DashboardView: React.FC = () => {
   }, [])
 
   if (loading) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    )
+    return <PageLoadingState />
   }
 
   if (error) {
     return (
       <AppErrorState
-        title={t('dashboard.title') || 'Dashboard'}
+        title={t('dashboard.title')}
         message={error}
         onRetry={loadData}
       />
@@ -78,11 +73,11 @@ export const DashboardView: React.FC = () => {
             {t('dashboard.title')}
           </h2>
           <p className="text-xs text-muted-foreground">
-            {t('dashboard.subtitle') || 'Overview of system status, agents, and schedules'}
+            {t('dashboard.subtitle')}
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={loadData} className="h-8 text-xs gap-1.5">
-          <RefreshCw className="h-3.5 w-3.5" />
+          <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
           {t('common.refresh')}
         </Button>
       </div>
@@ -95,7 +90,7 @@ export const DashboardView: React.FC = () => {
             <CardTitle className="text-xs font-medium text-muted-foreground">
               {t('dashboard.onlineAgents')}
             </CardTitle>
-            <Server className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            <Server className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-foreground">
@@ -105,7 +100,7 @@ export const DashboardView: React.FC = () => {
               </span>
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {t('dashboard.agents_active_desc') || 'Agents currently reporting status'}
+              {t('dashboard.agents_active_desc')}
             </p>
           </CardContent>
         </Card>
@@ -116,14 +111,14 @@ export const DashboardView: React.FC = () => {
             <CardTitle className="text-xs font-medium text-muted-foreground">
               {t('dashboard.succeeded24h')}
             </CardTitle>
-            <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
               {dashboard.runs_24h_succeeded}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {t('dashboard.runs_succeeded_desc') || 'Completed runs in the past 24 hours'}
+              {t('dashboard.runs_succeeded_desc')}
             </p>
           </CardContent>
         </Card>
@@ -134,14 +129,14 @@ export const DashboardView: React.FC = () => {
             <CardTitle className="text-xs font-medium text-muted-foreground">
               {t('dashboard.failed24h')}
             </CardTitle>
-            <XCircle className="h-4 w-4 text-rose-600 dark:text-rose-400" />
+            <XCircle className="h-4 w-4 text-rose-600 dark:text-rose-400" aria-hidden="true" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-rose-600 dark:text-rose-400">
               {dashboard.runs_24h_failed}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {t('dashboard.runs_failed_desc') || 'Runs requiring review or intervention'}
+              {t('dashboard.runs_failed_desc')}
             </p>
           </CardContent>
         </Card>
@@ -152,14 +147,14 @@ export const DashboardView: React.FC = () => {
             <CardTitle className="text-xs font-medium text-muted-foreground">
               {t('dashboard.reposNeedingCheck')}
             </CardTitle>
-            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-amber-600 dark:text-amber-400">
               {dashboard.repos_needing_check.length}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {t('dashboard.repos_pending_desc') || 'Repositories awaiting integrity checks'}
+              {t('dashboard.repos_pending_desc')}
             </p>
           </CardContent>
         </Card>
@@ -170,7 +165,7 @@ export const DashboardView: React.FC = () => {
         {/* Next Scheduled Plans */}
         <Card className="lg:col-span-2 border-border bg-card/60 shadow-sm">
           <CardHeader className="pb-3 flex flex-row items-center gap-2 space-y-0">
-            <Calendar className="h-4 w-4 text-primary" />
+            <Calendar className="h-4 w-4 text-primary" aria-hidden="true" />
             <CardTitle className="text-sm font-semibold">
               {t('dashboard.nextScheduled')}
             </CardTitle>
@@ -203,8 +198,8 @@ export const DashboardView: React.FC = () => {
               </div>
             ) : (
               <AppEmptyState
-                title={t('dashboard.noUpcomingPlans') || 'No Upcoming Plans'}
-                description={t('dashboard.noUpcomingPlans_desc') || 'No scheduled backup tasks found.'}
+                title={t('dashboard.noUpcomingPlans')}
+                description={t('dashboard.noUpcomingPlans_desc')}
               />
             )}
           </CardContent>
@@ -213,7 +208,7 @@ export const DashboardView: React.FC = () => {
         {/* Repositories Needing Check */}
         <Card className="border-border bg-card/60 shadow-sm">
           <CardHeader className="pb-3 flex flex-row items-center gap-2 space-y-0">
-            <Database className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+            <Database className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
             <CardTitle className="text-sm font-semibold">
               {t('dashboard.reposNeedingCheck')}
             </CardTitle>
@@ -252,8 +247,8 @@ export const DashboardView: React.FC = () => {
               </div>
             ) : (
               <AppEmptyState
-                title={t('dashboard.allReposHealthy') || 'All Repositories Healthy'}
-                description={t('dashboard.allReposHealthy_desc') || 'No repositories pending integrity checks.'}
+                title={t('dashboard.allReposHealthy')}
+                description={t('dashboard.allReposHealthy_desc')}
               />
             )}
           </CardContent>

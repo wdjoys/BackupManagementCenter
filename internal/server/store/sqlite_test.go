@@ -277,6 +277,62 @@ func TestEnrollmentToken(t *testing.T) {
 		t.Fatalf("expected 1 token, got %d", len(tokens))
 	}
 }
+func TestTakeoverEnrollmentAndReEnrollAgent(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	agentID := "agent-takeover-target"
+	agent := &model.Agent{
+		ID: agentID, Name: "old-agent", Hostname: "host1",
+		OS: "linux", Arch: "amd64", Version: "0.1.0",
+		Status: model.AgentOffline, EnrolledAt: now, TokenHash: "old-secret-hash",
+		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
+	}
+	if err := ts.UpsertAgentOnConnect(ctx, agent); err != nil {
+		t.Fatalf("upsert agent: %v", err)
+	}
+
+	tok := &model.EnrollmentToken{
+		ID:            "tok-takeover",
+		TokenHash:     "hash-takeover",
+		ExpiresAt:     now.Add(15 * time.Minute),
+		TargetAgentID: agentID,
+	}
+	if err := ts.CreateEnrollmentToken(ctx, tok); err != nil {
+		t.Fatalf("create takeover token: %v", err)
+	}
+
+	consumed, err := ts.ConsumeEnrollmentToken(ctx, "hash-takeover", now)
+	if err != nil {
+		t.Fatalf("consume takeover token: %v", err)
+	}
+	if consumed.TargetAgentID != agentID {
+		t.Fatalf("expected TargetAgentID=%s, got %s", agentID, consumed.TargetAgentID)
+	}
+
+	newSecretHash := "new-secret-hash"
+	if err := ts.ReEnrollAgent(ctx, agentID, newSecretHash, now.Add(time.Minute)); err != nil {
+		t.Fatalf("re-enroll agent: %v", err)
+	}
+
+	updated, err := ts.GetAgent(ctx, agentID)
+	if err != nil {
+		t.Fatalf("get agent after re-enroll: %v", err)
+	}
+	if updated.TokenHash != newSecretHash {
+		t.Fatalf("expected token hash=%s, got %s", newSecretHash, updated.TokenHash)
+	}
+
+	// 撤销后再次 ReEnroll 应失败
+	if err := ts.RevokeAgent(ctx, agentID); err != nil {
+		t.Fatalf("revoke agent: %v", err)
+	}
+	err = ts.ReEnrollAgent(ctx, agentID, "another-hash", now.Add(2*time.Minute))
+	if err == nil || err.Error() != model.ErrAgentRevoked {
+		t.Fatalf("expected ErrAgentRevoked, got %v", err)
+	}
+}
 
 func TestAgentUpsertAndGet(t *testing.T) {
 	ts := newTestStore(t)

@@ -220,6 +220,7 @@ export interface EnrollmentToken {
 export interface EnrollmentTokenResponse {
   token: string
   expires_at: string
+  target_agent_id?: string
 }
 
 export interface SetupStatus {

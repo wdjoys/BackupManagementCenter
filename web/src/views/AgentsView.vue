@@ -139,6 +139,9 @@
           >
             {{ t('agents.revoke') }}
           </el-button>
+          <el-button v-if="row.status === 'offline' && !row.revoked" type="warning" text size="small" @click="handleTakeover(row)">
+            {{ t('agents.takeover') }}
+          </el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -160,6 +163,13 @@
           :closable="false"
           style="margin-bottom: 12px"
         />
+        <el-alert
+          v-if="tokenData.target_agent_id"
+          :title="t('agents.tokenDialog.takeoverHint', { id: tokenData.target_agent_id })"
+          type="info"
+          :closable="false"
+          style="margin-bottom: 12px"
+        />
         <el-form label-position="top">
           <el-form-item :label="t('agents.tokenDialog.token')">
             <div
@@ -172,6 +182,12 @@
           </el-form-item>
           <el-form-item :label="t('agents.tokenDialog.expiresAt')">
             {{ formatTime(tokenData.expires_at) }}
+          </el-form-item>
+          <el-form-item v-if="tokenData.target_agent_id" :label="t('agents.tokenDialog.envConfig')">
+            <div class="token-display" style="font-size: 12px; line-height: 1.5">
+              BMC_TARGET_AGENT_ID={{ tokenData.target_agent_id }}<br />
+              BMC_ENROLLMENT_TOKEN={{ tokenData.token }}
+            </div>
           </el-form-item>
         </el-form>
         <el-button type="primary" @click="copyToken" :loading="copying">
@@ -241,6 +257,19 @@ async function handleGenerateToken(): Promise<void> {
   tokenData.value = null
   try {
     tokenData.value = await apiPost<EnrollmentTokenResponse>('/enrollment-tokens', {})
+  } catch (err: any) {
+    ElMessage.error(err.message || t('agents.tokenDialog.generateFailed'))
+    tokenDialogVisible.value = false
+  } finally {
+    tokenLoading.value = false
+  }
+}
+async function handleTakeover(agent: any): Promise<void> {
+  tokenDialogVisible.value = true
+  tokenLoading.value = true
+  tokenData.value = null
+  try {
+    tokenData.value = await apiPost<EnrollmentTokenResponse>('/enrollment-tokens', { target_agent_id: agent.id })
   } catch (err: any) {
     ElMessage.error(err.message || t('agents.tokenDialog.generateFailed'))
     tokenDialogVisible.value = false

@@ -232,6 +232,7 @@ func (s *fakeStore) ListEnrollmentTokens(ctx context.Context) ([]model.Enrollmen
 func (s *fakeStore) ConsumeEnrollmentToken(ctx context.Context, h string, now time.Time) (*model.EnrollmentToken, error) {
 	return nil, store.ErrTokenInvalid
 }
+func (s *fakeStore) ReEnrollAgent(context.Context, string, string, time.Time) error { return nil }
 func (s *fakeStore) UpsertAgentOnConnect(ctx context.Context, a *model.Agent) error { return nil }
 func (s *fakeStore) SetAgentStatus(ctx context.Context, agentID string, st model.AgentStatus, at time.Time) error {
 	return nil

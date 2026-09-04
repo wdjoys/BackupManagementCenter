@@ -116,61 +116,56 @@ func (s *Service) Enroll(ctx context.Context, req *bmcv1.EnrollRequest) (*bmcv1.
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "empty request")
 	}
-
-	// Validate enrollment token
-	tokenHash := secrets.HashToken(req.GetEnrollmentToken())
-	et, err := s.store.ConsumeEnrollmentToken(ctx, tokenHash, time.Now().UTC())
+	if len(req.GetSecret()) != 32 {
+		return nil, status.Error(codes.InvalidArgument, "secret must be exactly 32 bytes")
+	}
+	et, err := s.store.ConsumeEnrollmentToken(ctx, secrets.HashToken(req.GetEnrollmentToken()), time.Now().UTC())
 	if err != nil {
-		if err == store.ErrTokenInvalid {
+		if errors.Is(err, store.ErrTokenInvalid) {
 			return nil, status.Error(codes.PermissionDenied, "invalid or expired enrollment token")
 		}
 		return nil, status.Error(codes.Internal, "failed to consume enrollment token")
 	}
-
-	// Validate agent secret
-	if len(req.GetSecret()) != 32 {
-		return nil, status.Error(codes.InvalidArgument, "secret must be exactly 32 bytes")
+	targetID := req.GetTargetAgentId()
+	if et.TargetAgentID != targetID {
+		return nil, status.Error(codes.PermissionDenied, "target agent does not match enrollment token")
 	}
-
-	// Generate agent ID (UUIDv7)
+	secretHash := secrets.HashToken(hex.EncodeToString(req.GetSecret()))
+	now := time.Now().UTC()
+	if targetID != "" {
+		if s.reg.Connected(targetID) {
+			return nil, status.Error(codes.FailedPrecondition, "target agent is still online")
+		}
+		runs, runErr := s.store.ListRunsByStatus(ctx, []string{model.RunDispatched, model.RunRunning})
+		if runErr != nil {
+			return nil, status.Error(codes.Internal, "failed to check active agent runs")
+		}
+		for _, run := range runs {
+			if run.AgentID == targetID {
+				return nil, status.Error(codes.FailedPrecondition, "target agent has an active run")
+			}
+		}
+		if err := s.store.ReEnrollAgent(ctx, targetID, secretHash, now); err != nil {
+			if err.Error() == model.ErrAgentRevoked {
+				return nil, status.Error(codes.PermissionDenied, "agent is revoked")
+			}
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, status.Error(codes.NotFound, "agent not found")
+			}
+			return nil, status.Error(codes.Internal, "failed to re-enroll agent")
+		}
+		s.reg.Unregister(targetID)
+		return &bmcv1.EnrollResponse{AgentId: targetID}, nil
+	}
 	agentID := model.NewUUIDv7()
-
-	// Compute secret hash: sha256(hex(secret))
-	secretHex := hex.EncodeToString(req.GetSecret())
-	secretHash := secrets.HashToken(secretHex)
-
-	// Build agent name from hostname or use first 8 chars of ID
 	name := req.GetHostname()
 	if name == "" {
 		name = agentID[:8]
 	}
-
-	now := time.Now().UTC()
-	agent := &model.Agent{
-		ID:         agentID,
-		Name:       name,
-		Hostname:   req.GetHostname(),
-		OS:         req.GetOs(),
-		Arch:       req.GetArch(),
-		Version:    req.GetVersion(),
-		Status:     model.AgentOffline, // not online until Connect
-		EnrolledAt: now,
-		TokenHash:  secretHash,
-		Revoked:    false,
-	}
-
-	// Use UpsertAgentOnConnect to create the agent row
-	// (it's an INSERT OR REPLACE by ID, which works for first insert)
+	agent := &model.Agent{ID: agentID, Name: name, Hostname: req.GetHostname(), OS: req.GetOs(), Arch: req.GetArch(), Version: req.GetVersion(), Status: model.AgentOffline, EnrolledAt: now, TokenHash: secretHash}
 	if err := s.store.UpsertAgentOnConnect(ctx, agent); err != nil {
 		return nil, status.Error(codes.Internal, "failed to create agent")
 	}
-
-	// Mark token as used
-	_ = et // already consumed by ConsumeEnrollmentToken
-
-	log.Printf("agent enrolled: id=%s name=%s hostname=%s os=%s arch=%s",
-		agentID, name, req.GetHostname(), req.GetOs(), req.GetArch())
-
 	return &bmcv1.EnrollResponse{AgentId: agentID}, nil
 }
 
@@ -194,16 +189,17 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 	agentID := agentIDs[0]
 	agentSecret := agentSecrets[0]
 
-	// Authenticate: compute secret hash (sha256(hex(secret))) and look up agent
 	secretHash := secrets.HashToken(agentSecret)
-	agent, err := s.store.GetAgentBySecretHash(stream.Context(), secretHash)
+	agent, err := s.store.GetAgent(stream.Context(), agentID)
 	if err != nil {
-		if err == store.ErrNotFound {
+		if errors.Is(err, store.ErrNotFound) {
 			return status.Error(codes.PermissionDenied, "invalid agent credentials")
 		}
 		return status.Error(codes.Internal, "failed to authenticate agent")
 	}
-
+	if agent.TokenHash != secretHash {
+		return status.Error(codes.PermissionDenied, "invalid agent credentials")
+	}
 	if agent.Revoked {
 		return status.Error(codes.PermissionDenied, "agent is revoked")
 	}
@@ -223,13 +219,10 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 	if err != nil {
 		return status.Errorf(codes.Unavailable, "failed to receive hello: %v", err)
 	}
-
 	hello := firstMsg.GetHello()
 	if hello == nil {
 		return status.Error(codes.InvalidArgument, "first message must be Hello")
 	}
-
-	// Version handshake
 	serverMajor, serverMinor, _, serverOk := version.Parts()
 	clientMajor, clientMinor, _, clientOk := version.PartsFromString(hello.GetVersion())
 	versionMinorMismatch := false
@@ -392,7 +385,9 @@ func (s *Service) handleCapabilities(ctx context.Context, agentID string, report
 	}
 	toMappings := func(input []*bmcv1.PathMapping) []model.PathMapping {
 		out := make([]model.PathMapping, 0, len(input))
-		for _, m := range input { out = append(out, model.PathMapping{HostPath: m.GetHostPath(), RuntimePath: m.GetRuntimePath(), ReadOnly: m.GetReadOnly()}) }
+		for _, m := range input {
+			out = append(out, model.PathMapping{HostPath: m.GetHostPath(), RuntimePath: m.GetRuntimePath(), ReadOnly: m.GetReadOnly()})
+		}
 		return out
 	}
 	return s.store.SaveAgentCapabilities(ctx, agentID, tools, toMappings(report.GetSourcePathMappings()), toMappings(report.GetRestorePathMappings()), time.Now().UTC())

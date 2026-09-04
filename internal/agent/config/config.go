@@ -18,6 +18,7 @@ type Agent struct {
 	ServerGRPCURL       string
 	ServerTLS           bool
 	EnrollToken         string
+	TargetAgentID       string
 	StateDir            string
 	DataDir             string
 	ResticCacheDir      string
@@ -45,7 +46,7 @@ func LoadAgent() (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
-	a := Agent{ServerGRPCURL: target, ServerTLS: tls, EnrollToken: os.Getenv("BMC_ENROLLMENT_TOKEN"), StateDir: stateDir, DataDir: os.Getenv("BMC_AGENT_DATA_DIR"), ResticCacheDir: filepath.Clean(envOr("BMC_RESTIC_CACHE_DIR", filepath.Join(stateDir, ".cache", "restic"))), DevInsecure: os.Getenv("BMC_DEV_INSECURE") == "1", ProbeInterval: envInt("BMC_AGENT_PROBE_INTERVAL", 600), SourceRoots: splitPaths(os.Getenv("BMC_SOURCE_ROOTS")), RestoreRoots: restoreRoots, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings, ScratchMinFreeBytes: envInt64("BMC_SCRATCH_MIN_FREE_BYTES", 0), MaxConcurrency: envInt("BMC_AGENT_MAX_CONCURRENCY", 2)}
+	a := Agent{ServerGRPCURL: target, ServerTLS: tls, EnrollToken: os.Getenv("BMC_ENROLLMENT_TOKEN"), TargetAgentID: os.Getenv("BMC_TARGET_AGENT_ID"), StateDir: stateDir, DataDir: os.Getenv("BMC_AGENT_DATA_DIR"), ResticCacheDir: filepath.Clean(envOr("BMC_RESTIC_CACHE_DIR", filepath.Join(stateDir, ".cache", "restic"))), DevInsecure: os.Getenv("BMC_DEV_INSECURE") == "1", ProbeInterval: envInt("BMC_AGENT_PROBE_INTERVAL", 600), SourceRoots: splitPaths(os.Getenv("BMC_SOURCE_ROOTS")), RestoreRoots: restoreRoots, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings, ScratchMinFreeBytes: envInt64("BMC_SCRATCH_MIN_FREE_BYTES", 0), MaxConcurrency: envInt("BMC_AGENT_MAX_CONCURRENCY", 2)}
 	if a.ServerGRPCURL == "" {
 		return a, errors.New("config: BMC_SERVER_GRPC_URL is required")
 	}

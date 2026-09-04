@@ -2,14 +2,21 @@ package agentreg
 
 import (
 	"context"
+	"encoding/hex"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/model"
+	"backupmanagementcenter/internal/secrets"
 	"backupmanagementcenter/internal/server/events"
 	"backupmanagementcenter/internal/server/store"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // ---------------------------------------------------------------------------
@@ -24,6 +31,8 @@ type fakeStore struct {
 	runs         map[string]*model.Run
 	repoStatuses map[string]string
 	repoChecks   map[string]time.Time
+	agents       map[string]*model.Agent
+	tokens       map[string]*model.EnrollmentToken
 }
 
 func newFakeStore() *fakeStore {
@@ -31,6 +40,8 @@ func newFakeStore() *fakeStore {
 		runs:         make(map[string]*model.Run),
 		repoStatuses: make(map[string]string),
 		repoChecks:   make(map[string]time.Time),
+		agents:       make(map[string]*model.Agent),
+		tokens:       make(map[string]*model.EnrollmentToken),
 	}
 }
 
@@ -39,6 +50,56 @@ func (f *fakeStore) addRun(r model.Run) {
 	defer f.mu.Unlock()
 	cp := r
 	f.runs[r.ID] = &cp
+}
+func (f *fakeStore) GetAgent(_ context.Context, id string) (*model.Agent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a, ok := f.agents[id]; ok {
+		cp := *a
+		return &cp, nil
+	}
+	return nil, store.ErrNotFound
+}
+
+func (f *fakeStore) ConsumeEnrollmentToken(_ context.Context, tokenHash string, _ time.Time) (*model.EnrollmentToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if tok, ok := f.tokens[tokenHash]; ok {
+		if tok.UsedAt != nil {
+			return nil, store.ErrTokenInvalid
+		}
+		now := time.Now().UTC()
+		tok.UsedAt = &now
+		cp := *tok
+		return &cp, nil
+	}
+	return nil, store.ErrTokenInvalid
+}
+
+func (f *fakeStore) ListRunsByStatus(_ context.Context, _ []string) ([]model.Run, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) ReEnrollAgent(_ context.Context, agentID string, tokenHash string, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a, ok := f.agents[agentID]; ok {
+		if a.Revoked {
+			return fmt.Errorf("%s", model.ErrAgentRevoked)
+		}
+		a.TokenHash = tokenHash
+		a.Status = model.AgentOffline
+		return nil
+	}
+	return store.ErrNotFound
+}
+
+func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, a *model.Agent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := *a
+	f.agents[a.ID] = &cp
+	return nil
 }
 
 func (f *fakeStore) GetPlan(_ context.Context, _ string) (*model.Plan, error) {
@@ -315,4 +376,113 @@ func TestHandleRunResultNotifierErrorKeepsStoredFailure(t *testing.T) {
 	if run.Status != model.RunFailed || run.ErrorMessage != "snapshot exited 3" {
 		t.Fatalf("stored failure changed after notifier error: %+v", run)
 	}
+}
+func TestEnrollTakeoverSuccessAndOfflineCheck(t *testing.T) {
+	st := newFakeStore()
+	targetID := "agent-takeover-target"
+	st.agents[targetID] = &model.Agent{
+		ID:        targetID,
+		Name:      "test-agent",
+		Status:    model.AgentOffline,
+		TokenHash: "old-token-hash",
+	}
+	tokenVal := "valid-takeover-token"
+	tokenHash := secrets.HashToken(tokenVal)
+	st.tokens[tokenHash] = &model.EnrollmentToken{
+		ID:            "tok-1",
+		TokenHash:     tokenHash,
+		TargetAgentID: targetID,
+	}
+
+	svc, _ := newTestService(st)
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i + 1)
+	}
+
+	// 1. 成功接管
+	resp, err := svc.Enroll(context.Background(), &bmcv1.EnrollRequest{
+		EnrollmentToken: tokenVal,
+		TargetAgentId:   targetID,
+		Hostname:        "reinstalled-host",
+		Secret:          secret,
+	})
+	if err != nil {
+		t.Fatalf("Enroll takeover failed: %v", err)
+	}
+	if resp.AgentId != targetID {
+		t.Fatalf("expected AgentId=%s, got %s", targetID, resp.AgentId)
+	}
+
+	// 验证 token_hash 轮换
+	expectedHash := secrets.HashToken(hex.EncodeToString(secret))
+	if st.agents[targetID].TokenHash != expectedHash {
+		t.Fatalf("expected TokenHash=%s, got %s", expectedHash, st.agents[targetID].TokenHash)
+	}
+
+	// 2. 目标 Agent 在线时尝试接管应被拒绝
+	token2Val := "valid-takeover-token-2"
+	token2Hash := secrets.HashToken(token2Val)
+	st.tokens[token2Hash] = &model.EnrollmentToken{
+		ID:            "tok-2",
+		TokenHash:     token2Hash,
+		TargetAgentID: targetID,
+	}
+	// 模拟该 Agent 在线 (在注册表中有 stream)
+	_, _ = svc.reg.Register(context.Background(), targetID)
+	_, err = svc.Enroll(context.Background(), &bmcv1.EnrollRequest{
+		EnrollmentToken: token2Val,
+		TargetAgentId:   targetID,
+		Hostname:        "reinstalled-host",
+		Secret:          secret,
+	})
+	if err == nil || status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition when agent is online, got: %v", err)
+	}
+}
+
+func TestConnectRejectsSpoofedAgentID(t *testing.T) {
+	st := newFakeStore()
+	agentA := "agent-a"
+	agentB := "agent-b"
+	secretA := "secret-of-agent-a"
+	secretB := "secret-of-agent-b"
+
+	st.agents[agentA] = &model.Agent{
+		ID:        agentA,
+		Status:    model.AgentOffline,
+		TokenHash: secrets.HashToken(secretA),
+	}
+	st.agents[agentB] = &model.Agent{
+		ID:        agentB,
+		Status:    model.AgentOffline,
+		TokenHash: secrets.HashToken(secretB),
+	}
+
+	// 尝试以 Agent A 的 ID 声明，但携带 Agent B 的 Secret
+	md := metadata.Pairs(
+		"bmc-agent-id", agentA,
+		"bmc-agent-secret", secretB,
+	)
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	stream := &fakeConnectServer{ctx: ctx}
+	svc, _ := newTestService(st)
+	err := svc.Connect(stream)
+	if err == nil || status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for spoofed agent secret, got: %v", err)
+	}
+}
+
+type fakeConnectServer struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (f *fakeConnectServer) Context() context.Context {
+	return f.ctx
+}
+func (f *fakeConnectServer) Send(*bmcv1.ServerMessage) error { return nil }
+func (f *fakeConnectServer) Recv() (*bmcv1.AgentMessage, error) {
+	return nil, context.Canceled
 }

@@ -75,3 +75,25 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 
 - **升级顺序**：始终先升级 Server，通过 `curl --fail <PUBLIC_URL>/health/ready` 确认返回 HTTP 200 后，再滚动升级各受管主机上的 Agent。
 - **数据保留**：日常维护使用 `docker compose down` 停止容器，数据卷不会丢失；**严禁使用 `down -v`**，否则会永久销毁数据库及生成的本地主密钥。
+
+## 6. 管理员密码重置
+
+如果忘记 Server 管理员登录密码，可通过 `backup-center-server reset-admin` 命令清除管理员账号及活跃会话，重新触发 Web 引导初始化流程（此操作不会删除存储目标、备份计划、仓库及运行记录）：
+
+- **Docker Compose 环境**：
+  ```sh
+  # 停止运行中的 Server 容器
+  docker compose --env-file deploy/.env -f deploy/docker-compose.yml stop server
+
+  # 使用 reset-admin 命令清除管理员信息并重新开放 Web 引导
+  docker compose --env-file deploy/.env -f deploy/docker-compose.yml run --rm server reset-admin
+
+  # 重新启动 Server
+  docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d server
+  ```
+- **本地二进制或 systemd 环境**：
+  ```sh
+  # 停止服务后执行
+  BMC_DATA_DIR=/var/lib/bmc backup-center-server reset-admin
+  # 启动服务后访问 Web 控制台即可重新进行初始化设置
+  ```

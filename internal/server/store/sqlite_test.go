@@ -125,6 +125,49 @@ func TestHasAdminAndCreateAdmin(t *testing.T) {
 	}
 }
 
+func TestResetAdmin(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	admin := &model.Admin{
+		ID:           "admin-1",
+		Username:     "admin",
+		PasswordHash: "$argon2id$v19$m=16384,t=2,p=1",
+		CreatedAt:    now,
+	}
+	if err := ts.CreateAdmin(ctx, admin); err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
+	}
+	sess := &model.Session{
+		IDHash:     "hash123",
+		AdminID:    admin.ID,
+		ExpiresAt:  now.Add(24 * time.Hour),
+		CreatedAt:  now,
+		LastSeenAt: now,
+	}
+	if err := ts.CreateSession(ctx, sess); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if err := ts.ResetAdmin(ctx); err != nil {
+		t.Fatalf("ResetAdmin: %v", err)
+	}
+
+	has, err := ts.HasAdmin(ctx)
+	if err != nil {
+		t.Fatalf("HasAdmin: %v", err)
+	}
+	if has {
+		t.Fatal("expected no admin after reset")
+	}
+
+	_, err = ts.GetSession(ctx, sess.IDHash)
+	if err == nil {
+		t.Fatal("expected session deleted after reset")
+	}
+}
+
 func TestGetAdminByUsername(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)

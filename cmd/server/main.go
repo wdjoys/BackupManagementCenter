@@ -39,6 +39,20 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "reset-admin":
+			runResetAdmin()
+			return
+		case "version", "-v", "--version":
+			fmt.Printf("backup-center-server %s\n", version.Version)
+			return
+		case "help", "-h", "--help":
+			printUsage()
+			return
+		}
+	}
+
 	log.Printf("[INFO] backup-center-server starting version=%s", version.Version)
 
 	cfg, err := servercfg.LoadServer()
@@ -369,4 +383,53 @@ func newUUID() (string, error) {
 		return "", err
 	}
 	return id.String(), nil
+}
+
+func printUsage() {
+	fmt.Println("Usage: backup-center-server [command]")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  (no args)    Start the backup management center server")
+	fmt.Println("  reset-admin  Reset admin user and active sessions to re-trigger setup initialization")
+	fmt.Println("  version      Print version information")
+	fmt.Println("  help         Print this help message")
+	fmt.Println()
+	fmt.Println("Environment Variables:")
+	fmt.Println("  BMC_DATA_DIR        Data directory containing bmc.db (default: ./data)")
+	fmt.Println("  BMC_MASTER_KEY_FILE Master key file path (default: $BMC_DATA_DIR/master.key)")
+}
+
+func runResetAdmin() {
+	dataDir := os.Getenv("BMC_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "./data"
+	}
+	dbPath := filepath.Join(dataDir, "bmc.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		log.Fatalf("[FATAL] database file not found at %s", dbPath)
+	}
+
+	ctx := context.Background()
+	seal := secrets.NewNoopSealer()
+	st, err := store.NewWithSealer(dbPath, seal)
+	if err != nil {
+		log.Fatalf("[FATAL] failed to open database: %v", err)
+	}
+	defer st.Close()
+
+	has, err := st.HasAdmin(ctx)
+	if err != nil {
+		log.Fatalf("[FATAL] check admin: %v", err)
+	}
+	if !has {
+		fmt.Println("[INFO] No admin user found. Web setup is already active.")
+		return
+	}
+
+	if err := st.ResetAdmin(ctx); err != nil {
+		log.Fatalf("[FATAL] failed to reset admin: %v", err)
+	}
+
+	fmt.Println("[SUCCESS] Admin user and sessions have been cleared successfully.")
+	fmt.Println("Please restart the server (if running) and visit the Web UI to complete initial setup.")
 }

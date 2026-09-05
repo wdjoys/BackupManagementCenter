@@ -243,6 +243,29 @@ func (s *sqliteStore) UpdateAdminLastLogin(ctx context.Context, adminID string, 
 	return nil
 }
 
+func (s *sqliteStore) ResetAdmin(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("reset admin begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions"); err != nil {
+		return fmt.Errorf("reset admin delete sessions: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM admins"); err != nil {
+		return fmt.Errorf("reset admin delete admins: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("reset admin commit: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------

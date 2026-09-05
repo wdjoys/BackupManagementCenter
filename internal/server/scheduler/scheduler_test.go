@@ -139,6 +139,7 @@ func (f *fakeStore) GetAdminByID(_ context.Context, _ string) (*model.Admin, err
 	return nil, store.ErrNotFound
 }
 func (f *fakeStore) UpdateAdminLastLogin(_ context.Context, _ string, _ time.Time) error { return nil }
+func (f *fakeStore) ResetAdmin(_ context.Context) error { return nil }
 func (f *fakeStore) CreateSession(_ context.Context, _ *model.Session) error             { return nil }
 func (f *fakeStore) GetSession(_ context.Context, _ string) (*model.Session, error) {
 	return nil, store.ErrNotFound

@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -46,7 +45,7 @@ export interface RunQuery {
 }
 
 const DEFAULT_FILTERS: RunFilters = {
-  planId: '',
+  planId: 'all',
   agentId: 'all',
   status: 'all',
   operation: 'all',
@@ -64,7 +63,6 @@ export const RunsView: React.FC = () => {
 
   // Filters state
   const [filters, setFilters] = useState<RunFilters>(DEFAULT_FILTERS)
-  const [planIdInput, setPlanIdInput] = useState('')
 
   // Pagination state
   const [limit, setLimit] = useState(20)
@@ -80,7 +78,6 @@ export const RunsView: React.FC = () => {
     limit: 20,
     offset: 0,
   })
-  const didMountRef = useRef(false)
 
   const statusOptions = useMemo(
     () =>
@@ -120,7 +117,7 @@ export const RunsView: React.FC = () => {
       const params: Record<string, string | number | undefined> = {
         limit: query.limit,
         offset: query.offset,
-        plan_id: query.filters.planId.trim() || undefined,
+        plan_id: query.filters.planId === 'all' ? undefined : query.filters.planId,
         agent_id: query.filters.agentId === 'all' ? undefined : query.filters.agentId,
         status: query.filters.status === 'all' ? undefined : query.filters.status,
         operation: query.filters.operation === 'all' ? undefined : query.filters.operation,
@@ -164,31 +161,20 @@ export const RunsView: React.FC = () => {
     }
   }, [])
 
-  // 400ms debounce on planIdInput (skipping first render)
-  useEffect(() => {
-    if (!didMountRef.current) {
-      didMountRef.current = true
-      return
-    }
-    const timer = setTimeout(() => {
-      const nextFilters: RunFilters = { ...filters, planId: planIdInput }
-      setFilters(nextFilters)
-      loadRuns({ filters: nextFilters, limit, offset: 0 })
-    }, 400)
-    return () => clearTimeout(timer)
-  }, [planIdInput])
-
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
-    const nextFilters: RunFilters = { ...filters, planId: planIdInput }
-    setFilters(nextFilters)
-    loadRuns({ filters: nextFilters, limit, offset: 0 })
+    loadRuns({ filters, limit, offset: 0 })
   }
 
   const handleReset = () => {
-    setPlanIdInput('')
     setFilters(DEFAULT_FILTERS)
     loadRuns({ filters: DEFAULT_FILTERS, limit, offset: 0 })
+  }
+
+  const handlePlanChange = (val: string) => {
+    const nextFilters: RunFilters = { ...filters, planId: val }
+    setFilters(nextFilters)
+    loadRuns({ filters: nextFilters, limit, offset: 0 })
   }
 
   const handleAgentChange = (val: string) => {
@@ -269,12 +255,21 @@ export const RunsView: React.FC = () => {
           <form onSubmit={handleSearch} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
             <div className="space-y-1">
               <Label className="text-[11px] text-muted-foreground">{t('runs.filters.plan')}</Label>
-              <Input
-                placeholder={t('runs.filters.planIdPlaceholder')}
-                value={planIdInput}
-                onChange={(e) => setPlanIdInput(e.target.value)}
-                className="h-8 text-xs font-mono"
-              />
+              <Select value={filters.planId} onValueChange={handlePlanChange}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder={t('runs.filters.plan')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" className="text-xs">
+                    {t('runs.filters.allPlans')}
+                  </SelectItem>
+                  {plans.map((p) => (
+                    <SelectItem key={p.id} value={p.id} className="text-xs">
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-1">

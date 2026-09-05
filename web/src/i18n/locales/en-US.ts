@@ -479,7 +479,8 @@ export default {
     "title": "Runs",
     "filters": {
       "plan": "Plan",
-      "planIdPlaceholder": "Plan ID",
+      "allPlans": "All Plans",
+      "planIdPlaceholder": "All Plans",
       "agent": "Agent",
       "status": "Status",
       "operation": "Operation"

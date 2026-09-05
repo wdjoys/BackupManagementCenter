@@ -479,7 +479,8 @@ export default {
     "title": "运行记录",
     "filters": {
       "plan": "计划",
-      "planIdPlaceholder": "计划 ID",
+      "allPlans": "全部计划",
+      "planIdPlaceholder": "全部计划",
       "agent": "Agent",
       "status": "状态",
       "operation": "操作类型"

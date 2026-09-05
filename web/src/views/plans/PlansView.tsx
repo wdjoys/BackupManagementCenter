@@ -355,9 +355,9 @@ export const PlansView: React.FC = () => {
                               </StatusBadge>
                             </TableCell>
                             <TableCell className="text-xs">
-                              <div className="flex flex-col font-mono text-[11px] leading-tight">
+                              <div className="flex flex-col font-mono text-xs leading-tight">
                                 <span className="text-foreground">{plan.schedule}</span>
-                                <span className="text-[10px] text-muted-foreground">{plan.timezone}</span>
+                                <span className="text-[11px] text-muted-foreground">{plan.timezone}</span>
                               </div>
                             </TableCell>
                             <TableCell className="text-xs">

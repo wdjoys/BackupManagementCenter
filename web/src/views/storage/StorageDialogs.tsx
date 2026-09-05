@@ -234,13 +234,13 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
                         <div key={idx} className="flex items-center gap-1.5 text-muted-foreground py-0.5">
                           <FileCode className="h-3 w-3" aria-hidden="true" />
                           <span>{entry.name}</span>
-                          <span className="text-[10px] text-muted-foreground/60">
+                          <span className="text-[11px] text-muted-foreground/75">
                             ({entry.is_dir ? 'dir' : 'file'})
                           </span>
                         </div>
                       ))}
                       {validateResult.lsd_entries.length > 10 && (
-                        <span className="text-[10px] text-muted-foreground italic">
+                        <span className="text-[11px] text-muted-foreground italic">
                           ... and {validateResult.lsd_entries.length - 10} more
                         </span>
                       )}

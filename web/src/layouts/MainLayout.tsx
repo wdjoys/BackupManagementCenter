@@ -72,20 +72,20 @@ export const MainLayout: React.FC = () => {
   return (
     <div className="flex min-h-screen bg-background text-foreground">
       {/* Desktop Sidebar */}
-      <aside className="hidden md:flex w-60 flex-col border-r border-border bg-card/40 backdrop-blur-md">
-        <div className="flex h-14 items-center gap-2.5 px-4 border-b border-border">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/20 text-primary">
+      <aside className="hidden md:flex w-64 flex-col border-r border-border bg-card/40 backdrop-blur-md">
+        <div className="flex h-16 items-center gap-3 px-5 border-b border-border">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/20 text-primary">
             <ShieldCheck className="h-5 w-5" aria-hidden="true" />
           </div>
           <div className="flex flex-col">
-            <span className="font-semibold text-sm tracking-tight">BMC Console</span>
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+            <span className="font-semibold text-base tracking-tight leading-tight">BMC Console</span>
+            <span className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
               Backup Center
             </span>
           </div>
         </div>
 
-        <nav className="flex-1 space-y-1 p-2">
+        <nav className="flex-1 space-y-1.5 p-3">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon
             const active = location.pathname.startsWith(item.path)
@@ -94,18 +94,18 @@ export const MainLayout: React.FC = () => {
                 key={item.path}
                 to={item.path}
                 className={cn(
-                  'group flex items-center gap-3 rounded-md px-3 py-2 text-xs font-medium transition-colors relative',
+                  'group flex items-center gap-3 rounded-lg px-3.5 py-2.5 text-sm font-medium transition-colors relative',
                   active
                     ? 'bg-primary/10 text-primary font-semibold'
-                    : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                    : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
                 )}
               >
                 {active && (
-                  <span className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-1 rounded-r-full bg-primary" />
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1 rounded-r-full bg-primary" />
                 )}
                 <Icon
                   className={cn(
-                    'h-4 w-4 shrink-0 transition-colors',
+                    'h-4.5 w-4.5 shrink-0 transition-colors',
                     active ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
                   )}
                   aria-hidden="true"
@@ -116,9 +116,9 @@ export const MainLayout: React.FC = () => {
           })}
         </nav>
 
-        <div className="p-3 border-t border-border flex items-center justify-between">
-          <span className="text-[11px] text-muted-foreground">v0.1.0</span>
-          <div className="flex items-center gap-1">
+        <div className="p-3.5 border-t border-border flex items-center justify-between">
+          <span className="text-xs text-muted-foreground font-mono">v0.1.0</span>
+          <div className="flex items-center gap-1.5">
             <ThemeToggle compact />
             <LocaleSwitcher compact />
           </div>
@@ -137,13 +137,20 @@ export const MainLayout: React.FC = () => {
                   <Menu className="h-5 w-5" aria-hidden="true" />
                 </Button>
               </SheetTrigger>
-              <SheetContent side="left" className="w-64 p-0 bg-card border-r border-border">
-                <SheetHeader className="p-4 border-b border-border flex flex-row items-center gap-2 space-y-0">
-                  <ShieldCheck className="h-5 w-5 text-primary" aria-hidden="true" />
-                  <SheetTitle className="text-sm font-semibold">BMC Console</SheetTitle>
+              <SheetContent side="left" className="w-72 p-0 bg-card border-r border-border">
+                <SheetHeader className="h-16 px-5 border-b border-border flex flex-row items-center gap-3 space-y-0">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/20 text-primary">
+                    <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                  <div className="flex flex-col">
+                    <SheetTitle className="text-base font-semibold leading-tight text-left">BMC Console</SheetTitle>
+                    <span className="text-xs text-muted-foreground uppercase tracking-wider font-medium text-left">
+                      Backup Center
+                    </span>
+                  </div>
                 </SheetHeader>
-                <div className="flex flex-col h-[calc(100%-60px)] justify-between">
-                  <nav className="space-y-1 p-2">
+                <div className="flex flex-col h-[calc(100%-64px)] justify-between">
+                  <nav className="space-y-1.5 p-3">
                     {NAV_ITEMS.map((item) => {
                       const Icon = item.icon
                       const active = location.pathname.startsWith(item.path)
@@ -153,13 +160,13 @@ export const MainLayout: React.FC = () => {
                           to={item.path}
                           onClick={() => setMobileOpen(false)}
                           className={cn(
-                            'flex items-center gap-3 rounded-md px-3 py-2.5 text-xs font-medium transition-colors',
+                            'flex items-center gap-3 rounded-lg px-3.5 py-2.5 text-sm font-medium transition-colors',
                             active
                               ? 'bg-primary/15 text-primary font-semibold'
-                              : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                              : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
                           )}
                         >
-                          <Icon className="h-4 w-4" aria-hidden="true" />
+                          <Icon className="h-4.5 w-4.5" aria-hidden="true" />
                           <span>{t(item.titleKey)}</span>
                         </NavLink>
                       )
@@ -167,7 +174,7 @@ export const MainLayout: React.FC = () => {
                   </nav>
                   <div className="p-4 border-t border-border flex items-center justify-between">
                     <span className="text-xs text-muted-foreground">{t('common.preference')}</span>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1.5">
                       <ThemeToggle compact />
                       <LocaleSwitcher compact />
                     </div>

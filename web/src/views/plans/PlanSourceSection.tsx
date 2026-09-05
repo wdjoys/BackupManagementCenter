@@ -49,7 +49,7 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
           </AlertTitle>
           <AlertDescription className="flex flex-wrap gap-1.5 mt-1">
             {sourcePathMappings.map((m) => (
-              <Badge key={m.host_path} variant="secondary" className="font-mono text-[10px]">
+              <Badge key={m.host_path} variant="secondary" className="font-mono text-xs">
                 {m.host_path}
               </Badge>
             ))}
@@ -140,7 +140,7 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
               disabled={submitting}
               className="h-9 text-xs"
             />
-            <p className="text-[10px] text-muted-foreground">{t('plans.form.dumpBytesHint')}</p>
+            <p className="text-xs text-muted-foreground">{t('plans.form.dumpBytesHint')}</p>
           </div>
         </div>
       )}

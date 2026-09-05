@@ -104,7 +104,7 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         <span>{item.agentDisplay.name}</span>
-                        <span className="text-[10px] text-muted-foreground/60 ml-1.5">
+                        <span className="text-[11px] text-muted-foreground/75 ml-1.5 font-mono">
                           ({item.agentDisplay.hostname})
                         </span>
                       </TableCell>

@@ -98,7 +98,7 @@ export const PlanBasicsSection: React.FC<PlanBasicsSectionProps> = ({
             {agents.map((a) => (
               <SelectItem key={a.id} value={a.id} className="text-xs">
                 <span>{a.name}</span>
-                <span className="ml-2 text-[10px] text-muted-foreground">
+                <span className="ml-2 text-xs text-muted-foreground">
                   ({translateEnum('status', a.status)})
                 </span>
               </SelectItem>

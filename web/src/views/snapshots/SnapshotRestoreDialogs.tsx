@@ -123,7 +123,7 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
                 <div className="text-[11px] text-muted-foreground flex flex-wrap items-center gap-1.5 pt-1">
                   <span>Allowed Roots:</span>
                   {restoreHostRoots.map((r) => (
-                    <span key={r} className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">
+                    <span key={r} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
                       {r}
                     </span>
                   ))}
@@ -182,20 +182,20 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
                 </AlertTitle>
                 <AlertDescription className="text-xs grid grid-cols-4 gap-2 pt-2">
                   <div>
-                    <span className="text-[10px] text-muted-foreground block">Added</span>
-                    <span className="font-mono font-bold">{dryRunResult.add}</span>
+                    <span className="text-[11px] text-muted-foreground block">Added</span>
+                    <span className="font-mono font-bold text-xs">{dryRunResult.add}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-muted-foreground block">Changed</span>
-                    <span className="font-mono font-bold">{dryRunResult.changed}</span>
+                    <span className="text-[11px] text-muted-foreground block">Changed</span>
+                    <span className="font-mono font-bold text-xs">{dryRunResult.changed}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-muted-foreground block">Skipped</span>
-                    <span className="font-mono font-bold">{dryRunResult.skipped}</span>
+                    <span className="text-[11px] text-muted-foreground block">Skipped</span>
+                    <span className="font-mono font-bold text-xs">{dryRunResult.skipped}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-muted-foreground block">Deleted</span>
-                    <span className="font-mono font-bold">{dryRunResult.delete}</span>
+                    <span className="text-[11px] text-muted-foreground block">Deleted</span>
+                    <span className="font-mono font-bold text-xs">{dryRunResult.delete}</span>
                   </div>
                 </AlertDescription>
               </Alert>

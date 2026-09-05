@@ -351,7 +351,7 @@ export const LogsView: React.FC = () => {
                           {formatDateTime(item.timestamp)}
                         </span>
                         <div className="flex items-center gap-1.5">
-                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                             {item.type}
                           </span>
                           <StatusBadge tone={LEVEL_TONES[item.level] || 'secondary'}>

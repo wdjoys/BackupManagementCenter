@@ -143,7 +143,7 @@ export const StorageTargetsPanel: React.FC<StorageTargetsPanelProps> = ({
                     <div key={tgt.id} className="p-3 space-y-2 text-xs">
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-semibold text-foreground text-xs">{tgt.name}</span>
-                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                           {tgt.type}
                         </span>
                       </div>

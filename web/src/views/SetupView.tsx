@@ -184,7 +184,7 @@ export const SetupView: React.FC = () => {
                 </div>
                 {passwordVal && (
                   <div className="space-y-1 pt-1">
-                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                    <div className="flex justify-between text-xs text-muted-foreground">
                       <span>{t('auth.password_strength')}</span>
                       <span className="font-medium">{strength.labelKey ? t(strength.labelKey) : ''}</span>
                     </div>

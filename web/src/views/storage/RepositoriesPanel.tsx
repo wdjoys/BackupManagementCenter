@@ -185,7 +185,7 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                           <span>Target: </span>{repo.storage_target_name || repo.storage_target_id}
                         </div>
                         <div>
-                          <code className="font-mono text-[10px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded break-all">
+                          <code className="font-mono text-[11px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded break-all">
                             {repo.repository_path}
                           </code>
                         </div>

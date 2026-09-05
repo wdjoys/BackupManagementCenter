@@ -51,7 +51,7 @@ export const PlanScheduleSection: React.FC<PlanScheduleSectionProps> = ({
           className="h-9 text-xs font-mono"
         />
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
-          <span className="text-[10px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {t('plans.form.presets')}:
           </span>
           {cronPresets.map((p) => (
@@ -59,7 +59,7 @@ export const PlanScheduleSection: React.FC<PlanScheduleSectionProps> = ({
               key={p.value}
               variant="outline"
               onClick={() => onUpdateModel({ schedule: p.value })}
-              className="cursor-pointer text-[10px] px-1.5 py-0 hover:bg-primary/20 hover:text-primary transition-colors"
+              className="cursor-pointer text-xs px-2 py-0.5 hover:bg-primary/20 hover:text-primary transition-colors font-mono"
             >
               {p.label}
             </Badge>

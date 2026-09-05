@@ -59,9 +59,10 @@ export const MainLayout: React.FC = () => {
     try {
       await logout()
       toastSuccess(t('auth.logout_success'))
-      navigate('/login')
     } catch {
       toastError(t('auth.logout_failed'))
+    } finally {
+      navigate('/login')
     }
   }
 

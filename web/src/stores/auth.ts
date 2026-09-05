@@ -40,8 +40,14 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
-    await apiPost('/auth/logout')
-    set({ me: null, isLoggedIn: false })
+    try {
+      await apiPost('/auth/logout')
+    } catch (err) {
+      console.warn('Logout request failed, clearing local auth state anyway:', err)
+    } finally {
+      document.cookie = 'bmc_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; max-age=0'
+      set({ me: null, isLoggedIn: false })
+    }
   },
 
   setup: async (username: string, password: string) => {

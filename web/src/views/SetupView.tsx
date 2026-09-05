@@ -86,8 +86,17 @@ export const SetupView: React.FC = () => {
       toastSuccess(t('auth.setup_success'))
       navigate('/login', { replace: true })
     } catch (err: unknown) {
-      setServerError(isApiClientError(err) ? err.message : t('auth.setup_failed'))
-    } finally {
+      if (isApiClientError(err)) {
+        if (err.code === 'rate_limited' || err.status === 429) {
+          setServerError(t('auth.rate_limited'))
+        } else if (err.code === 'not_found' || err.status === 404) {
+          setServerError(t('auth.setup_already_completed'))
+        } else {
+          setServerError(t('auth.setup_failed'))
+        }
+      } else {
+        setServerError(t('auth.setup_failed'))
+      }
       setLoading(false)
     }
   }

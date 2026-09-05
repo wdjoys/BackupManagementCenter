@@ -60,8 +60,17 @@ export const LoginView: React.FC = () => {
       }
       navigate(from, { replace: true })
     } catch (err: unknown) {
-      setServerError(isApiClientError(err) ? err.message : t('auth.login_failed'))
-    } finally {
+      if (isApiClientError(err)) {
+        if (err.code === 'invalid_credentials' || err.status === 401) {
+          setServerError(t('auth.invalid_credentials'))
+        } else if (err.code === 'rate_limited' || err.status === 429) {
+          setServerError(t('auth.rate_limited'))
+        } else {
+          setServerError(t('auth.login_failed'))
+        }
+      } else {
+        setServerError(t('auth.login_failed'))
+      }
       setLoading(false)
     }
   }

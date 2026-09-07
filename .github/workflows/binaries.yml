@@ -47,16 +47,9 @@ jobs:
           echo "构建版本：$version"
           echo "发布版本：$release"
 
-  build:
-    name: 构建 Linux ${{ matrix.arch }} 二进制
+  build-frontend:
+    name: 构建前端静态资源
     runs-on: ubuntu-latest
-    needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-          - arch: arm64
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
@@ -70,20 +63,42 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
+      - name: 构建前端
+        working-directory: web
+        run: pnpm --ignore-workspace install --frozen-lockfile && pnpm --ignore-workspace run build
+      - name: 上传前端静态产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bmc-webui-dist
+          path: web/dist
+          retention-days: 1
+  build:
+    name: 构建 Linux ${{ matrix.arch }} 二进制
+    runs-on: ubuntu-latest
+    needs: [prepare, build-frontend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+          - arch: arm64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
       - name: 设置 Go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
-      - name: 构建前端
-        working-directory: web
-        run: pnpm --ignore-workspace install --frozen-lockfile && pnpm --ignore-workspace run build
-      - name: 准备嵌入式前端
+      - name: 下载前端静态产物
+        uses: actions/download-artifact@v4
+        with:
+          name: bmc-webui-dist
+          path: internal/server/webui/dist
+      - name: 校验嵌入式前端产物
         run: |
           set -euo pipefail
-          rm -rf internal/server/webui/dist
-          mkdir -p internal/server/webui/dist
-          cp -r web/dist/. internal/server/webui/dist/
+          test -f internal/server/webui/dist/index.html || { echo "嵌入式前端 index.html 不存在"; exit 1; }
       - name: 交叉编译 Server 和 Agent
         env:
           VERSION: ${{ needs.prepare.outputs.version }}

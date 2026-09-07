@@ -84,12 +84,9 @@ export const LogsView: React.FC = () => {
     setLoading(true)
     setError(null)
     try {
-      const endpoint = scope === 'server' ? '/logs/server' : '/logs/agent'
+      const endpoint = scope === 'server' ? '/logs/server' : `/agents/${selectedAgentId}/logs`
       const params: Record<string, string | number | undefined> = {
         limit: 500,
-      }
-      if (scope === 'agent') {
-        params.agent_id = selectedAgentId
       }
 
       if (!reset && logs.length > 0) {

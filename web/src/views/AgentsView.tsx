@@ -491,7 +491,7 @@ export const AgentsView: React.FC = () => {
 
       {/* Enrollment Token Dialog */}
       <Dialog open={tokenDialogOpen} onOpenChange={setTokenDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-sm font-semibold">
               {t('agents.tokenDialog.title')}
@@ -520,32 +520,38 @@ export const AgentsView: React.FC = () => {
                   </AlertDescription>
                 </Alert>
               )}
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 min-w-0">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t('agents.tokenDialog.token')}
                 </span>
-                <Button
-                  type="button"
-                  variant="ghost"
+                <div
+                  role="button"
+                  tabIndex={0}
                   onClick={copyToken}
-                  className="w-full flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground hover:bg-muted/70 transition-colors h-auto text-left"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      copyToken()
+                    }
+                  }}
+                  className="w-full flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground hover:bg-muted/70 transition-colors cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t('agents.copyToken')}
                 >
-                  <span className="truncate pr-2">{tokenData.token}</span>
+                  <span className="min-w-0 flex-1 font-mono break-all select-all leading-relaxed">{tokenData.token}</span>
                   {copied ? (
-                    <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden="true" />
+                    <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0 self-center" aria-hidden="true" />
                   ) : (
-                    <Copy className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
+                    <Copy className="h-4 w-4 text-muted-foreground shrink-0 self-center" aria-hidden="true" />
                   )}
-                </Button>
+                </div>
               </div>
 
               {tokenData.target_agent_id && (
-                <div className="space-y-1.5">
+                <div className="space-y-1.5 min-w-0">
                   <span className="text-xs font-medium text-muted-foreground">
                     {t('agents.tokenDialog.envConfig')}
                   </span>
-                  <div className="rounded-md border border-border bg-muted/40 p-2.5 font-mono text-xs text-foreground leading-relaxed select-all">
+                  <div className="rounded-md border border-border bg-muted/40 p-2.5 font-mono text-xs text-foreground leading-relaxed select-all break-all overflow-x-auto">
                     <div>BMC_TARGET_AGENT_ID={tokenData.target_agent_id}</div>
                     <div>BMC_ENROLLMENT_TOKEN={tokenData.token}</div>
                   </div>

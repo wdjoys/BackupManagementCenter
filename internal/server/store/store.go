@@ -30,6 +30,7 @@ type Store interface {
 	GetAdminByUsername(ctx context.Context, username string) (*model.Admin, error)
 	GetAdminByID(ctx context.Context, id string) (*model.Admin, error)
 	UpdateAdminLastLogin(ctx context.Context, adminID string, at time.Time) error
+	ResetAdmin(ctx context.Context) error
 
 	// Sessions
 	CreateSession(ctx context.Context, s *model.Session) error

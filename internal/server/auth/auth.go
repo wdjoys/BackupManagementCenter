@@ -241,6 +241,18 @@ func ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 }
+func ClearCSRFCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CSRFCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   secureRequest(r),
+		MaxAge:   -1,
+	})
+}
+
 
 func SetCSRFCookie(w http.ResponseWriter, r *http.Request) (csrf string) {
 	csrf, _ = newToken()

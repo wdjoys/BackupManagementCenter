@@ -131,6 +131,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	auth.Logout(r.Context(), s.ST, r)
 	auth.ClearSessionCookie(w, r)
+	auth.ClearCSRFCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

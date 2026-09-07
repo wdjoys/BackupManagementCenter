@@ -96,7 +96,7 @@ func New(s *Server) http.Handler {
 		r.Get("/setup/status", s.handleSetupStatus)
 		r.Post("/setup", s.handleSetup)
 		r.Post("/auth/login", s.handleLogin)
-		r.Post("/auth/logout", s.requireAuth(s.handleLogout))
+		r.Post("/auth/logout", s.handleLogout)
 		r.Get("/auth/me", s.requireAuth(s.handleMe))
 		r.Group(func(r chi.Router) {
 			r.Use(func(next http.Handler) http.Handler {

@@ -1,6 +1,7 @@
-export interface ApiError {
+export interface ApiErrorPayload {
   code: string
   message: string
+  status?: number
 }
 
 export interface PathMapping {

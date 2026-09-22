@@ -104,6 +104,7 @@ func New(s *Server) http.Handler {
 			})
 			r.Get("/dashboard", s.handleDashboard)
 			r.Get("/logs/server", s.handleListServerLogs)
+			r.Get("/logs/agent", s.handleListAgentLogs)
 			r.Get("/agents/{id}/logs", s.handleListAgentLogs)
 
 			r.Patch("/agents/{id}", s.handleRenameAgent)

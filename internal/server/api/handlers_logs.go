@@ -32,6 +32,12 @@ func (s *Server) handleListServerLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListAgentLogs(w http.ResponseWriter, r *http.Request) {
 	agentID := strings.TrimSpace(pathParam(r, "id"))
 	if agentID == "" {
+		agentID = strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	}
+	if agentID == "" {
+		agentID = strings.TrimSpace(r.URL.Query().Get("id"))
+	}
+	if agentID == "" {
 		writeErr(w, http.StatusBadRequest, "validation_failed", "agent id is required")
 		return
 	}

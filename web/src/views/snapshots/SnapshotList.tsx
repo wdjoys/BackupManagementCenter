@@ -92,10 +92,16 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                       <TableCell className="text-xs">
                         <StatusBadge tone={item.kindTone}>{item.kindLabel}</StatusBadge>
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground font-mono max-w-xs truncate">
+                      <TableCell className="text-xs text-muted-foreground font-mono max-w-xs">
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="truncate block">{item.sourceSummary}</span>
+                            <button
+                              type="button"
+                              className="truncate block w-full text-left cursor-help focus:outline-hidden focus:underline"
+                              aria-label={item.sourceSummary}
+                            >
+                              {item.sourceSummary}
+                            </button>
                           </TooltipTrigger>
                           <TooltipContent className="text-xs font-mono max-w-sm break-all">
                             {item.sourceSummary}

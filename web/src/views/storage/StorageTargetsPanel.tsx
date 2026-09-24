@@ -149,10 +149,10 @@ export const StorageTargetsPanel: React.FC<StorageTargetsPanelProps> = ({
                       </div>
                       <div className="grid grid-cols-2 gap-1 text-[11px] text-muted-foreground font-mono">
                         <div>
-                          <span>Remote: </span>{tgt.remote_name}
+                          <span>{t('storage.columns.remoteName')}: </span>{tgt.remote_name}
                         </div>
                         <div className="truncate text-right">
-                          <span>Path: </span>{tgt.remote_path || '/'}
+                          <span>{t('storage.columns.remotePath')}: </span>{tgt.remote_path || '/'}
                         </div>
                       </div>
                       <div className="flex items-center justify-end gap-2 pt-1">

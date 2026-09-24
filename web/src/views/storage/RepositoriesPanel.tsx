@@ -182,7 +182,7 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                           </StatusBadge>
                         </div>
                         <div className="text-[11px] text-muted-foreground">
-                          <span>Target: </span>{repo.storage_target_name || repo.storage_target_id}
+                          <span>{t('storage.columns.storageTarget')}: </span>{repo.storage_target_name || repo.storage_target_id}
                         </div>
                         <div>
                           <code className="font-mono text-[11px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded break-all">

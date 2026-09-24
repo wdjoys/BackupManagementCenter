@@ -22,6 +22,7 @@ import {
   Check,
   ChevronRight,
   ExternalLink,
+  X,
 } from 'lucide-react'
 
 export interface SnapshotDetailSheetProps {
@@ -65,7 +66,7 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full sm:max-w-2xl p-0 bg-card border-l border-border flex flex-col">
+      <SheetContent side="right" showCloseButton={false} className="w-full sm:max-w-2xl p-0 bg-card border-l border-border flex flex-col">
         {selectedSnapshotView && (
           <>
             <SheetHeader className="p-4 border-b border-border bg-muted/20">
@@ -100,6 +101,15 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
                     {t('snapshots.restoreThisSnapshot')}
                   </Button>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => onOpenChange(false)}
+                  className="h-7 w-7 text-muted-foreground hover:text-foreground shrink-0"
+                  aria-label={t('common.close')}
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                </Button>
               </div>
             </SheetHeader>
 

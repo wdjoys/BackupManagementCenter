@@ -445,6 +445,7 @@ export const PlansView: React.FC = () => {
                 <div className="md:hidden divide-y divide-border">
                   {plans.map((plan) => {
                     const agent = agentMap.get(plan.agent_id)
+                    const repo = repositoryMap.get(plan.repository_id)
                     const isRunning = runningId === plan.id
                     const isToggling = toggleLoading[plan.id] || false
                     return (
@@ -455,17 +456,37 @@ export const PlansView: React.FC = () => {
                             {t(KIND_LABELS[plan.kind])}
                           </StatusBadge>
                         </div>
+                        <div className="grid grid-cols-2 gap-1 text-[11px] text-muted-foreground">
+                          <div>
+                            <span>{t('plans.form.agent')}: </span>
+                            <span className="text-foreground">{agent?.name || plan.agent_id}</span>
+                          </div>
+                          <div className="truncate text-right">
+                            <span>{t('plans.columns.repository')}: </span>
+                            <span className="font-mono text-foreground">{repo?.storage_target_name || plan.repository_id}</span>
+                          </div>
+                        </div>
                         <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                          <span>Agent: {agent?.name || plan.agent_id}</span>
+                          <div className="flex items-center gap-1.5 font-mono">
+                            <span className="text-foreground">{plan.schedule}</span>
+                            <span className="text-[10px] text-muted-foreground">({plan.timezone})</span>
+                          </div>
                           <div className="flex items-center gap-2">
-                            <span className="font-mono">{plan.schedule}</span>
+                            <span className="text-[10px]">{t('plans.columns.timeout')}: {plan.timeout_seconds ? `${plan.timeout_seconds}s` : '—'}</span>
                             <Switch
                               checked={plan.enabled}
                               disabled={isToggling}
                               onCheckedChange={() => toggleEnabled(plan)}
+                              aria-label={t('plans.columns.enabled')}
                             />
                           </div>
                         </div>
+                        {plan.last_run_at && (
+                          <div className="text-[11px] text-muted-foreground font-mono">
+                            <span>{t('plans.columns.lastRunAt')}: </span>
+                            <span>{formatDateTime(plan.last_run_at)}</span>
+                          </div>
+                        )}
                         <div className="flex items-center justify-end gap-1 pt-1">
                           <Button
                             variant="outline"

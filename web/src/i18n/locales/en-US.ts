@@ -623,6 +623,7 @@ export default {
     "selectAgentDescription": "Choose an agent from the selector above to inspect logs",
     "serverLogs": "Server Logs",
     "agentLogs": "Agent Logs",
+    "loadedCount": "Loaded {count}",
     "empty_desc": "No logs match the selected filter"
   },
   "snapshots": {

@@ -256,6 +256,7 @@ export const AgentsView: React.FC = () => {
                                 className="h-6 w-6 text-muted-foreground"
                                 onClick={() => toggleExpand(agent.id)}
                                 aria-label={t('agents.toggleExpand')}
+                                aria-expanded={isExpanded}
                               >
                                 {isExpanded ? (
                                   <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
@@ -435,45 +436,82 @@ export const AgentsView: React.FC = () => {
                     </div>
                     <div className="grid grid-cols-2 gap-1 text-[11px] text-muted-foreground font-mono">
                       <div>
-                        <span>Host: </span>{agent.hostname}
+                        <span>{t('agents.columns.hostname')}: </span>{agent.hostname}
                       </div>
                       <div className="text-right">
                         <span>v</span>{agent.version}
                       </div>
                     </div>
-                    <div className="flex items-center justify-end gap-2 pt-1">
+                    <div className="flex items-center justify-between gap-2 pt-1">
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 text-xs text-primary gap-1"
-                        onClick={() => navigate(`/logs?agent_id=${agent.id}`)}
+                        className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground gap-1"
+                        onClick={() => toggleExpand(agent.id)}
+                        aria-expanded={expandedRows.has(agent.id)}
                       >
-                        <FileText className="h-3.5 w-3.5" aria-hidden="true" />
-                        {t('agents.viewLogs')}
+                        {expandedRows.has(agent.id) ? (
+                          <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                        )}
+                        {t('agents.capabilities.title')}
                       </Button>
-                      {agent.status === 'offline' && !agent.revoked && (
+                      <div className="flex items-center justify-end gap-1">
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-7 text-xs text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 gap-1"
-                          onClick={() => handleTakeover(agent)}
+                          className="h-7 text-xs text-primary gap-1"
+                          onClick={() => navigate(`/logs?agent_id=${agent.id}`)}
                         >
-                          <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
-                          {t('agents.takeover')}
+                          <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                          {t('agents.viewLogs')}
                         </Button>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
-                        disabled={agent.revoked}
-                        onClick={() => openRevoke(agent)}
-                        aria-label={t('agents.revoke')}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                        {t('agents.revoke')}
-                      </Button>
+                        {agent.status === 'offline' && !agent.revoked && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 gap-1"
+                            onClick={() => handleTakeover(agent)}
+                          >
+                            <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                            {t('agents.takeover')}
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                          disabled={agent.revoked}
+                          onClick={() => openRevoke(agent)}
+                          aria-label={t('agents.revoke')}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          {t('agents.revoke')}
+                        </Button>
+                      </div>
                     </div>
+                    {expandedRows.has(agent.id) && (
+                      <div className="pt-2 border-t border-border/70 space-y-1.5">
+                        <span className="text-[11px] font-semibold text-foreground">
+                          {t('agents.capabilities.title')}
+                        </span>
+                        {agent.capabilities && agent.capabilities.length > 0 ? (
+                          <div className="space-y-1">
+                            {agent.capabilities.map((cap) => (
+                              <div key={cap.name} className="flex items-center justify-between text-[11px] font-mono bg-muted/40 px-2 py-1 rounded">
+                                <span className="font-semibold text-foreground">{cap.name}</span>
+                                <span className="text-muted-foreground">{cap.version || '—'}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-muted-foreground italic">
+                            {t('agents.capabilities.empty')}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

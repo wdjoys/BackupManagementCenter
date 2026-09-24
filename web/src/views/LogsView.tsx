@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -23,7 +23,7 @@ import { PageLoadingState } from '@/components/PageLoadingState'
 import { RefreshCw, RotateCcw, Loader2, Server, Activity, Info } from 'lucide-react'
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error']
-const LOG_TYPES = ['system', 'auth', 'plan', 'agent', 'run', 'storage']
+const LOG_TYPES = ['system', 'http', 'agent', 'run', 'scheduler', 'dispatcher', 'connection', 'command', 'notification']
 
 const LEVEL_TONES: Record<string, BadgeTone> = {
   debug: 'secondary',
@@ -70,7 +70,7 @@ export const LogsView: React.FC = () => {
     loadAgents()
   }, [])
 
-  const loadLogs = async (reset = false) => {
+  const loadLogs = async (reset = false, level = levelFilter, type = typeFilter) => {
     if (scope === 'agent' && !selectedAgentId) {
       setLogs([])
       setHasMore(false)
@@ -87,6 +87,8 @@ export const LogsView: React.FC = () => {
       const endpoint = scope === 'server' ? '/logs/server' : `/agents/${selectedAgentId}/logs`
       const params: Record<string, string | number | undefined> = {
         limit: 500,
+        level: level === 'all' ? undefined : level,
+        type: type === 'all' ? undefined : type,
       }
 
       if (!reset && logs.length > 0) {
@@ -147,13 +149,7 @@ export const LogsView: React.FC = () => {
     }
   }
 
-  const filteredLogs = useMemo(() => {
-    return logs.filter((log) => {
-      if (levelFilter !== 'all' && log.level !== levelFilter) return false
-      if (typeFilter !== 'all' && log.type !== typeFilter) return false
-      return true
-    })
-  }, [logs, levelFilter, typeFilter])
+  const filteredLogs = logs
 
   return (
     <div className="space-y-6">
@@ -218,7 +214,7 @@ export const LogsView: React.FC = () => {
           )}
 
           {/* Level Filter */}
-          <Select value={levelFilter} onValueChange={setLevelFilter}>
+          <Select value={levelFilter} onValueChange={(value) => { setLevelFilter(value); loadLogs(true, value, typeFilter) }}>
             <SelectTrigger className="w-36 h-8 text-xs">
               <SelectValue placeholder={t('logs.filters.level')} />
             </SelectTrigger>
@@ -233,9 +229,8 @@ export const LogsView: React.FC = () => {
               ))}
             </SelectContent>
           </Select>
-
           {/* Type Filter */}
-          <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <Select value={typeFilter} onValueChange={(value) => { setTypeFilter(value); loadLogs(true, levelFilter, value) }}>
             <SelectTrigger className="w-36 h-8 text-xs">
               <SelectValue placeholder={t('logs.filters.type')} />
             </SelectTrigger>
@@ -245,14 +240,13 @@ export const LogsView: React.FC = () => {
               </SelectItem>
               {LOG_TYPES.map((tp) => (
                 <SelectItem key={tp} value={tp} className="text-xs">
-                  {tp}
+                  {t(`logs.types.${tp}`)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </CardContent>
       </Card>
-
       {scope === 'agent' && !selectedAgentId && (
         <Alert className="border-border/80 bg-muted/20 py-2.5 text-xs text-muted-foreground">
           <Info className="h-4 w-4 text-primary" />
@@ -271,7 +265,7 @@ export const LogsView: React.FC = () => {
         <Card className="border-border bg-card/60 shadow-sm">
           <CardHeader className="py-3 px-4 border-b border-border flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-xs font-semibold">
-              {scope === 'server' ? t('logs.serverLogs') : t('logs.agentLogs')} ({filteredLogs.length})
+              {scope === 'server' ? t('logs.serverLogs') : t('logs.agentLogs')} ({t('logs.loadedCount', { count: filteredLogs.length })})
             </CardTitle>
             {hasMore && (
               <Button
@@ -330,7 +324,7 @@ export const LogsView: React.FC = () => {
                               {item.level.toUpperCase()}
                             </StatusBadge>
                           </TableCell>
-                          <TableCell className="text-xs font-mono text-foreground break-all py-2">
+                          <TableCell className="text-xs font-mono text-foreground break-all whitespace-normal py-2">
                             {item.message}
                           </TableCell>
                         </TableRow>

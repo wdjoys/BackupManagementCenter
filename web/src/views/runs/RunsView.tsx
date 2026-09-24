@@ -532,7 +532,7 @@ export const RunsView: React.FC = () => {
 
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground">
-                      {t('runs.offset')} {offset} – {offset + runs.length}
+                      {t('runs.offset')} {runs.length === 0 ? 0 : offset + 1} – {offset + runs.length}
                     </span>
                     <Button
                       variant="outline"
@@ -558,11 +558,29 @@ export const RunsView: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <div className="p-8">
-                <AppEmptyState
-                  title={t('runs.emptyRuns')}
-                  description={t('runs.emptyRuns_desc')}
-                />
+              <div className="space-y-4">
+                <div className="p-8">
+                  <AppEmptyState
+                    title={t('runs.emptyRuns')}
+                    description={t('runs.emptyRuns_desc')}
+                  />
+                </div>
+                {offset > 0 && (
+                  <div className="flex items-center justify-between p-3 border-t border-border bg-card/40">
+                    <span className="text-xs text-muted-foreground">
+                      {t('runs.offset')} {offset} – {offset}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handlePageChange(Math.max(0, offset - limit))}
+                      className="h-7 text-xs gap-1"
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+                      {t('common.previous')}
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
           </CardContent>

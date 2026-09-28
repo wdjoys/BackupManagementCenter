@@ -16,6 +16,7 @@ import { useAuthStore } from '@/stores/auth'
 import { isApiClientError } from '@/api/client'
 import { toastSuccess } from '@/lib/toast'
 
+import loginBackground from '@/assets/login-background.svg'
 export const LoginView: React.FC = () => {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -76,13 +77,14 @@ export const LoginView: React.FC = () => {
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4">
-      <div className="absolute right-4 top-4 flex items-center gap-1">
+    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-background px-4">
+      <img src={loginBackground} alt="" aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full object-cover text-primary" />
+      <div className="absolute right-4 top-4 z-10 flex items-center gap-1">
         <ThemeToggle compact />
         <LocaleSwitcher />
       </div>
 
-      <div className="w-full max-w-sm space-y-6">
+      <div className="relative z-10 w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center space-y-2 text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary shadow-inner">
             <ShieldCheck className="h-7 w-7" aria-hidden="true" />
@@ -118,7 +120,6 @@ export const LoginView: React.FC = () => {
                   id="username"
                   type="text"
                   autoComplete="username"
-                  placeholder="admin"
                   disabled={loading}
                   aria-describedby={errors.username ? 'username-error' : undefined}
                   className="h-9 text-xs"

@@ -59,6 +59,17 @@ i18n
     },
   })
 
+// 兼容单大括号 {var} 与标准双大括号 {{var}} 插值语法
+if (i18n.services?.interpolator) {
+  const origInterpolate = i18n.services.interpolator.interpolate.bind(i18n.services.interpolator)
+  i18n.services.interpolator.interpolate = (str, data, lng, options) => {
+    if (typeof str === 'string' && data && typeof data === 'object') {
+      str = str.replace(/(?<!\{)\{([a-zA-Z0-9_]+)\}(?!\})/g, (_, k) => `{{${k}}}`)
+    }
+    return origInterpolate(str, data, lng, options)
+  }
+}
+
 function applyLocale(locale: SupportedLocale): void {
   i18n.changeLanguage(locale)
   if (typeof document !== 'undefined') {

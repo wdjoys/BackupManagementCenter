@@ -54,7 +54,7 @@ export default {
     "telegram": {
       "title": "Telegram 失败通知",
       "configured": "已启用 Telegram 失败通知",
-      "currentTarget": "当前目标会话：{chatId}",
+      "currentTarget": "当前目标会话：{{chatId}}",
       "notConfigured": "未配置。配置后将仅推送绑定计划的失败运行。",
       "botToken": "Bot Token",
       "chatId": "Chat ID",
@@ -64,7 +64,7 @@ export default {
       "pairRequired": "Bot Token 与 Chat ID 必须同时填写",
       "saved": "已保存，立即生效",
       "cleared": "已清除 Telegram 通知配置",
-      "help": "通过 {'@'}BotFather 创建 Bot 获取 Token；将 Bot 加入目标群组/频道或先向其发送消息以获取 Chat ID。通知在失败状态落库后发送，Telegram 不可用不影响任务结果。"
+      "help": "通过 @BotFather 创建 Bot 获取 Token；将 Bot 加入目标群组/频道或先向其发送消息以获取 Chat ID。通知在失败状态落库后发送，Telegram 不可用不影响任务结果。"
     },
     "subtitle": "系统全局通知与管理员凭据配置",
     "load_failed": "加载系统设置失败",
@@ -200,7 +200,7 @@ export default {
       "title": "新注册令牌",
       "onceWarning": "该令牌仅显示一次，请立即复制保存。",
       "token": "令牌",
-      "takeoverHint": "此令牌专用于接管并恢复 Agent \"{id}\" 的原有仓库与计划。",
+      "takeoverHint": "此令牌专用于接管并恢复 Agent \"{{id}}\" 的原有仓库与计划。",
       "envConfig": "受管主机环境配置示例",
       "clickToCopy": "点击复制",
       "copyButton": "复制令牌",
@@ -210,7 +210,7 @@ export default {
     },
     "revokeDialog": {
       "title": "撤销 Agent",
-      "confirm": "确定要撤销 Agent \"{name}\"（{hostname}）吗？"
+      "confirm": "确定要撤销 Agent \"{{name}}\"（{{hostname}}）吗？"
     },
     "revoked": "Agent 已撤销",
     "revokeFailed": "撤销失败",
@@ -276,7 +276,7 @@ export default {
     "validationFailed": "计划校验未通过",
     "deleteDialog": {
       "title": "删除计划",
-      "confirm": "确定删除计划 \"{name}\" 吗？此操作不可撤销。",
+      "confirm": "确定删除计划 \"{{name}}\" 吗？此操作不可撤销。",
       "snapshotsRequired": "该计划仍存在快照，请先删除快照后再删除计划。"
     },
     "form": {
@@ -395,23 +395,23 @@ export default {
       "namePlaceholder": "例如：我的 Google Drive",
       "validationAgent": "校验 Agent",
       "validationAgentPlaceholder": "选择一个在线 Agent 校验配置",
-      "offlineSuffix": "{name}（{hostname}）— 离线",
+      "offlineSuffix": "{{name}}（{{hostname}}）— 离线",
       "noAgents": "没有可用的 Agent，请确保至少有一个 Agent 已注册并在线。",
       "remoteName": "远端名称",
       "remoteNamePlaceholder": "例如：mydrive",
       "remotePath": "远端路径",
       "remotePathPlaceholder": "远端内的根路径（可选）",
       "lsdEntries": "lsd 条目数：",
-      "moreEntries": "... 以及另外 {count} 条",
+      "moreEntries": "... 以及另外 {{count}} 条",
       "isDir": "是否目录",
       "dir": "目录",
       "file": "文件",
       "validateFirst": "先校验",
       "confirmImport": "确认导入",
       "validateSucceeded": "校验成功",
-      "validateFailedCode": "校验失败（代码：{code}）",
+      "validateFailedCode": "校验失败（代码：{{code}}）",
       "imported": "存储目标已导入",
-      "importFailedCode": "导入失败（代码：{code}）",
+      "importFailedCode": "导入失败（代码：{{code}}）",
       "description": "粘贴 rclone.conf 配置文本以快速导入存储后端",
       "validationSuccess": "Rclone 配置校验通过",
       "validationFailed": "Rclone 配置格式无效",
@@ -424,16 +424,16 @@ export default {
       "name": "名称",
       "namePlaceholder": "请输入存储目标名称",
       "saved": "存储目标已更新",
-      "failedCode": "更新失败（代码：{code}）",
+      "failedCode": "更新失败（代码：{{code}}）",
       "renamedSuccessfully": "存储目标重命名成功",
       "renameFailed": "重命名存储目标失败"
     },
     "deleteDialog": {
       "title": "删除存储目标",
-      "confirm": "确定删除存储目标 \"{name}\" 吗？",
+      "confirm": "确定删除存储目标 \"{{name}}\" 吗？",
       "deleted": "存储目标已删除",
       "conflict": "无法删除：该存储目标仍被一个或多个仓库引用",
-      "failedCode": "删除失败（代码：{code}）"
+      "failedCode": "删除失败（代码：{{code}}）"
     },
     "bindDialog": {
       "agent": "Agent",
@@ -442,20 +442,20 @@ export default {
       "selectTarget": "请选择存储目标",
       "boundSuccessfully": "仓库绑定成功",
       "bound": "仓库已绑定",
-      "bindFailedCode": "绑定失败（代码：{code}）",
+      "bindFailedCode": "绑定失败（代码：{{code}}）",
       "description": "为受管 Agent 绑定指定的存储目标仓库",
       "bindButton": "确认绑定",
       "bindFailed": "绑定仓库失败"
     },
     "repositoryDialog": {
       "unbindTitle": "解绑仓库记录",
-      "confirmUnbind": "确定解绑存储目标“{name}”的仓库记录吗？只会删除 Server 中的绑定，不会删除网盘上的备份数据。",
+      "confirmUnbind": "确定解绑存储目标“{{name}}”的仓库记录吗？只会删除 Server 中的绑定，不会删除网盘上的备份数据。",
       "unbind": "解绑",
       "unbound": "仓库记录已解绑，远端备份数据已保留",
       "conflict": "无法解绑：仓库仍被计划引用或有任务正在执行",
-      "unbindFailedCode": "解绑失败（代码：{code}）",
+      "unbindFailedCode": "解绑失败（代码：{{code}}）",
       "retried": "已重新发起仓库检查/初始化",
-      "retryFailedCode": "重试失败（代码：{code}）",
+      "retryFailedCode": "重试失败（代码：{{code}}）",
       "unbindConfirmTitle": "确认解绑仓库",
       "unbindConfirmDesc": "解绑不会删除远端快照数据，但相关计划将无法访问该仓库。",
       "unboundSuccessfully": "仓库已成功解绑",
@@ -464,8 +464,8 @@ export default {
       "retryFailed": "重试任务下发失败"
     },
     "subtitle": "Rclone 存储目标与 Restic 备份仓库管理",
-    "targets_count": "存储目标 ({count})",
-    "repos_count": "绑定仓库 ({count})",
+    "targets_count": "存储目标 ({{count}})",
+    "repos_count": "绑定仓库 ({{count}})",
     "emptyTargets_desc": "暂无存储目标，请先导入 Rclone 配置",
     "emptyRepositories_desc": "暂无绑定的备份仓库，请点击“绑定仓库”",
     "loadTargetsFailed": "加载存储目标失败",
@@ -559,7 +559,7 @@ export default {
       "done": "完成"
     },
     "logs": {
-      "title": "日志（{count}）",
+      "title": "日志（{{count}}）",
       "autoScroll": "自动滚动",
       "loadMore": "加载更多",
       "loading": "加载中...",
@@ -580,7 +580,7 @@ export default {
     "title": "进程日志",
     "server": "Server 日志",
     "agent": "Agent 日志",
-    "agentTitle": "{name} 的日志",
+    "agentTitle": "{{name}} 的日志",
     "agentPlaceholder": "选择 Agent",
     "filters": {
       "level": "级别",
@@ -650,8 +650,8 @@ export default {
       "stale": "待验证",
       "verifying": "正在核验",
       "verified": "已验证",
-      "verifiedAt": "验证时间：{time}",
-      "status": "{status}；验证时间：{time}",
+      "verifiedAt": "验证时间：{{time}}",
+      "status": "{{status}}；验证时间：{{time}}",
       "unknownTime": "未知",
       "unverifiedWarning": "数据待后台核验，在此期间禁用删除与恢复操作",
       "deleteDisabled": "快照列表未被核验，暂时禁用删除",
@@ -660,7 +660,7 @@ export default {
     },
     "noSnapshots": "暂无快照",
     "fileBrowser": "文件浏览",
-    "snapshotPrefix": "快照 {id}",
+    "snapshotPrefix": "快照 {{id}}",
     "restoreThisSnapshot": "恢复此快照",
     "selectSnapshotHint": "选择一个快照以浏览其内容",
     "planFilter": {
@@ -673,7 +673,7 @@ export default {
       "action": "删除",
       "title": "删除快照",
       "message": "此快照将立即从列表中隐藏，并在后台回收空间。请输入完整快照 ID 以确认删除。",
-      "snapshotId": "请确认快照 ID：{id}",
+      "snapshotId": "请确认快照 ID：{{id}}",
       "confirm": "删除快照",
       "inputPlaceholder": "输入完整快照 ID",
       "inputMismatch": "请输入完整且匹配的快照 ID",
@@ -691,7 +691,7 @@ export default {
       "modified": "修改时间",
       "path": "路径"
     },
-    "selectedItems": "已选包含项 ({count})",
+    "selectedItems": "已选包含项 ({{count}})",
     "fileTypes": {
       "dir": "目录",
       "file": "文件"
@@ -719,7 +719,7 @@ export default {
       "skipped": "跳过",
       "deleteStat": "删除",
       "sampleChanges": "变更示例：",
-      "moreChanges": "... 以及另外 {count} 条",
+      "moreChanges": "... 以及另外 {{count}} 条",
       "dryRunButton": "试运行",
       "confirmExecute": "确认执行",
       "subtitle": "从所选备份快照执行恢复任务"
@@ -728,17 +728,17 @@ export default {
       "message": "请输入快照 ID 或计划名称以确认恢复：",
       "title": "确认恢复",
       "execute": "执行",
-      "inputPlaceholder": "例如：{example}",
+      "inputPlaceholder": "例如：{{example}}",
       "inputRequired": "请输入确认字符串"
     },
     "messages": {
       "reposLoadFailed": "加载仓库列表失败。",
-      "loadSnapshotsFailedCode": "加载快照失败（代码：{code}）",
-      "loadTreeFailedCode": "加载目录树失败（代码：{code}）",
+      "loadSnapshotsFailedCode": "加载快照失败（代码：{{code}}）",
+      "loadTreeFailedCode": "加载目录树失败（代码：{{code}}）",
       "dryRunCompleted": "试运行完成",
-      "dryRunFailedCode": "试运行失败（代码：{code}）",
+      "dryRunFailedCode": "试运行失败（代码：{{code}}）",
       "restoreInitiated": "恢复任务已启动，正在跳转到运行详情...",
-      "restoreFailedCode": "恢复失败（代码：{code}）",
+      "restoreFailedCode": "恢复失败（代码：{{code}}）",
       "deleteQueued": "快照已从列表移除，后台正在回收空间",
       "deleteRefreshRequired": "快照列表需要刷新后才能删除，正在刷新列表",
       "deleteFailed": "删除快照失败",

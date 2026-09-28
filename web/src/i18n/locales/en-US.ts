@@ -54,7 +54,7 @@ export default {
     "telegram": {
       "title": "Telegram Failure Notifications",
       "configured": "Telegram failure notifications enabled",
-      "currentTarget": "Current target chat: {chatId}",
+      "currentTarget": "Current target chat: {{chatId}}",
       "notConfigured": "Not configured. Once set, only plan-bound failed runs are pushed.",
       "botToken": "Bot Token",
       "chatId": "Chat ID",
@@ -64,7 +64,7 @@ export default {
       "pairRequired": "Bot Token and Chat ID must be provided together",
       "saved": "Saved — takes effect immediately",
       "cleared": "Telegram notification settings cleared",
-      "help": "Create a bot via {'@'}BotFather to get the token; add the bot to the target group/channel (or message it first) to obtain the chat ID. Notifications are sent after a failure is persisted; Telegram outages never affect job results."
+      "help": "Create a bot via @BotFather to get the token; add the bot to the target group/channel (or message it first) to obtain the chat ID. Notifications are sent after a failure is persisted; Telegram outages never affect job results."
     },
     "subtitle": "Global alert notifications and credential management",
     "load_failed": "Failed to load settings",
@@ -200,7 +200,7 @@ export default {
       "title": "New Enrollment Token",
       "onceWarning": "This token is shown only once. Copy it immediately.",
       "token": "Token",
-      "takeoverHint": "This token is specifically for taking over and restoring existing repositories and plans for Agent \"{id}\".",
+      "takeoverHint": "This token is specifically for taking over and restoring existing repositories and plans for Agent \"{{id}}\".",
       "envConfig": "Agent Host Environment Configuration Example",
       "clickToCopy": "Click to copy",
       "copyButton": "Copy Token",
@@ -210,7 +210,7 @@ export default {
     },
     "revokeDialog": {
       "title": "Revoke Agent",
-      "confirm": "Are you sure you want to revoke agent \"{name}\" ({hostname})?"
+      "confirm": "Are you sure you want to revoke agent \"{{name}}\" ({{hostname}})?"
     },
     "revoked": "Agent revoked",
     "revokeFailed": "Revoke failed",
@@ -276,7 +276,7 @@ export default {
     "validationFailed": "Plan validation failed",
     "deleteDialog": {
       "title": "Delete plan",
-      "confirm": "Delete plan \"{name}\"? This cannot be undone.",
+      "confirm": "Delete plan \"{{name}}\"? This cannot be undone.",
       "snapshotsRequired": "This plan still has snapshots. Delete the snapshots before deleting the plan."
     },
     "form": {
@@ -395,23 +395,23 @@ export default {
       "namePlaceholder": "e.g. My Google Drive",
       "validationAgent": "Validation Agent",
       "validationAgentPlaceholder": "Select an online agent to validate config",
-      "offlineSuffix": "{name} ({hostname}) — offline",
+      "offlineSuffix": "{{name}} ({{hostname}}) — offline",
       "noAgents": "No agents available. Ensure at least one agent is enrolled and online.",
       "remoteName": "Remote Name",
       "remoteNamePlaceholder": "e.g. mydrive",
       "remotePath": "Remote Path",
       "remotePathPlaceholder": "Root path inside the remote (optional)",
       "lsdEntries": "lsd entries:",
-      "moreEntries": "... and {count} more",
+      "moreEntries": "... and {{count}} more",
       "isDir": "Is Dir",
       "dir": "dir",
       "file": "file",
       "validateFirst": "Validate First",
       "confirmImport": "Confirm Import",
       "validateSucceeded": "Validation succeeded",
-      "validateFailedCode": "Validation failed (code: {code})",
+      "validateFailedCode": "Validation failed (code: {{code}})",
       "imported": "Storage target imported",
-      "importFailedCode": "Import failed (code: {code})",
+      "importFailedCode": "Import failed (code: {{code}})",
       "description": "Paste rclone.conf text to import remote storage backends",
       "validationSuccess": "Rclone configuration validated",
       "validationFailed": "Invalid rclone configuration format",
@@ -424,16 +424,16 @@ export default {
       "name": "Name",
       "namePlaceholder": "Enter a storage target name",
       "saved": "Storage target updated",
-      "failedCode": "Update failed (code: {code})",
+      "failedCode": "Update failed (code: {{code}})",
       "renamedSuccessfully": "Storage target renamed",
       "renameFailed": "Failed to rename storage target"
     },
     "deleteDialog": {
       "title": "Delete Storage Target",
-      "confirm": "Delete storage target \"{name}\"?",
+      "confirm": "Delete storage target \"{{name}}\"?",
       "deleted": "Storage target deleted",
       "conflict": "Cannot delete: this storage target is still referenced by one or more repositories",
-      "failedCode": "Delete failed (code: {code})"
+      "failedCode": "Delete failed (code: {{code}})"
     },
     "bindDialog": {
       "agent": "Agent",
@@ -442,20 +442,20 @@ export default {
       "selectTarget": "Select a storage target",
       "boundSuccessfully": "Repository bound successfully",
       "bound": "Repository bound",
-      "bindFailedCode": "Bind failed (code: {code})",
+      "bindFailedCode": "Bind failed (code: {{code}})",
       "description": "Bind an agent to a storage target to initialize or connect a repository",
       "bindButton": "Confirm Bind",
       "bindFailed": "Failed to bind repository"
     },
     "repositoryDialog": {
       "unbindTitle": "Unbind Repository Record",
-      "confirmUnbind": "Unbind the repository record for “{name}”? Only the Server binding is removed; remote backup data is preserved.",
+      "confirmUnbind": "Unbind the repository record for “{{name}}”? Only the Server binding is removed; remote backup data is preserved.",
       "unbind": "Unbind",
       "unbound": "Repository record unbound; remote backup data preserved",
       "conflict": "Cannot unbind: the repository is referenced by a plan or has an active run",
-      "unbindFailedCode": "Unbind failed (code: {code})",
+      "unbindFailedCode": "Unbind failed (code: {{code}})",
       "retried": "Repository check/initialization was retried",
-      "retryFailedCode": "Retry failed (code: {code})",
+      "retryFailedCode": "Retry failed (code: {{code}})",
       "unbindConfirmTitle": "Unbind Repository",
       "unbindConfirmDesc": "Unbinding will remove this repository from BMC without deleting remote data.",
       "unboundSuccessfully": "Repository unbound successfully",
@@ -464,8 +464,8 @@ export default {
       "retryFailed": "Failed to dispatch retry task"
     },
     "subtitle": "Rclone storage targets and restic repositories",
-    "targets_count": "Storage Targets ({count})",
-    "repos_count": "Repositories ({count})",
+    "targets_count": "Storage Targets ({{count}})",
+    "repos_count": "Repositories ({{count}})",
     "emptyTargets_desc": "No storage targets. Import an rclone configuration first.",
     "emptyRepositories_desc": "No bound repositories. Click Bind Repository to add one.",
     "loadTargetsFailed": "Failed to load targets",
@@ -559,7 +559,7 @@ export default {
       "done": "Done"
     },
     "logs": {
-      "title": "Logs ({count})",
+      "title": "Logs ({{count}})",
       "autoScroll": "Auto-scroll",
       "loadMore": "Load more",
       "loading": "Loading...",
@@ -580,7 +580,7 @@ export default {
     "title": "Process Logs",
     "server": "Server Logs",
     "agent": "Agent Logs",
-    "agentTitle": "Agent Logs — {name}",
+    "agentTitle": "Agent Logs — {{name}}",
     "agentPlaceholder": "Select an agent",
     "filters": {
       "level": "Level",
@@ -650,8 +650,8 @@ export default {
       "stale": "Pending verification",
       "verifying": "Verifying",
       "verified": "Verified",
-      "verifiedAt": "Verified at {time}",
-      "status": "{status}; verified at {time}",
+      "verifiedAt": "Verified at {{time}}",
+      "status": "{{status}}; verified at {{time}}",
       "unknownTime": "unknown time",
       "unverifiedWarning": "Data is pending background verification; deletion and restore are disabled",
       "deleteDisabled": "Snapshot list is pending verification; deletion is disabled",
@@ -660,7 +660,7 @@ export default {
     },
     "noSnapshots": "No snapshots",
     "fileBrowser": "File Browser",
-    "snapshotPrefix": "snapshot {id}",
+    "snapshotPrefix": "snapshot {{id}}",
     "restoreThisSnapshot": "Restore this Snapshot",
     "selectSnapshotHint": "Select a snapshot to browse its contents",
     "planFilter": {
@@ -673,7 +673,7 @@ export default {
       "action": "Delete",
       "title": "Delete Snapshot",
       "message": "The snapshot will immediately be hidden from the list and its space reclaimed in the background. Type the full snapshot ID to confirm deletion.",
-      "snapshotId": "Confirm snapshot ID: {id}",
+      "snapshotId": "Confirm snapshot ID: {{id}}",
       "confirm": "Delete Snapshot",
       "inputPlaceholder": "Type the full snapshot ID",
       "inputMismatch": "Enter the complete matching snapshot ID",
@@ -691,7 +691,7 @@ export default {
       "modified": "Modified",
       "path": "Path"
     },
-    "selectedItems": "Selected Included Items ({count})",
+    "selectedItems": "Selected Included Items ({{count}})",
     "fileTypes": {
       "dir": "dir",
       "file": "file"
@@ -719,7 +719,7 @@ export default {
       "skipped": "Skipped",
       "deleteStat": "Delete",
       "sampleChanges": "Sample changes:",
-      "moreChanges": "... and {count} more",
+      "moreChanges": "... and {{count}} more",
       "dryRunButton": "Dry-run",
       "confirmExecute": "Confirm Execute",
       "subtitle": "Restore files or databases from the selected snapshot"
@@ -728,17 +728,17 @@ export default {
       "message": "Confirm restore by typing the snapshot ID or a plan name:",
       "title": "Confirm Restore",
       "execute": "Execute",
-      "inputPlaceholder": "e.g. {example}",
+      "inputPlaceholder": "e.g. {{example}}",
       "inputRequired": "Please enter a confirmation string"
     },
     "messages": {
       "reposLoadFailed": "Failed to load repositories.",
-      "loadSnapshotsFailedCode": "Failed to load snapshots (code: {code})",
-      "loadTreeFailedCode": "Failed to load tree (code: {code})",
+      "loadSnapshotsFailedCode": "Failed to load snapshots (code: {{code}})",
+      "loadTreeFailedCode": "Failed to load tree (code: {{code}})",
       "dryRunCompleted": "Dry-run completed",
-      "dryRunFailedCode": "Dry-run failed (code: {code})",
+      "dryRunFailedCode": "Dry-run failed (code: {{code}})",
       "restoreInitiated": "Restore initiated, redirecting to run detail...",
-      "restoreFailedCode": "Restore failed (code: {code})",
+      "restoreFailedCode": "Restore failed (code: {{code}})",
       "deleteQueued": "Snapshot removed from the list; space is being reclaimed in the background",
       "deleteRefreshRequired": "Refresh the snapshot list before deleting; refreshing now",
       "deleteFailed": "Failed to delete snapshot",

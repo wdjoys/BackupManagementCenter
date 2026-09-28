@@ -15,18 +15,10 @@ services:
     restart: unless-stopped
     # network_mode: host
     environment:
-      # 必填：Server gRPC 服务端地址，建议带 scheme（如 https://backup.example.com:9090 或 http://host:9090）
+      # 必填：Server gRPC 服务端地址，必须带 scheme（如 https://backup.example.com:9090 或 http://host:9090）
       BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC endpoint}
-      # 遗留兼容项：是否启用 gRPC TLS（1 启用，0 禁用；若 URL 已包含 https:// 或 http:// 则会自动推导）
-      BMC_SERVER_TLS: ${BMC_SERVER_TLS-}
       # 首次注册令牌（从 Server Web UI 生成的一次性注册令牌；注册完成后建议清空并重启）
       BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
-      # 容器内 Agent 状态持久化目录（存放身份凭据、UUID、私钥等，不可多主机共享）
-      BMC_AGENT_STATE_DIR: /var/lib/bmc-agent
-      # restic 缓存目录（存放 restic 索引与元数据缓存，加速备份）
-      BMC_RESTIC_CACHE_DIR: ${BMC_RESTIC_CACHE_DIR:-/var/lib/bmc-agent/.cache/restic}
-      # 备份/恢复时的本地暂存与临时工作目录（数据库转储等临时文件存放处）
-      BMC_AGENT_DATA_DIR: /var/lib/bmc-agent/scratch
       # 允许作为备份源的容器内根目录列表（逗号分隔，限制只能备份指定路径范围）
       BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
       # 宿主机路径到容器内路径的映射配置（JSON 格式，告知 Server 在计划配置宿主机路径时对应的容器路径）

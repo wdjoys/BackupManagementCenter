@@ -39,6 +39,7 @@ COPY --from=go-build /out/backup-center-agent /usr/local/bin/backup-center-agent
 RUN groupadd --system --gid 65532 bmc-agent && \
     useradd --system --uid 65532 --gid bmc-agent --home-dir /var/lib/bmc-agent --create-home --shell /usr/sbin/nologin bmc-agent && \
     mkdir -p /var/lib/bmc-agent/scratch && chown -R bmc-agent:bmc-agent /var/lib/bmc-agent
+ENV BMC_AGENT_STATE_DIR=/var/lib/bmc-agent
 USER bmc-agent:bmc-agent
 VOLUME ["/var/lib/bmc-agent", "/backup-sources", "/backup-restore"]
 ENTRYPOINT ["/usr/local/bin/backup-center-agent"]

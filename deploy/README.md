@@ -35,7 +35,7 @@ docker run --rm -v bmc-data:/var/lib/bmc -v "$PWD:/backup" alpine \
 ```sh
 cp deploy/.env.agent.example deploy/.env.agent
 # 编辑 deploy/.env.agent：
-# 1. 设置 BMC_SERVER_GRPC_URL（推荐带 scheme，例如 https://backup.example.com:9090 或 http://host:9090）
+# 1. 设置 BMC_SERVER_GRPC_URL（必须带 scheme，例如 https://backup.example.com:9090 或 http://host:9090）
 # 2. 填写从 Server Web UI 获取的一次性 BMC_ENROLLMENT_TOKEN
 # 3. 按需调整 BMC_SOURCE_ETC、BMC_SOURCE_SRV 及 BMC_RESTORE_ROOT 宿主机挂载路径
 docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml up -d --build
@@ -46,6 +46,8 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - 备份源目录（`/etc`、`/srv`）以只读方式（`:ro`）挂载；恢复目标目录（默认 `/var/lib/bmc-restore`）以读写方式挂载。
 - `bmc-agent-state` 卷用于持久化 Agent 身份，不可多主机共享。
 - **重新安装接管（Takeover）**：若 Agent 状态卷丢失或需更换新机器接管原 Agent 数据，请在 Server Web UI 的 Agent 列表（离线状态）点击“重新安装接管”生成专用令牌，并在 `.env.agent` 中设置 `BMC_TARGET_AGENT_ID=<原AgentID>` 与 `BMC_ENROLLMENT_TOKEN=<接管令牌>`。启动后服务端会自动复用原 ID、保留全部仓库与计划并轮换密钥，接管成功后同样建议清空这两个变量。
+- **Agent 配置精简与已有卷升级**：推荐 Compose 模板已精简 `BMC_SERVER_TLS`、`BMC_AGENT_STATE_DIR`、`BMC_RESTIC_CACHE_DIR`、`BMC_AGENT_DATA_DIR`。Agent 状态目录由镜像默认固定为 `/var/lib/bmc-agent`，缓存（`/var/lib/bmc-agent/.cache/restic`）与暂存（`/var/lib/bmc-agent/scratch`）自动基于状态目录推导。升级时保留原 `bmc-agent-state` 与 `bmc-agent-scratch` 卷即可无缝延续身份凭据与缓存。
+- **旧版 Agent 配置升级注意**：若旧部署 `.env.agent` 使用不带 scheme 的裸 `host:port` 并配合 `BMC_SERVER_TLS=0`，升级前必须先将 URL 改为 `http://host:port`（若此前为 `BMC_SERVER_TLS=1` 则改为 `https://host:port`）。由于新 Compose 不再透传 `BMC_SERVER_TLS`，未带 scheme 的地址默认启用 TLS，直接升级明文连接将导致握手失败。
 ## 3. 旧部署迁移
 
 对于使用旧版 `docker-compose.yml`（直接 TLS 或 Secret 注入主密钥）的已有部署：

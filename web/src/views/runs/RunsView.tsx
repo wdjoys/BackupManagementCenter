@@ -372,8 +372,8 @@ export const RunsView: React.FC = () => {
                     <TableHeader>
                       <TableRow className="border-border hover:bg-transparent">
                         <TableHead className="text-xs font-medium">{t('runs.columns.queuedAt')}</TableHead>
-                        <TableHead className="text-xs font-medium">{t('dashboard.plan')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('runs.columns.agent')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('dashboard.plan')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('runs.filters.operation')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('common.status')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('runs.columns.snapshot')}</TableHead>
@@ -397,14 +397,6 @@ export const RunsView: React.FC = () => {
                                 {formatDateTime(run.queued_at)}
                               </Link>
                             </TableCell>
-                            <TableCell className="font-medium text-xs text-foreground">
-                              <Link
-                                to={`/runs/${run.id}`}
-                                className="hover:text-primary hover:underline"
-                              >
-                                {planLabel}
-                              </Link>
-                            </TableCell>
                             <TableCell className="text-xs text-muted-foreground">
                               {agent ? (
                                 <span>
@@ -418,6 +410,14 @@ export const RunsView: React.FC = () => {
                               ) : (
                                 <span className="font-mono">{run.agent_id || '—'}</span>
                               )}
+                            </TableCell>
+                            <TableCell className="font-medium text-xs text-foreground">
+                              <Link
+                                to={`/runs/${run.id}`}
+                                className="hover:text-primary hover:underline"
+                              >
+                                {planLabel}
+                              </Link>
                             </TableCell>
                             <TableCell className="text-xs">
                               <StatusBadge tone={operationTagType(run.operation)}>

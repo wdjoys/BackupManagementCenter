@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -105,7 +106,7 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal backup task", Cause: err}
 	}
-	if err := mapBackupSource(&task, d.SourcePathMappings); err != nil {
+	if err := mapBackupSource(&task, d.SourcePathMappings, d.SourceRoots); err != nil {
 		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path mapping failed", Cause: err}
 	}
 
@@ -476,9 +477,26 @@ func isPathBoundary(ch byte, sep string) bool {
 	return ch == sep[0] || ch == '/' || ch == '\\' || ch == ' ' || ch == '\t' || ch == '\n' || ch == ':' || ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == ',' || ch == ';'
 }
 
-func mapBackupSource(task *model.BackupTask, mappings []model.PathMapping) error {
+// mapBackupSource translates plan source paths from host paths to runtime
+// paths. Without an explicit BMC_SOURCE_PATH_MAPPINGS the host paths are
+// mirrored onto the first source root (host /etc -> /backup-sources/etc),
+// which matches the container mount convention; paths already inside a source
+// root keep working as container paths.
+// ponytail: 镜像规则只使用第一个 source root；多根或非镜像挂载布局时显式配置 BMC_SOURCE_PATH_MAPPINGS。
+func mapBackupSource(task *model.BackupTask, mappings []model.PathMapping, sourceRoots []string) error {
+	implicit := len(mappings) == 0
+	effective := mappings
+	if implicit {
+		effective = implicitSourceMapping(sourceRoots)
+	}
+	mapOne := func(path string) (string, error) {
+		if implicit && pathWithinAnyRoot(path, sourceRoots) {
+			return path, nil
+		}
+		return mapPath(path, effective, false)
+	}
 	for i, path := range task.Source.Paths {
-		mapped, err := mapPath(path, mappings, false)
+		mapped, err := mapOne(path)
 		if err != nil {
 			return err
 		}
@@ -488,20 +506,51 @@ func mapBackupSource(task *model.BackupTask, mappings []model.PathMapping) error
 		if !filepath.IsAbs(path) && !strings.HasPrefix(path, "/") {
 			continue
 		}
-		mapped, err := mapPath(path, mappings, false)
+		mapped, err := mapOne(path)
 		if err != nil {
 			return err
 		}
 		task.Source.Excludes[i] = mapped
 	}
 	if task.Kind == model.KindSQLite {
-		mapped, err := mapPath(task.Source.Path, mappings, false)
+		mapped, err := mapOne(task.Source.Path)
 		if err != nil {
 			return err
 		}
 		task.Source.Path = mapped
 	}
 	return nil
+}
+
+// implicitSourceMapping mirrors the host filesystem onto the first source
+// root. Container paths are POSIX, so the rules use slash semantics.
+func implicitSourceMapping(sourceRoots []string) []model.PathMapping {
+	for _, root := range sourceRoots {
+		clean := path.Clean(filepath.ToSlash(root))
+		if clean == "/" || !(path.IsAbs(clean) || filepath.IsAbs(filepath.FromSlash(clean))) {
+			continue
+		}
+		return []model.PathMapping{{HostPath: "/", RuntimePath: filepath.FromSlash(clean)}}
+	}
+	return nil
+}
+
+// pathWithinAnyRoot reports whether path already lives inside a source root.
+func pathWithinAnyRoot(p string, roots []string) bool {
+	clean := path.Clean(filepath.ToSlash(p))
+	if !path.IsAbs(clean) {
+		return false
+	}
+	for _, root := range roots {
+		r := path.Clean(filepath.ToSlash(root))
+		if r == "/" || !(path.IsAbs(r) || filepath.IsAbs(filepath.FromSlash(r))) {
+			continue
+		}
+		if clean == r || strings.HasPrefix(clean, r+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // validateAllowedPaths rejects paths that escape the explicitly configured
@@ -847,7 +896,7 @@ func runValidatePaths(ctx context.Context, d Deps, tempDir string, params []byte
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal validate paths task", Cause: err}
 	}
 	backupTask := model.BackupTask{Kind: model.KindFilesystem, Source: model.PlanSource{Paths: task.Paths, Excludes: task.Excludes}}
-	if err := mapBackupSource(&backupTask, d.SourcePathMappings); err != nil {
+	if err := mapBackupSource(&backupTask, d.SourcePathMappings, d.SourceRoots); err != nil {
 		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path mapping failed", Cause: err}
 	}
 	if err := validateAllowedPaths(backupTask.Source.Paths, d.SourceRoots, false); err != nil {

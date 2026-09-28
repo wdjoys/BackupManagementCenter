@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -254,7 +255,7 @@ func TestMapBackupSourceUsesLongestBoundaryMapping(t *testing.T) {
 		{HostPath: hostApp, RuntimePath: runtimeApp},
 	}
 
-	if err := mapBackupSource(&task, mappings); err != nil {
+	if err := mapBackupSource(&task, mappings, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := task.Source.Paths[0], filepath.Join(runtimeApp, "data"); got != want {
@@ -274,7 +275,7 @@ func TestMapBackupSourceRejectsUnmappedPath(t *testing.T) {
 		Source: model.PlanSource{Paths: []string{filepath.Join(t.TempDir(), "outside")}},
 	}
 	mapping := model.PathMapping{HostPath: filepath.Join(t.TempDir(), "host"), RuntimePath: filepath.Join(t.TempDir(), "runtime")}
-	if err := mapBackupSource(&task, []model.PathMapping{mapping}); err == nil {
+	if err := mapBackupSource(&task, []model.PathMapping{mapping}, nil); err == nil {
 		t.Fatal("expected unmapped path error")
 	}
 }
@@ -283,7 +284,7 @@ func TestMapBackupSourceMapsSQLitePath(t *testing.T) {
 	hostRoot := filepath.Join(t.TempDir(), "host")
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
 	task := model.BackupTask{Kind: model.KindSQLite, Source: model.PlanSource{Path: filepath.Join(hostRoot, "db", "app.sqlite")}}
-	if err := mapBackupSource(&task, []model.PathMapping{{HostPath: hostRoot, RuntimePath: runtimeRoot}}); err != nil {
+	if err := mapBackupSource(&task, []model.PathMapping{{HostPath: hostRoot, RuntimePath: runtimeRoot}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := task.Source.Path, filepath.Join(runtimeRoot, "db", "app.sqlite"); got != want {
@@ -304,4 +305,69 @@ func TestMapPathReverseLongestBoundaryAndUnmapped(t *testing.T) {
     outsideRuntime := runtime + "-application"
     if got, err := mapPath(filepath.Join(outsideRuntime, "x"), mappings, true); err != nil || got != filepath.Join(outsideRuntime, "x") { t.Fatalf("boundary/unmapped = %q, %v", got, err) }
     if _, err := mapPath(filepath.Join(host, "outside2"), []model.PathMapping{{HostPath: childHost, RuntimePath: childRuntime}}, false); err == nil { t.Fatal("expected unmapped error") }
+}
+
+func TestMapBackupSourceMirrorsHostPathsIntoSourceRoot(t *testing.T) {
+	task := model.BackupTask{
+		Kind: model.KindFilesystem,
+		Source: model.PlanSource{
+			Paths:    []string{"/etc", "/srv/app/data", "/backup-sources/etc", "/backup-sources-other/x"},
+			Excludes: []string{"/etc/cache", "*.tmp"},
+		},
+	}
+	if err := mapBackupSource(&task, nil, []string{"/backup-sources"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/backup-sources/etc", "/backup-sources/srv/app/data", "/backup-sources/etc", "/backup-sources/backup-sources-other/x"}
+	for i, w := range want {
+		// 已在 source root 内的路径原样保留（比较时不做分隔符转换）。
+		if i == 2 {
+			if task.Source.Paths[i] != w {
+				t.Fatalf("path[%d] = %q, want %q", i, task.Source.Paths[i], w)
+			}
+			continue
+		}
+		if task.Source.Paths[i] != filepath.FromSlash(w) {
+			t.Fatalf("path[%d] = %q, want %q", i, task.Source.Paths[i], filepath.FromSlash(w))
+		}
+	}
+	if task.Source.Excludes[0] != filepath.FromSlash("/backup-sources/etc/cache") || task.Source.Excludes[1] != "*.tmp" {
+		t.Fatalf("excludes = %#v", task.Source.Excludes)
+	}
+}
+
+func TestMapBackupSourceWithoutRootsKeepsPathsUntouched(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x")
+	task := model.BackupTask{Kind: model.KindFilesystem, Source: model.PlanSource{Paths: []string{p}}}
+	if err := mapBackupSource(&task, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if task.Source.Paths[0] != p {
+		t.Fatalf("path = %q, want %q", task.Source.Paths[0], p)
+	}
+}
+
+func TestMapBackupSourceExplicitMappingWinsOverMirror(t *testing.T) {
+	task := model.BackupTask{Kind: model.KindFilesystem, Source: model.PlanSource{Paths: []string{"/opt/data"}}}
+	mappings := []model.PathMapping{{HostPath: "/opt", RuntimePath: "/backup-sources/opt-mount"}}
+	if err := mapBackupSource(&task, mappings, []string{"/backup-sources"}); err != nil {
+		t.Fatal(err)
+	}
+	if task.Source.Paths[0] != filepath.FromSlash("/backup-sources/opt-mount/data") {
+		t.Fatalf("path = %q", task.Source.Paths[0])
+	}
+}
+
+func TestRunValidatePathsMirrorsHostPathIntoSourceRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "backup-sources")
+	if err := os.MkdirAll(filepath.Join(root, "etc", "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	params, err := json.Marshal(model.ValidatePathsTask{Paths: []string{"/etc/data"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runValidatePaths(context.Background(), Deps{SourceRoots: []string{root}}, t.TempDir(), params, backup.SecretBundle{}); err != nil {
+		t.Fatalf("validate paths = %v", err)
+	}
 }

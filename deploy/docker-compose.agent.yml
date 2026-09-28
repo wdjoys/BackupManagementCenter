@@ -19,16 +19,10 @@ services:
       BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC endpoint}
       # 首次注册令牌（从 Server Web UI 生成的一次性注册令牌；注册完成后建议清空并重启）
       BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
-      # 允许作为备份源的容器内根目录列表（逗号分隔，限制只能备份指定路径范围）
+      # 备份源根目录（容器内路径，逗号分隔）：计划的源路径在容器内统一位于此目录下
       BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
-      # 宿主机路径到容器内路径的映射配置（JSON 格式，告知 Server 在计划配置宿主机路径时对应的容器路径）
-      BMC_SOURCE_PATH_MAPPINGS: '${BMC_SOURCE_PATH_MAPPINGS:-{"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv"}}'
-      # 宿主机恢复目标根目录（自动映射到容器内 /backup-restore，必须是绝对路径且非根目录）
+      # 宿主机恢复根目录（自动映射到容器内 /backup-restore，必须是绝对路径且非根目录）
       BMC_RESTORE_ROOT: ${BMC_RESTORE_ROOT:-/var/lib/bmc-restore}
-      # 自定义恢复路径映射（JSON 格式，设置后将优先于 BMC_RESTORE_ROOT）
-      BMC_RESTORE_PATH_MAPPINGS: '${BMC_RESTORE_PATH_MAPPINGS-}'
-      # 允许作为恢复目标的容器内根目录列表（逗号分隔；未指定时默认基于 BMC_RESTORE_ROOT 推导）
-      BMC_RESTORE_ROOTS: ${BMC_RESTORE_ROOTS-}
       # 本地暂存目录所需的最小可用空间阈值（单位字节，0 表示不检查，空间不足时拒绝执行任务）
       BMC_SCRATCH_MIN_FREE_BYTES: ${BMC_SCRATCH_MIN_FREE_BYTES:-0}
       # Agent 并发执行任务的最大数量限制
@@ -36,11 +30,11 @@ services:
     volumes:
       - bmc-agent-state:/var/lib/bmc-agent
       - bmc-agent-scratch:/var/lib/bmc-agent/scratch
-      # 宿主机待备份目录 /etc 挂载到容器内（只读）
+      # 宿主机待备份目录挂载到容器内（只读）：约定挂到 /backup-sources/<同名路径>，
+      # 计划的源路径可直接写宿主机路径（如 /etc），Agent 自动映射为 /backup-sources/etc
       - ${BMC_SOURCE_ETC:-/etc}:/backup-sources/etc:ro
-      # 宿主机待备份目录 /srv 挂载到容器内（只读）
       - ${BMC_SOURCE_SRV:-/srv}:/backup-sources/srv:ro
-      # 宿主机恢复目标目录挂载到容器内（读写）
+      # 宿主机恢复目标目录挂载到容器内（读写），恢复操作只写入 /backup-restore
       - ${BMC_RESTORE_ROOT:-/var/lib/bmc-restore}:/backup-restore
     read_only: true
     tmpfs:

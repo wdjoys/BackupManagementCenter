@@ -567,6 +567,58 @@ func TestDeleteStorageTargetInUse(t *testing.T) {
 	// Actually we need to delete repository too — the test checks target in use.
 }
 
+func TestDeleteStorageTargetAfterUnbind(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+		ID: "agent-1", Name: "a", Hostname: "h",
+		OS: "linux", Version: "1.0", Status: model.AgentOffline,
+		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
+		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
+	})
+	if err := ts.CreateStorageTarget(ctx, &model.StorageTarget{
+		ID: "tgt-1", Name: "gdrive", Type: "rclone",
+		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateStorageTarget: %v", err)
+	}
+	if err := ts.CreateRepository(ctx, &model.Repository{
+		ID:                "repo-1",
+		AgentID:           "agent-1",
+		StorageTargetID:   "tgt-1",
+		RepositoryPath:    "gdrive:backups/srv/agent-1",
+		EncryptedPassword: []byte("pw"),
+		Status:            "pending",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("CreateRepository: %v", err)
+	}
+
+	if err := ts.DeleteStorageTarget(ctx, "tgt-1"); err != ErrInUse {
+		t.Fatalf("expected ErrInUse while repository is bound, got %v", err)
+	}
+
+	if err := ts.DetachRepository(ctx, "repo-1"); err != nil {
+		t.Fatalf("DetachRepository: %v", err)
+	}
+
+	// Unbound repositories are hidden from the UI, so they must not block the
+	// delete the operator is asking for.
+	if err := ts.DeleteStorageTarget(ctx, "tgt-1"); err != nil {
+		t.Fatalf("expected target delete to succeed after unbind, got %v", err)
+	}
+	if _, err := ts.GetStorageTarget(ctx, "tgt-1"); err != ErrNotFound {
+		t.Fatalf("expected target gone, got %v", err)
+	}
+	if _, err := ts.GetRepository(ctx, "repo-1"); err != ErrNotFound {
+		t.Fatalf("expected detached repository record to be removed, got %v", err)
+	}
+}
+
 func TestRepository(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)

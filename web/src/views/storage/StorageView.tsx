@@ -8,7 +8,7 @@ import type {
   Agent,
   StorageTargetValidateResponse,
 } from '@/api/types'
-import { toastSuccess, toastError } from '@/lib/toast'
+import { toastSuccess, toastError, toastWarning } from '@/lib/toast'
 import { Folder, Link } from 'lucide-react'
 import { StorageTargetsPanel } from './StorageTargetsPanel'
 import { RepositoriesPanel } from './RepositoriesPanel'
@@ -159,7 +159,7 @@ export const StorageView: React.FC = () => {
         remote_path: importForm.remote_path,
         validate_agent_id: importForm.validate_agent_id,
       })
-      toastSuccess(t('storage.importDialog.importSuccess'))
+      toastSuccess(t('storage.importDialog.importedSuccessfully'))
       setImportDialogOpen(false)
       await loadTargets()
     } catch (err: unknown) {
@@ -184,7 +184,7 @@ export const StorageView: React.FC = () => {
       await apiPatch<StorageTarget>(`/storage-targets/${targetToEdit.id}`, {
         name: targetNewName.trim(),
       })
-      toastSuccess(t('storage.editDialog.renameSuccess'))
+      toastSuccess(t('storage.editDialog.renamedSuccessfully'))
       setEditTargetDialogOpen(false)
       await loadTargets()
     } catch (err: unknown) {
@@ -204,10 +204,14 @@ export const StorageView: React.FC = () => {
     if (!targetToDelete) return
     try {
       await apiDelete(`/storage-targets/${targetToDelete.id}`)
-      toastSuccess(t('storage.targetDeleted'))
+      toastSuccess(t('storage.deletedSuccessfully'))
       await loadTargets()
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('storage.deleteFailed'))
+      if (isApiClientError(err) && err.code === 'conflict') {
+        toastWarning(t('storage.deleteDialog.conflict'))
+      } else {
+        toastError(isApiClientError(err) ? err.message : t('storage.deleteFailed'))
+      }
     }
   }
 
@@ -230,7 +234,7 @@ export const StorageView: React.FC = () => {
         storage_target_id: bindForm.storage_target_id,
       })
       setBindResult(res)
-      toastSuccess(t('storage.bindDialog.bindSuccess'))
+      toastSuccess(t('storage.bindDialog.boundSuccessfully'))
       await loadRepos()
     } catch (err: unknown) {
       toastError(isApiClientError(err) ? err.message : t('storage.bindDialog.bindFailed'))
@@ -263,10 +267,14 @@ export const StorageView: React.FC = () => {
     setRepoActionLoading((prev) => ({ ...prev, [repoToUnbind.id]: true }))
     try {
       await apiDelete(`/repositories/${repoToUnbind.id}`)
-      toastSuccess(t('storage.repositoryDialog.unbindSuccess'))
+      toastSuccess(t('storage.repositoryDialog.unboundSuccessfully'))
       await loadRepos()
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('storage.repositoryDialog.unbindFailed'))
+      if (isApiClientError(err) && err.code === 'conflict') {
+        toastWarning(t('storage.repositoryDialog.conflict'))
+      } else {
+        toastError(isApiClientError(err) ? err.message : t('storage.repositoryDialog.unbindFailed'))
+      }
     } finally {
       setRepoActionLoading((prev) => ({ ...prev, [repoToUnbind.id]: false }))
     }

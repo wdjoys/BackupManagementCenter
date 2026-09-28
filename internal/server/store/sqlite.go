@@ -648,10 +648,18 @@ func (s *sqliteStore) DeleteStorageTarget(ctx context.Context, id string) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check for repository references.
+	// Only active bindings block deletion. Records left behind by an unbind
+	// (detached_at set) can no longer adopt remote data once the target's
+	// credentials are gone, so they are removed together with the target.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete storage target begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	var count int
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM repositories WHERE storage_target_id = ?", id,
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM repositories WHERE storage_target_id = ? AND detached_at IS NULL", id,
 	).Scan(&count); err != nil {
 		return fmt.Errorf("delete storage target check repos: %w", err)
 	}
@@ -659,9 +667,16 @@ func (s *sqliteStore) DeleteStorageTarget(ctx context.Context, id string) error 
 		return ErrInUse
 	}
 
-	_, err := s.db.ExecContext(ctx, "DELETE FROM storage_targets WHERE id = ?", id)
-	if err != nil {
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM repositories WHERE storage_target_id = ? AND detached_at IS NOT NULL", id,
+	); err != nil {
+		return fmt.Errorf("delete storage target detached repositories: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM storage_targets WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete storage target: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete storage target commit: %w", err)
 	}
 	return nil
 }

@@ -288,7 +288,7 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
                 </Table>
               ) : (
                 <div className="p-12 text-center text-xs text-muted-foreground">
-                  {t('snapshots.emptyDirectory') || 'Empty directory.'}
+                  {t('snapshots.emptyDirectory')}
                 </div>
               )}
             </div>

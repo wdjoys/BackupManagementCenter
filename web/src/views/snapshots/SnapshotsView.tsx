@@ -98,7 +98,14 @@ export const SnapshotsView: React.FC = () => {
   const treeReqRef = useRef(0)
   const snapshotsAbortRef = useRef<AbortController | null>(null)
   const treeAbortRef = useRef<AbortController | null>(null)
-
+  const selectedRepoIdRef = useRef(selectedRepoId)
+  const selectedSnapshotRef = useRef<Snapshot | null>(null)
+  useEffect(() => {
+    selectedRepoIdRef.current = selectedRepoId
+  }, [selectedRepoId])
+  useEffect(() => {
+    selectedSnapshotRef.current = selectedSnapshot
+  }, [selectedSnapshot])
   const selectedRepo = useMemo(
     () => repos.find((r) => r.id === selectedRepoId),
     [repos, selectedRepoId]
@@ -253,10 +260,9 @@ export const SnapshotsView: React.FC = () => {
   }
 
   const loadSnapshots = async (refresh = false) => {
-    if (!selectedRepoId) return
+    const repoId = selectedRepoIdRef.current
+    if (!repoId) return
     const reqId = ++snapshotsReqRef.current
-    const repoId = selectedRepoId
-
     snapshotsAbortRef.current?.abort()
     const controller = new AbortController()
     snapshotsAbortRef.current = controller
@@ -284,7 +290,7 @@ export const SnapshotsView: React.FC = () => {
           { refresh: 1 },
           { signal: controller.signal }
         )
-        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoIdRef.current) return
         const data = response.data || []
         setSnapshots(data)
         setSnapshotsCache('HIT')
@@ -305,7 +311,7 @@ export const SnapshotsView: React.FC = () => {
         { cached: 1 },
         { signal: controller.signal }
       )
-      if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+      if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoIdRef.current) return
 
       // 服务器 204: 冷缓存或已失效
       if (cachedResp.data === undefined || cachedResp.data === null) {
@@ -321,7 +327,7 @@ export const SnapshotsView: React.FC = () => {
           undefined,
           { signal: controller.signal }
         )
-        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoIdRef.current) return
         const freshData = freshResp.data || []
         const isConfirmed =
           freshResp.meta.cache === 'HIT' ||
@@ -373,7 +379,7 @@ export const SnapshotsView: React.FC = () => {
           undefined,
           { signal: controller.signal }
         )
-        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoIdRef.current) return
         const verifyData = verifyResp.data || []
         const isConfirmed =
           verifyResp.meta.cache === 'HIT' ||
@@ -390,14 +396,14 @@ export const SnapshotsView: React.FC = () => {
         reconcileCachedTrees(repoId, new Set(verifyData.map((s) => s.id)))
       } catch (err: unknown) {
         if (isAbortError(err)) return
-        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoIdRef.current) return
         const msg = isApiClientError(err) ? err.message : t('snapshots.messages.snapshotsLoadFailed')
         toastError(msg)
         setSnapshotsLoadError(msg)
       }
     } catch (err: unknown) {
       if (isAbortError(err)) return
-      if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+      if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoIdRef.current) return
       const msg = isApiClientError(err) ? err.message : t('snapshots.messages.snapshotsLoadFailed')
       toastError(msg)
       setSnapshotsLoadError(msg)
@@ -419,6 +425,7 @@ export const SnapshotsView: React.FC = () => {
 
   useEffect(() => {
     setPlanFilter(ALL_PLANS_FILTER)
+    selectedSnapshotRef.current = null
     setSelectedSnapshot(null)
     setDetailDrawerOpen(false)
     setSnapshotsLoadError(null)
@@ -438,8 +445,8 @@ export const SnapshotsView: React.FC = () => {
   }, [selectedRepoId])
 
   const loadTree = async (
-    repoId = selectedRepoId,
-    snapshotId = selectedSnapshot?.id,
+    repoId = selectedRepoIdRef.current,
+    snapshotId = selectedSnapshotRef.current?.id,
     path = treePath,
     refresh = false
   ) => {
@@ -477,7 +484,7 @@ export const SnapshotsView: React.FC = () => {
           },
           { signal: controller.signal }
         )
-        if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
+        if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshotRef.current?.id || repoId !== selectedRepoIdRef.current) return
         const entries = response.data.entries || []
         const retPath = response.data.path || normPath
         setTreeEntries(entries)
@@ -504,7 +511,7 @@ export const SnapshotsView: React.FC = () => {
         },
         { signal: controller.signal }
       )
-      if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
+      if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshotRef.current?.id || repoId !== selectedRepoIdRef.current) return
 
       // 服务器 204: 冷缓存或已失效
       if (cachedResp.data === undefined || cachedResp.data === null) {
@@ -521,7 +528,7 @@ export const SnapshotsView: React.FC = () => {
           },
           { signal: controller.signal }
         )
-        if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
+        if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshotRef.current?.id || repoId !== selectedRepoIdRef.current) return
         const freshEntries = freshResp.data.entries || []
         const freshPath = freshResp.data.path || normPath
         const isConfirmed =
@@ -584,7 +591,7 @@ export const SnapshotsView: React.FC = () => {
           },
           { signal: controller.signal }
         )
-        if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
+        if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshotRef.current?.id || repoId !== selectedRepoIdRef.current) return
         const entries = verifyResp.data.entries || []
         const retPath = verifyResp.data.path || normPath
         const isConfirmed =
@@ -619,28 +626,33 @@ export const SnapshotsView: React.FC = () => {
   }
 
   const handleSelectSnapshot = (snapshot: Snapshot) => {
+    selectedSnapshotRef.current = snapshot
     setSelectedSnapshot(snapshot)
     setDetailDrawerOpen(true)
     setTreePath('/')
     setTreeSelectedPaths([])
     setTreeEntries([])
     setDryRunResult(null)
-    loadTree(selectedRepoId, snapshot.id, '/', false)
+    loadTree(selectedRepoIdRef.current, snapshot.id, '/', false)
   }
 
   const navigateBreadcrumb = (path: string) => {
     setTreePath(path)
     setTreeSelectedPaths([])
-    if (selectedSnapshot && selectedRepoId) {
-      loadTree(selectedRepoId, selectedSnapshot.id, path, false)
+    const snap = selectedSnapshotRef.current
+    const repo = selectedRepoIdRef.current
+    if (snap && repo) {
+      loadTree(repo, snap.id, path, false)
     }
   }
 
   const handleNavigateDir = (nextPath: string) => {
     setTreePath(nextPath)
     setTreeSelectedPaths([])
-    if (selectedSnapshot && selectedRepoId) {
-      loadTree(selectedRepoId, selectedSnapshot.id, nextPath, false)
+    const snap = selectedSnapshotRef.current
+    const repo = selectedRepoIdRef.current
+    if (snap && repo) {
+      loadTree(repo, snap.id, nextPath, false)
     }
   }
   const toggleTreeSelection = (entryName: string) => {
@@ -700,8 +712,9 @@ export const SnapshotsView: React.FC = () => {
       toastSuccess(t('snapshots.delete.initiated'))
       setDeletePromptOpen(false)
       removeSnapshotFromCache(selectedRepoId, snapshotToDelete.id)
-      if (selectedSnapshot?.id === snapshotToDelete.id) {
+      if (selectedSnapshotRef.current?.id === snapshotToDelete.id) {
         setDetailDrawerOpen(false)
+        selectedSnapshotRef.current = null
         setSelectedSnapshot(null)
       }
       setSnapshots((prev) => prev.filter((s) => s.id !== snapshotToDelete.id))
@@ -831,7 +844,14 @@ export const SnapshotsView: React.FC = () => {
 
       <SnapshotDetailSheet
         open={detailDrawerOpen}
-        onOpenChange={setDetailDrawerOpen}
+        onOpenChange={(open) => {
+          setDetailDrawerOpen(open)
+          if (!open) {
+            selectedSnapshotRef.current = null
+            setSelectedSnapshot(null)
+            treeAbortRef.current?.abort()
+          }
+        }}
         selectedSnapshotView={selectedSnapshotView}
         canRestore={canRestore}
         copiedId={copiedId}

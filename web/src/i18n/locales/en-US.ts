@@ -659,6 +659,7 @@ export default {
       "retryLoad": "Retry"
     },
     "noSnapshots": "No snapshots",
+    "emptyDirectory": "Empty directory",
     "fileBrowser": "File Browser",
     "snapshotPrefix": "snapshot {{id}}",
     "restoreThisSnapshot": "Restore this Snapshot",

@@ -659,6 +659,7 @@ export default {
       "retryLoad": "重试加载"
     },
     "noSnapshots": "暂无快照",
+    "emptyDirectory": "目录为空",
     "fileBrowser": "文件浏览",
     "snapshotPrefix": "快照 {{id}}",
     "restoreThisSnapshot": "恢复此快照",

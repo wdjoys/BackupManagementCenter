@@ -645,10 +645,18 @@ export default {
     "noFilteredSnapshots": "No snapshots match the current filter",
     "filesystemRestoreOnly": "This page only supports filesystem snapshot restore",
     "cache": {
-      "hit": "cache hit",
-      "miss": "verified remotely",
+      "hit": "Verified",
+      "miss": "Verified",
+      "stale": "Pending verification",
+      "verifying": "Verifying",
+      "verified": "Verified",
+      "verifiedAt": "Verified at {time}",
       "status": "{status}; verified at {time}",
-      "unknownTime": "unknown time"
+      "unknownTime": "unknown time",
+      "unverifiedWarning": "Data is pending background verification; deletion and restore are disabled",
+      "deleteDisabled": "Snapshot list is pending verification; deletion is disabled",
+      "restoreDisabled": "Snapshot or directory tree is pending verification; restore is disabled",
+      "retryLoad": "Retry"
     },
     "noSnapshots": "No snapshots",
     "fileBrowser": "File Browser",

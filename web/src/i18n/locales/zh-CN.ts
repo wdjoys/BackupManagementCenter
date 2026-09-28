@@ -645,10 +645,18 @@ export default {
     "noFilteredSnapshots": "当前筛选没有结果",
     "filesystemRestoreOnly": "当前页面仅支持文件系统快照恢复",
     "cache": {
-      "hit": "缓存命中",
-      "miss": "已远程验证",
+      "hit": "已验证",
+      "miss": "已核验",
+      "stale": "待验证",
+      "verifying": "正在核验",
+      "verified": "已验证",
+      "verifiedAt": "验证时间：{time}",
       "status": "{status}；验证时间：{time}",
-      "unknownTime": "未知"
+      "unknownTime": "未知",
+      "unverifiedWarning": "数据待后台核验，在此期间禁用删除与恢复操作",
+      "deleteDisabled": "快照列表未被核验，暂时禁用删除",
+      "restoreDisabled": "快照或目录树待核验，暂时禁用恢复",
+      "retryLoad": "重试加载"
     },
     "noSnapshots": "暂无快照",
     "fileBrowser": "文件浏览",

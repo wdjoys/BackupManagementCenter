@@ -131,6 +131,8 @@ type LogStore interface {
 type SnapshotCacheStore interface {
 	GetSnapshotListCache(ctx context.Context, repositoryID string) (*SnapshotListCache, error)
 	GetSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string) (*SnapshotTreeCache, error)
+	GetSnapshotListBrowseCache(ctx context.Context, repositoryID string) (*SnapshotListCache, bool, error)
+	GetSnapshotTreeBrowseCache(ctx context.Context, repositoryID, snapshotID, cachePath string) (*SnapshotTreeCache, bool, error)
 	SnapshotCacheGeneration(ctx context.Context, repositoryID string) (int64, error)
 	SaveSnapshotListCache(ctx context.Context, repositoryID string, generation int64, snapshotsJSON, fingerprint string, verifiedAt time.Time) error
 	SaveSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string, generation int64, treeJSON string, verifiedAt time.Time) error

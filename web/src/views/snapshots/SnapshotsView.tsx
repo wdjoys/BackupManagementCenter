@@ -25,6 +25,18 @@ import {
   type RestoreResponse,
   type SnapshotView,
 } from './Types'
+import {
+  getCachedSnapshotList,
+  setCachedSnapshotList,
+  removeCachedSnapshotList,
+  getCachedTree,
+  setCachedTree,
+  removeCachedTree,
+  removeSnapshotFromCache,
+  reconcileCachedTrees,
+  normalizeSnapshotPath,
+  type CacheStatus,
+} from './browseCache'
 import { SnapshotFilters } from './SnapshotFilters'
 import { SnapshotList } from './SnapshotList'
 import { SnapshotDetailSheet } from './SnapshotDetailSheet'
@@ -44,13 +56,20 @@ export const SnapshotsView: React.FC = () => {
   const [planFilter, setPlanFilter] = useState<string>(ALL_PLANS_FILTER)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [snapshotsLoading, setSnapshotsLoading] = useState(false)
-  const [snapshotsCache, setSnapshotsCache] = useState<string | null>(null)
+  const [snapshotsVerifying, setSnapshotsVerifying] = useState(false)
+  const [snapshotsCache, setSnapshotsCache] = useState<CacheStatus>(null)
   const [snapshotsVerifiedAt, setSnapshotsVerifiedAt] = useState<string | null>(null)
+  const [serverConfirmedHit, setServerConfirmedHit] = useState(false)
+  const [snapshotsLoadError, setSnapshotsLoadError] = useState<string | null>(null)
 
   // Drawer / Tree Explorer
   const [selectedSnapshot, setSelectedSnapshot] = useState<Snapshot | null>(null)
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false)
   const [treeLoading, setTreeLoading] = useState(false)
+  const [treeVerifying, setTreeVerifying] = useState(false)
+  const [treeCacheStatus, setTreeCacheStatus] = useState<CacheStatus>(null)
+  const [treeVerifiedAt, setTreeVerifiedAt] = useState<string | null>(null)
+  const [treeServerConfirmedHit, setTreeServerConfirmedHit] = useState(false)
   const [treeEntries, setTreeEntries] = useState<TreeEntry[]>([])
   const [treePath, setTreePath] = useState('/')
   const [treeSelectedPaths, setTreeSelectedPaths] = useState<string[]>([])
@@ -184,10 +203,33 @@ export const SnapshotsView: React.FC = () => {
     return selectedSnapshot ? snapshotView(selectedSnapshot) : null
   }, [selectedSnapshot, plans, selectedAgent, t])
 
-  const canRestore = useMemo(() => {
-    return selectedSnapshotView?.kind === 'filesystem'
-  }, [selectedSnapshotView])
+  const canDelete = Boolean(
+    serverConfirmedHit && !snapshotsLoading && !snapshotsVerifying
+  )
 
+  const canRestore = useMemo(() => {
+    return Boolean(
+      selectedSnapshotView?.kind === 'filesystem' &&
+      selectedSnapshot &&
+      selectedRepo?.agent_id &&
+      serverConfirmedHit &&
+      treeServerConfirmedHit &&
+      !snapshotsLoading &&
+      !snapshotsVerifying &&
+      !treeLoading &&
+      !treeVerifying
+    )
+  }, [
+    selectedSnapshotView,
+    selectedSnapshot,
+    selectedRepo,
+    serverConfirmedHit,
+    treeServerConfirmedHit,
+    snapshotsLoading,
+    snapshotsVerifying,
+    treeLoading,
+    treeVerifying,
+  ])
   const loadRepos = async () => {
     setReposLoading(true)
     setMainError(null)
@@ -219,24 +261,144 @@ export const SnapshotsView: React.FC = () => {
     const controller = new AbortController()
     snapshotsAbortRef.current = controller
 
-    setSnapshotsLoading(true)
+    setSnapshotsLoadError(null)
+
+    // 1. 同步展示内存项（若存在且非强制刷新）
+    const memCached = !refresh ? getCachedSnapshotList(repoId) : undefined
+    if (memCached) {
+      setSnapshots(memCached.snapshots)
+      setSnapshotsCache(memCached.cacheStatus)
+      setSnapshotsVerifiedAt(memCached.verifiedAt)
+      setServerConfirmedHit(false)
+      setSnapshotsLoading(false)
+    } else {
+      setSnapshotsLoading(true)
+    }
+
+    setSnapshotsVerifying(true)
+
     try {
-      const response = await apiGetWithMeta<Snapshot[]>(
+      if (refresh) {
+        const response = await apiGetWithMeta<Snapshot[]>(
+          `/repositories/${repoId}/snapshots`,
+          { refresh: 1 },
+          { signal: controller.signal }
+        )
+        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+        const data = response.data || []
+        setSnapshots(data)
+        setSnapshotsCache('HIT')
+        setSnapshotsVerifiedAt(response.meta.verifiedAt)
+        setServerConfirmedHit(true)
+        setCachedSnapshotList(repoId, {
+          snapshots: data,
+          cacheStatus: 'HIT',
+          verifiedAt: response.meta.verifiedAt,
+        })
+        reconcileCachedTrees(repoId, new Set(data.map((s) => s.id)))
+        return
+      }
+
+      // 先查 cached=1
+      const cachedResp = await apiGetWithMeta<Snapshot[]>(
         `/repositories/${repoId}/snapshots`,
-        { refresh: refresh ? 1 : undefined },
+        { cached: 1 },
         { signal: controller.signal }
       )
       if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
-      setSnapshots(response.data)
-      setSnapshotsCache(response.meta.cache)
-      setSnapshotsVerifiedAt(response.meta.verifiedAt)
+
+      // 服务器 204: 冷缓存或已失效
+      if (cachedResp.data === undefined || cachedResp.data === null) {
+        removeCachedSnapshotList(repoId)
+        if (memCached) {
+          setSnapshots([])
+          setSnapshotsCache(null)
+          setSnapshotsVerifiedAt(null)
+          setSnapshotsLoading(true)
+        }
+        const freshResp = await apiGetWithMeta<Snapshot[]>(
+          `/repositories/${repoId}/snapshots`,
+          undefined,
+          { signal: controller.signal }
+        )
+        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+        const freshData = freshResp.data || []
+        setSnapshots(freshData)
+        setSnapshotsCache((freshResp.meta.cache as CacheStatus) || 'HIT')
+        setSnapshotsVerifiedAt(freshResp.meta.verifiedAt)
+        setServerConfirmedHit(freshResp.meta.cache === 'HIT')
+        setCachedSnapshotList(repoId, {
+          snapshots: freshData,
+          cacheStatus: (freshResp.meta.cache as CacheStatus) || 'HIT',
+          verifiedAt: freshResp.meta.verifiedAt,
+        })
+        reconcileCachedTrees(repoId, new Set(freshData.map((s) => s.id)))
+        return
+      }
+
+      // 服务器 200 HIT: 无需调 Agent
+      const cachedData = cachedResp.data
+      if (cachedResp.meta.cache === 'HIT') {
+        setSnapshots(cachedData)
+        setSnapshotsCache('HIT')
+        setSnapshotsVerifiedAt(cachedResp.meta.verifiedAt)
+        setServerConfirmedHit(true)
+        setCachedSnapshotList(repoId, {
+          snapshots: cachedData,
+          cacheStatus: 'HIT',
+          verifiedAt: cachedResp.meta.verifiedAt,
+        })
+        reconcileCachedTrees(repoId, new Set(cachedData.map((s) => s.id)))
+        return
+      }
+
+      // 服务器 200 STALE: 立即展示待验证列表，后台发起原默认 GET 核验
+      setSnapshots(cachedData)
+      setSnapshotsCache('STALE')
+      setSnapshotsVerifiedAt(cachedResp.meta.verifiedAt)
+      setServerConfirmedHit(false)
+      setCachedSnapshotList(repoId, {
+        snapshots: cachedData,
+        cacheStatus: 'STALE',
+        verifiedAt: cachedResp.meta.verifiedAt,
+      })
+      setSnapshotsLoading(false)
+
+      try {
+        const verifyResp = await apiGetWithMeta<Snapshot[]>(
+          `/repositories/${repoId}/snapshots`,
+          undefined,
+          { signal: controller.signal }
+        )
+        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+        const verifyData = verifyResp.data || []
+        setSnapshots(verifyData)
+        setSnapshotsCache((verifyResp.meta.cache as CacheStatus) || 'HIT')
+        setSnapshotsVerifiedAt(verifyResp.meta.verifiedAt)
+        setServerConfirmedHit(verifyResp.meta.cache === 'HIT')
+        setCachedSnapshotList(repoId, {
+          snapshots: verifyData,
+          cacheStatus: (verifyResp.meta.cache as CacheStatus) || 'HIT',
+          verifiedAt: verifyResp.meta.verifiedAt,
+        })
+        reconcileCachedTrees(repoId, new Set(verifyData.map((s) => s.id)))
+      } catch (err: unknown) {
+        if (isAbortError(err)) return
+        if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
+        const msg = isApiClientError(err) ? err.message : t('snapshots.messages.snapshotsLoadFailed')
+        toastError(msg)
+        setSnapshotsLoadError(msg)
+      }
     } catch (err: unknown) {
       if (isAbortError(err)) return
       if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
-      toastError(isApiClientError(err) ? err.message : t('snapshots.messages.snapshotsLoadFailed'))
+      const msg = isApiClientError(err) ? err.message : t('snapshots.messages.snapshotsLoadFailed')
+      toastError(msg)
+      setSnapshotsLoadError(msg)
     } finally {
       if (reqId === snapshotsReqRef.current) {
         setSnapshotsLoading(false)
+        setSnapshotsVerifying(false)
       }
     }
   }
@@ -251,40 +413,187 @@ export const SnapshotsView: React.FC = () => {
 
   useEffect(() => {
     setPlanFilter(ALL_PLANS_FILTER)
-    setSnapshots([])
-    setSnapshotsCache(null)
-    setSnapshotsVerifiedAt(null)
     setSelectedSnapshot(null)
     setDetailDrawerOpen(false)
+    setSnapshotsLoadError(null)
+    setTreeEntries([])
+    setTreePath('/')
+    setTreeCacheStatus(null)
+    setTreeVerifiedAt(null)
+    setTreeServerConfirmedHit(false)
     if (selectedRepoId) {
-      loadSnapshots()
+      loadSnapshots(false)
+    } else {
+      setSnapshots([])
+      setSnapshotsCache(null)
+      setSnapshotsVerifiedAt(null)
+      setServerConfirmedHit(false)
     }
   }, [selectedRepoId])
 
-  const loadTree = async (path = treePath, refresh = false) => {
-    if (!selectedSnapshot || !selectedRepoId) return
+  const loadTree = async (
+    repoId = selectedRepoId,
+    snapshotId = selectedSnapshot?.id,
+    path = treePath,
+    refresh = false
+  ) => {
+    if (!snapshotId || !repoId) return
+    const normPath = normalizeSnapshotPath(path)
     const reqId = ++treeReqRef.current
-    const snapshotId = selectedSnapshot.id
-    const repoId = selectedRepoId
 
     treeAbortRef.current?.abort()
     const controller = new AbortController()
     treeAbortRef.current = controller
 
-    setTreeLoading(true)
+    const memCached = !refresh ? getCachedTree(repoId, snapshotId, normPath) : undefined
+    if (memCached) {
+      setTreeEntries(memCached.entries)
+      setTreePath(memCached.path)
+      setTreeCacheStatus(memCached.cacheStatus)
+      setTreeVerifiedAt(memCached.verifiedAt)
+      setTreeServerConfirmedHit(false)
+      setTreeLoading(false)
+    } else {
+      setTreeEntries([])
+      setTreeLoading(true)
+    }
+
+    setTreeVerifying(true)
+
     try {
-      const response = await apiGetWithMeta<TreeResponse>(
+      if (refresh) {
+        const response = await apiGetWithMeta<TreeResponse>(
+          `/snapshots/${snapshotId}/tree`,
+          {
+            repo: repoId,
+            path: normPath,
+            refresh: 1,
+          },
+          { signal: controller.signal }
+        )
+        if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
+        const entries = response.data.entries || []
+        const retPath = response.data.path || normPath
+        setTreeEntries(entries)
+        setTreePath(retPath)
+        setTreeCacheStatus('HIT')
+        setTreeVerifiedAt(response.meta.verifiedAt)
+        setTreeServerConfirmedHit(true)
+        setCachedTree(repoId, snapshotId, normPath, {
+          entries,
+          path: retPath,
+          cacheStatus: 'HIT',
+          verifiedAt: response.meta.verifiedAt,
+        })
+        return
+      }
+
+      // 先查 cached=1
+      const cachedResp = await apiGetWithMeta<TreeResponse>(
         `/snapshots/${snapshotId}/tree`,
         {
           repo: repoId,
-          path,
-          refresh: refresh ? 1 : undefined,
+          path: normPath,
+          cached: 1,
         },
         { signal: controller.signal }
       )
       if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
-      setTreeEntries(response.data.entries || [])
-      setTreePath(response.data.path || path)
+
+      // 服务器 204: 冷缓存或已失效
+      if (cachedResp.data === undefined || cachedResp.data === null) {
+        removeCachedTree(repoId, snapshotId, normPath)
+        if (memCached) {
+          setTreeEntries([])
+          setTreeLoading(true)
+        }
+        const freshResp = await apiGetWithMeta<TreeResponse>(
+          `/snapshots/${snapshotId}/tree`,
+          {
+            repo: repoId,
+            path: normPath,
+          },
+          { signal: controller.signal }
+        )
+        if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
+        const freshEntries = freshResp.data.entries || []
+        const freshPath = freshResp.data.path || normPath
+        setTreeEntries(freshEntries)
+        setTreePath(freshPath)
+        setTreeCacheStatus((freshResp.meta.cache as CacheStatus) || 'HIT')
+        setTreeVerifiedAt(freshResp.meta.verifiedAt)
+        setTreeServerConfirmedHit(freshResp.meta.cache === 'HIT')
+        setCachedTree(repoId, snapshotId, normPath, {
+          entries: freshEntries,
+          path: freshPath,
+          cacheStatus: (freshResp.meta.cache as CacheStatus) || 'HIT',
+          verifiedAt: freshResp.meta.verifiedAt,
+        })
+        return
+      }
+
+      // 服务器 200 HIT: 无需调 Agent
+      if (cachedResp.meta.cache === 'HIT') {
+        const entries = cachedResp.data.entries || []
+        const retPath = cachedResp.data.path || normPath
+        setTreeEntries(entries)
+        setTreePath(retPath)
+        setTreeCacheStatus('HIT')
+        setTreeVerifiedAt(cachedResp.meta.verifiedAt)
+        setTreeServerConfirmedHit(true)
+        setCachedTree(repoId, snapshotId, normPath, {
+          entries,
+          path: retPath,
+          cacheStatus: 'HIT',
+          verifiedAt: cachedResp.meta.verifiedAt,
+        })
+        return
+      }
+
+      // 服务器 200 STALE: 立即展示待验证树，后台发起默认 GET 核验
+      const staleEntries = cachedResp.data.entries || []
+      const stalePath = cachedResp.data.path || normPath
+      setTreeEntries(staleEntries)
+      setTreePath(stalePath)
+      setTreeCacheStatus('STALE')
+      setTreeVerifiedAt(cachedResp.meta.verifiedAt)
+      setTreeServerConfirmedHit(false)
+      setCachedTree(repoId, snapshotId, normPath, {
+        entries: staleEntries,
+        path: stalePath,
+        cacheStatus: 'STALE',
+        verifiedAt: cachedResp.meta.verifiedAt,
+      })
+      setTreeLoading(false)
+
+      try {
+        const verifyResp = await apiGetWithMeta<TreeResponse>(
+          `/snapshots/${snapshotId}/tree`,
+          {
+            repo: repoId,
+            path: normPath,
+          },
+          { signal: controller.signal }
+        )
+        if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
+        const entries = verifyResp.data.entries || []
+        const retPath = verifyResp.data.path || normPath
+        setTreeEntries(entries)
+        setTreePath(retPath)
+        setTreeCacheStatus((verifyResp.meta.cache as CacheStatus) || 'HIT')
+        setTreeVerifiedAt(verifyResp.meta.verifiedAt)
+        setTreeServerConfirmedHit(verifyResp.meta.cache === 'HIT')
+        setCachedTree(repoId, snapshotId, normPath, {
+          entries,
+          path: retPath,
+          cacheStatus: (verifyResp.meta.cache as CacheStatus) || 'HIT',
+          verifiedAt: verifyResp.meta.verifiedAt,
+        })
+      } catch (err: unknown) {
+        if (isAbortError(err)) return
+        if (reqId !== treeReqRef.current) return
+        toastError(isApiClientError(err) ? err.message : t('snapshots.messages.treeLoadFailed'))
+      }
     } catch (err: unknown) {
       if (isAbortError(err)) return
       if (reqId !== treeReqRef.current) return
@@ -292,6 +601,7 @@ export const SnapshotsView: React.FC = () => {
     } finally {
       if (reqId === treeReqRef.current) {
         setTreeLoading(false)
+        setTreeVerifying(false)
       }
     }
   }
@@ -303,21 +613,24 @@ export const SnapshotsView: React.FC = () => {
     setTreeSelectedPaths([])
     setTreeEntries([])
     setDryRunResult(null)
-    loadTree('/')
+    loadTree(selectedRepoId, snapshot.id, '/', false)
   }
 
   const navigateBreadcrumb = (path: string) => {
     setTreePath(path)
     setTreeSelectedPaths([])
-    loadTree(path)
+    if (selectedSnapshot && selectedRepoId) {
+      loadTree(selectedRepoId, selectedSnapshot.id, path, false)
+    }
   }
 
   const handleNavigateDir = (nextPath: string) => {
     setTreePath(nextPath)
     setTreeSelectedPaths([])
-    loadTree(nextPath)
+    if (selectedSnapshot && selectedRepoId) {
+      loadTree(selectedRepoId, selectedSnapshot.id, nextPath, false)
+    }
   }
-
   const toggleTreeSelection = (entryName: string) => {
     const fullPath = treePath === '/' ? `/${entryName}` : `${treePath}/${entryName}`
     setTreeSelectedPaths((prev) => {
@@ -374,10 +687,12 @@ export const SnapshotsView: React.FC = () => {
       )
       toastSuccess(t('snapshots.delete.initiated'))
       setDeletePromptOpen(false)
+      removeSnapshotFromCache(selectedRepoId, snapshotToDelete.id)
       if (selectedSnapshot?.id === snapshotToDelete.id) {
         setDetailDrawerOpen(false)
         setSelectedSnapshot(null)
       }
+      setSnapshots((prev) => prev.filter((s) => s.id !== snapshotToDelete.id))
       await loadSnapshots()
     } catch (err: unknown) {
       toastError(isApiClientError(err) ? err.message : t('snapshots.delete.failed'))
@@ -484,7 +799,10 @@ export const SnapshotsView: React.FC = () => {
             snapshotsVerifiedAt={snapshotsVerifiedAt}
             snapshotsCount={filteredSnapshots.length}
             snapshotsLoading={snapshotsLoading}
+            snapshotsVerifying={snapshotsVerifying}
+            snapshotsError={snapshotsLoadError}
             onRefresh={() => loadSnapshots(true)}
+            onRetry={() => loadSnapshots(false)}
           />
 
           <SnapshotList
@@ -494,6 +812,7 @@ export const SnapshotsView: React.FC = () => {
             filteredSnapshots={filteredSnapshots}
             onSelectSnapshot={handleSelectSnapshot}
             onDeleteSnapshot={openDeletePrompt}
+            canDelete={canDelete}
           />
         </div>
       )}
@@ -505,6 +824,9 @@ export const SnapshotsView: React.FC = () => {
         canRestore={canRestore}
         copiedId={copiedId}
         treeLoading={treeLoading}
+        treeVerifying={treeVerifying}
+        treeCacheStatus={treeCacheStatus}
+        treeVerifiedAt={treeVerifiedAt}
         treeEntries={treeEntries}
         treePath={treePath}
         breadcrumbs={breadcrumbs}

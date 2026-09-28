@@ -1678,6 +1678,11 @@ func (o *Orchestrator) filterHiddenSnapshots(ctx context.Context, repoID string,
 	return filtered
 }
 
+// FilterHiddenSnapshots 公开暴露 filterHiddenSnapshots，供 API 层在浏览缓存只读模式下复用隐藏快照过滤逻辑。
+func (o *Orchestrator) FilterHiddenSnapshots(ctx context.Context, repoID string, snaps []model.Snapshot) []model.Snapshot {
+	return o.filterHiddenSnapshots(ctx, repoID, snaps)
+}
+
 // QueueSnapshotDeletion 记录手动删除意图。旧缓存继续提供浏览数据，
 // filterHiddenSnapshots 会立即隐藏待删除快照；远端刷新成功后再替换缓存。
 // HTTP 请求不等待 Agent，也不直接调用 restic；真正的 forget 由 scheduler

@@ -10,6 +10,8 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { StatusBadge } from '@/components/StatusBadge'
 import { PageLoadingState } from '@/components/PageLoadingState'
 import { formatDateTime } from '@/i18n'
 import type { TreeEntry } from '@/api/types'
@@ -23,6 +25,7 @@ import {
   ChevronRight,
   ExternalLink,
   X,
+  Loader2,
 } from 'lucide-react'
 
 export interface SnapshotDetailSheetProps {
@@ -36,6 +39,9 @@ export interface SnapshotDetailSheetProps {
   treePath: string
   breadcrumbs: BreadcrumbPart[]
   treeSelectedPaths: string[]
+  treeCacheStatus?: string | null
+  treeVerifiedAt?: string | null
+  treeVerifying?: boolean
   onViewRun: (runId: string) => void
   onOpenRestore: () => void
   onCopySnapshotId: () => void
@@ -55,6 +61,9 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
   treePath,
   breadcrumbs,
   treeSelectedPaths,
+  treeCacheStatus,
+  treeVerifiedAt,
+  treeVerifying,
   onViewRun,
   onOpenRestore,
   onCopySnapshotId,
@@ -91,15 +100,34 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
                       {t('snapshots.viewRun')}
                     </Button>
                   )}
-                  <Button
-                    size="sm"
-                    disabled={!canRestore}
-                    onClick={onOpenRestore}
-                    className="h-7 text-xs gap-1.5 bg-primary text-primary-foreground"
-                  >
-                    <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                    {t('snapshots.restoreThisSnapshot')}
-                  </Button>
+                  {canRestore ? (
+                    <Button
+                      size="sm"
+                      onClick={onOpenRestore}
+                      className="h-7 text-xs gap-1.5 bg-primary text-primary-foreground"
+                    >
+                      <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                      {t('snapshots.restoreThisSnapshot')}
+                    </Button>
+                  ) : (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-block cursor-not-allowed">
+                          <Button
+                            size="sm"
+                            disabled
+                            className="h-7 text-xs gap-1.5 bg-primary/40 text-primary-foreground pointer-events-none"
+                          >
+                            <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                            {t('snapshots.restoreThisSnapshot')}
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>{t('snapshots.cache.restoreDisabled')}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                 </div>
                 <Button
                   variant="ghost"
@@ -136,6 +164,35 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
               <div className="flex items-center justify-between text-muted-foreground">
                 <span>{t('snapshots.browseTable.paths')}:</span>
                 <span className="font-mono text-foreground">{selectedSnapshotView.raw.paths.join(', ') || '—'}</span>
+              </div>
+              <div className="flex items-center justify-between text-muted-foreground">
+                <span>{t('snapshots.fileBrowser')}:</span>
+                <div className="flex items-center gap-1.5 font-mono">
+                  {treeVerifying ? (
+                    <span className="flex items-center gap-1 text-amber-500">
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                      {t('snapshots.cache.verifying')}
+                    </span>
+                  ) : treeCacheStatus === 'STALE' ? (
+                    <span className="flex items-center gap-1">
+                      <StatusBadge tone="warning">{t('snapshots.cache.stale')}</StatusBadge>
+                      {treeVerifiedAt && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {t('snapshots.cache.verifiedAt', { time: formatDateTime(treeVerifiedAt) })}
+                        </span>
+                      )}
+                    </span>
+                  ) : treeCacheStatus === 'HIT' ? (
+                    <span className="flex items-center gap-1">
+                      <StatusBadge tone="success">{t('snapshots.cache.verified')}</StatusBadge>
+                      {treeVerifiedAt && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {t('snapshots.cache.verifiedAt', { time: formatDateTime(treeVerifiedAt) })}
+                        </span>
+                      )}
+                    </span>
+                  ) : null}
+                </div>
               </div>
             </div>
 

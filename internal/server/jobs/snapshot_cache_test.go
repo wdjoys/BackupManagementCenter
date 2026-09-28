@@ -79,6 +79,30 @@ func (s *cacheTestStore) GetSnapshotTreeCache(ctx context.Context, repositoryID,
 	return &copy, nil
 }
 
+func (s *cacheTestStore) GetSnapshotListBrowseCache(ctx context.Context, repositoryID string) (*store.SnapshotListCache, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.list == nil || s.list.RepositoryID != repositoryID {
+		return nil, false, store.ErrNotFound
+	}
+	copy := *s.list
+	stale := !s.listFresh || s.list.Generation != s.generation
+	return &copy, stale, nil
+}
+
+func (s *cacheTestStore) GetSnapshotTreeBrowseCache(ctx context.Context, repositoryID, snapshotID, path string) (*store.SnapshotTreeCache, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path = store.NormalizeSnapshotPath(path)
+	cached := s.trees[repositoryID+"\x00"+snapshotID+"\x00"+path]
+	if cached == nil {
+		return nil, false, store.ErrNotFound
+	}
+	copy := *cached
+	stale := !s.listFresh || cached.Generation != s.generation
+	return &copy, stale, nil
+}
+
 func (s *cacheTestStore) SnapshotCacheGeneration(ctx context.Context, repositoryID string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

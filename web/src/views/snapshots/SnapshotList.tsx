@@ -19,6 +19,7 @@ export interface SnapshotListProps {
   filteredSnapshots: SnapshotView[]
   onSelectSnapshot: (snapshot: Snapshot) => void
   onDeleteSnapshot: (e: React.MouseEvent, snapshot: Snapshot) => void
+  canDelete?: boolean
 }
 
 export const SnapshotList: React.FC<SnapshotListProps> = ({
@@ -28,6 +29,7 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
   filteredSnapshots,
   onSelectSnapshot,
   onDeleteSnapshot,
+  canDelete = false,
 }) => {
   const { t } = useTranslation()
 
@@ -125,16 +127,38 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                             <Folder className="h-3.5 w-3.5" aria-hidden="true" />
                             {t('snapshots.viewDetails')}
                           </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
-                            onClick={(e) => onDeleteSnapshot(e, item.raw)}
-                            aria-label={t('common.delete')}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                            {t('common.delete')}
-                          </Button>
+                          {canDelete ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                              onClick={(e) => onDeleteSnapshot(e, item.raw)}
+                              aria-label={t('common.delete')}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                              {t('common.delete')}
+                            </Button>
+                          ) : (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="inline-block cursor-not-allowed">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled
+                                    className="h-7 text-xs text-rose-600/40 dark:text-rose-400/40 gap-1 pointer-events-none"
+                                    aria-label={t('common.delete')}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                    {t('common.delete')}
+                                  </Button>
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>{t('snapshots.cache.deleteDisabled')}</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -178,16 +202,38 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                       <Folder className="h-3.5 w-3.5" aria-hidden="true" />
                       {t('snapshots.viewDetails')}
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
-                      onClick={(e) => onDeleteSnapshot(e, item.raw)}
-                      aria-label={t('common.delete')}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                      {t('common.delete')}
-                    </Button>
+                    {canDelete ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                        onClick={(e) => onDeleteSnapshot(e, item.raw)}
+                        aria-label={t('common.delete')}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        {t('common.delete')}
+                      </Button>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-block cursor-not-allowed">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled
+                              className="h-7 text-xs text-rose-600/40 dark:text-rose-400/40 gap-1 pointer-events-none"
+                              aria-label={t('common.delete')}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                              {t('common.delete')}
+                            </Button>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>{t('snapshots.cache.deleteDisabled')}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
                   </div>
                 </div>
               ))}

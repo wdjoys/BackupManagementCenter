@@ -9,7 +9,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, Loader2, AlertCircle } from 'lucide-react'
+import { StatusBadge } from '@/components/StatusBadge'
+import { formatDateTime } from '@/i18n'
 import type { Repository, Plan } from '@/api/types'
 import {
   ALL_PLANS_FILTER,
@@ -29,7 +31,10 @@ export interface SnapshotFiltersProps {
   snapshotsVerifiedAt: string | null
   snapshotsCount: number
   snapshotsLoading: boolean
+  snapshotsVerifying?: boolean
+  snapshotsError?: string | null
   onRefresh: () => void
+  onRetry?: () => void
 }
 
 export const SnapshotFilters: React.FC<SnapshotFiltersProps> = ({
@@ -44,7 +49,10 @@ export const SnapshotFilters: React.FC<SnapshotFiltersProps> = ({
   snapshotsVerifiedAt,
   snapshotsCount,
   snapshotsLoading,
+  snapshotsVerifying,
+  snapshotsError,
   onRefresh,
+  onRetry,
 }) => {
   const { t } = useTranslation()
 
@@ -92,11 +100,41 @@ export const SnapshotFilters: React.FC<SnapshotFiltersProps> = ({
             </Select>
           )}
 
-          {snapshotsCache && (
-            <span className="text-[11px] text-muted-foreground">
-              Cache: {snapshotsCache}{' '}
-              {snapshotsVerifiedAt && `(${new Date(snapshotsVerifiedAt).toLocaleTimeString()})`}
-            </span>
+          {snapshotsVerifying ? (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
+              <Loader2 className="h-3 w-3 animate-spin text-amber-500" aria-hidden="true" />
+              <span>{t('snapshots.cache.verifying')}</span>
+            </div>
+          ) : snapshotsCache === 'STALE' ? (
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <StatusBadge tone="warning">{t('snapshots.cache.stale')}</StatusBadge>
+              {snapshotsVerifiedAt && (
+                <span className="text-[11px] text-muted-foreground">
+                  {t('snapshots.cache.verifiedAt', { time: formatDateTime(snapshotsVerifiedAt) })}
+                </span>
+              )}
+            </div>
+          ) : snapshotsCache === 'HIT' ? (
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <StatusBadge tone="success">{t('snapshots.cache.verified')}</StatusBadge>
+              {snapshotsVerifiedAt && (
+                <span className="text-[11px] text-muted-foreground">
+                  {t('snapshots.cache.verifiedAt', { time: formatDateTime(snapshotsVerifiedAt) })}
+                </span>
+              )}
+            </div>
+          ) : null}
+
+          {snapshotsError && (
+            <div className="flex items-center gap-2 text-xs text-rose-500 font-mono">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate max-w-[200px]" title={snapshotsError}>{snapshotsError}</span>
+              {onRetry && (
+                <Button variant="ghost" size="sm" onClick={onRetry} className="h-6 px-1.5 text-xs text-rose-500 underline">
+                  {t('snapshots.cache.retryLoad')}
+                </Button>
+              )}
+            </div>
           )}
         </div>
 
@@ -109,10 +147,10 @@ export const SnapshotFilters: React.FC<SnapshotFiltersProps> = ({
               variant="outline"
               size="sm"
               onClick={onRefresh}
-              disabled={snapshotsLoading}
+              disabled={snapshotsLoading || snapshotsVerifying}
               className="h-8 text-xs gap-1.5"
             >
-              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+              <RefreshCw className={`h-3.5 w-3.5 ${snapshotsVerifying ? 'animate-spin' : ''}`} aria-hidden="true" />
               {t('common.refresh')}
             </Button>
           </div>

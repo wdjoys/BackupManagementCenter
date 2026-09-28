@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { apiGet, apiPost, isApiClientError } from '@/api/client'
 import type { AuthUser } from '@/api/types'
+import { clearBrowseCache } from '@/views/snapshots/browseCache'
 
 interface AuthState {
   me: AuthUser | null
@@ -13,7 +14,7 @@ interface AuthState {
   setup: (username: string, password: string) => Promise<void>
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   me: null,
   loading: true,
   initialized: false,
@@ -22,9 +23,14 @@ export const useAuthStore = create<AuthState>((set) => ({
   fetchMe: async () => {
     try {
       const user = await apiGet<AuthUser>('/auth/me')
+      const prev = get().me
+      if (!prev || prev.username !== user.username) {
+        clearBrowseCache()
+      }
       set({ me: user, loading: false, initialized: true, isLoggedIn: true })
       return true
     } catch (err: unknown) {
+      clearBrowseCache()
       if (isApiClientError(err) && err.status === 401) {
         set({ me: null, loading: false, initialized: true, isLoggedIn: false })
         return false
@@ -35,6 +41,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   login: async (username: string, password: string) => {
+    clearBrowseCache()
     await apiPost<AuthUser>('/auth/login', { username, password })
     set({ me: { username }, isLoggedIn: true })
   },
@@ -45,12 +52,14 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch (err) {
       console.warn('Logout request failed, clearing local auth state anyway:', err)
     } finally {
+      clearBrowseCache()
       document.cookie = 'bmc_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; max-age=0'
       set({ me: null, isLoggedIn: false })
     }
   },
 
   setup: async (username: string, password: string) => {
+    clearBrowseCache()
     await apiPost('/setup', { username, password })
   }
 }))

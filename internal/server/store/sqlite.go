@@ -2061,6 +2061,51 @@ func (s *sqliteStore) GetSnapshotTreeCache(ctx context.Context, repositoryID, sn
 	return &out, nil
 }
 
+func (s *sqliteStore) GetSnapshotListBrowseCache(ctx context.Context, repositoryID string) (*SnapshotListCache, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT l.repository_id, l.generation, l.snapshots_json, l.fingerprint, l.verified_at,
+		       c.generation, c.list_verified_at
+		FROM snapshot_list_cache l
+		JOIN repository_cache_state c ON c.repository_id = l.repository_id
+		WHERE l.repository_id = ?`, repositoryID)
+	var out SnapshotListCache
+	var verified string
+	var currGen int64
+	var currVerified sql.NullString
+	if err := row.Scan(&out.RepositoryID, &out.Generation, &out.SnapshotsJSON, &out.Fingerprint, &verified, &currGen, &currVerified); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, fmt.Errorf("get snapshot list browse cache: %w", err)
+	}
+	out.VerifiedAt = parseTime(verified)
+	stale := out.Generation != currGen || !currVerified.Valid || currVerified.String != verified
+	return &out, stale, nil
+}
+
+func (s *sqliteStore) GetSnapshotTreeBrowseCache(ctx context.Context, repositoryID, snapshotID, cachePath string) (*SnapshotTreeCache, bool, error) {
+	cachePath = NormalizeSnapshotPath(cachePath)
+	row := s.db.QueryRowContext(ctx, `
+		SELECT t.repository_id, t.snapshot_id, t.path, t.generation, t.tree_json, t.verified_at,
+		       c.generation, c.list_verified_at
+		FROM snapshot_tree_cache t
+		JOIN repository_cache_state c ON c.repository_id = t.repository_id
+		WHERE t.repository_id = ? AND t.snapshot_id = ? AND t.path = ?`, repositoryID, snapshotID, cachePath)
+	var out SnapshotTreeCache
+	var verified string
+	var currGen int64
+	var currListVerified sql.NullString
+	if err := row.Scan(&out.RepositoryID, &out.SnapshotID, &out.Path, &out.Generation, &out.TreeJSON, &verified, &currGen, &currListVerified); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, fmt.Errorf("get snapshot tree browse cache: %w", err)
+	}
+	out.VerifiedAt = parseTime(verified)
+	stale := out.Generation != currGen || !currListVerified.Valid
+	return &out, stale, nil
+}
+
 func (s *sqliteStore) SnapshotCacheGeneration(ctx context.Context, repositoryID string) (int64, error) {
 	var generation int64
 	err := s.db.QueryRowContext(ctx,

@@ -215,6 +215,45 @@ func (s *Server) handleRepoSnapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refresh := r.URL.Query().Get("refresh") == "1"
+	if !refresh && r.URL.Query().Get("cached") == "1" {
+		cs, hasCache := s.ST.(store.SnapshotCacheStore)
+		if !hasCache {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		cached, stale, err := cs.GetSnapshotListBrowseCache(r.Context(), repo.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "internal", redactMsg(err.Error()))
+			return
+		}
+		var snaps []model.Snapshot
+		if err := json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps); err != nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if store.SnapshotFingerprint(snaps) != cached.Fingerprint {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		snaps = s.Jobs.FilterHiddenSnapshots(r.Context(), repo.ID, snaps)
+		if snaps == nil {
+			snaps = []model.Snapshot{}
+		}
+		if stale {
+			w.Header().Set("X-BMC-Cache", "STALE")
+		} else {
+			w.Header().Set("X-BMC-Cache", "HIT")
+		}
+		if !cached.VerifiedAt.IsZero() {
+			w.Header().Set("X-BMC-Verified-At", cached.VerifiedAt.UTC().Format(timeRFC3339))
+		}
+		writeJSON(w, http.StatusOK, snaps)
+		return
+	}
 	snaps, _, cacheInfo, err := s.Jobs.SnapshotsWithOptions(r.Context(), repo.ID, repo.AgentID, refresh)
 	if err != nil {
 		s.jobsErr(w, err)
@@ -300,6 +339,64 @@ func (s *Server) handleSnapshotTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refresh := r.URL.Query().Get("refresh") == "1"
+	if !refresh && r.URL.Query().Get("cached") == "1" {
+		cs, hasCache := s.ST.(store.SnapshotCacheStore)
+		if !hasCache {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		listCached, listStale, err := cs.GetSnapshotListBrowseCache(r.Context(), repo.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "internal", redactMsg(err.Error()))
+			return
+		}
+		var snaps []model.Snapshot
+		if err := json.Unmarshal([]byte(listCached.SnapshotsJSON), &snaps); err != nil || store.SnapshotFingerprint(snaps) != listCached.Fingerprint {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		filteredSnaps := s.Jobs.FilterHiddenSnapshots(r.Context(), repo.ID, snaps)
+		found := false
+		for _, snap := range filteredSnaps {
+			if snap.ID == snapshotID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeErr(w, http.StatusNotFound, "not_found", "snapshot not found in repository")
+			return
+		}
+
+		treeCached, treeStale, err := cs.GetSnapshotTreeBrowseCache(r.Context(), repo.ID, snapshotID, cachePath)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "internal", redactMsg(err.Error()))
+			return
+		}
+		var tree jobs.TreeResult
+		if err := json.Unmarshal([]byte(treeCached.TreeJSON), &tree); err != nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if listStale || treeStale {
+			w.Header().Set("X-BMC-Cache", "STALE")
+		} else {
+			w.Header().Set("X-BMC-Cache", "HIT")
+		}
+		if !treeCached.VerifiedAt.IsZero() {
+			w.Header().Set("X-BMC-Verified-At", treeCached.VerifiedAt.UTC().Format(timeRFC3339))
+		}
+		writeJSON(w, http.StatusOK, tree)
+		return
+	}
 	tree, _, cacheInfo, err := s.Jobs.SnapshotTreeWithOptions(r.Context(), repo.ID, repo.AgentID, snapshotID, cachePath, refresh)
 	if err != nil {
 		s.jobsErr(w, err)

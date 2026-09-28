@@ -29,8 +29,8 @@ services:
       # 恢复根目录（单个绝对路径，默认 /backup-restore）：恢复文件都写入该目录，容器内固定为 /backup-restore
       BMC_RESTORE_ROOT: ${BMC_RESTORE_ROOT:-/backup-restore}
     volumes:
+      # 状态卷：持久化身份凭据（identity.json）、restic 缓存（.cache/restic）与暂存目录（scratch）
       - bmc-agent-state:/var/lib/bmc-agent
-      - bmc-agent-scratch:/var/lib/bmc-agent/scratch
       # 宿主机待备份目录挂载到容器内（只读）：约定挂到 /backup-sources/<同名路径>，
       # 计划的源路径可直接写宿主机路径（如 /etc），Agent 自动映射为 /backup-sources/etc
       - ${BMC_SOURCE_ETC:-/etc}:/backup-sources/etc:ro
@@ -45,4 +45,3 @@ services:
 
 volumes:
   bmc-agent-state:
-  bmc-agent-scratch:

@@ -55,10 +55,10 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
   - `BMC_SOURCE_ROOTS`：容器内备份源根目录，可多个用逗号分隔，默认 `/backup-sources`。计划的源路径可直接写宿主机路径（`/etc` → 容器内 `/backup-sources/etc`），约定把宿主机目录挂到同名容器路径 `/backup-sources/<同名路径>`。
   - `BMC_RESTORE_ROOT`：单个恢复目标根目录，默认 `/backup-restore`；恢复的文件都落在此目录下。容器内恢复目录固定为 `/backup-restore`，宿主机目录挂载到该路径即可（默认挂载 `./backup-restore`）。
   - 裸机运行时：`BMC_SOURCE_ROOTS` 缺省不限制源路径；恢复根缺省为 `/backup-restore`，可显式设置 `BMC_RESTORE_ROOT` 指向其他目录（此时恢复目标必须落在该目录内）。
-- `bmc-agent-state` 卷用于持久化 Agent 身份，不可多主机共享。
+- `bmc-agent-state` 卷用于持久化 Agent 身份、restic 缓存与暂存目录（`/var/lib/bmc-agent` 下的 `identity.json`、`.cache/restic`、`scratch`），不可多主机共享。
 - **重新安装接管（Takeover）**：若 Agent 状态卷丢失或需更换新机器接管原 Agent 数据，请在 Server Web UI 的 Agent 列表（离线状态）点击“重新安装接管”生成专用令牌，并在 `.env.agent` 中设置 `BMC_TARGET_AGENT_ID=<原AgentID>` 与 `BMC_ENROLLMENT_TOKEN=<接管令牌>`。启动后服务端会自动复用原 ID、保留全部仓库与计划并轮换密钥，接管成功后同样建议清空这两个变量。
 - **备份/恢复环境变量精简**：推荐 Compose 模板不再透传 `BMC_SOURCE_PATH_MAPPINGS`、`BMC_RESTORE_PATH_MAPPINGS`、`BMC_RESTORE_ROOTS`。源路径按「宿主机路径 ↔ `/backup-sources` + 宿主机路径」自动映射，既有计划无需修改；已在 `/backup-sources` 内的容器路径保持原样；显式设置 `BMC_SOURCE_PATH_MAPPINGS` 时仍按显式映射处理（非镜像挂载布局请显式配置）。恢复白名单由 `BMC_RESTORE_ROOT` 推导为 `/backup-restore`。注意：源侧映射不再上报给 Server，计划表单不再显示“可用宿主机路径”提示，运行日志中的源路径按容器内路径显示。
-- **Agent 配置精简与已有卷升级**：推荐 Compose 模板已精简 `BMC_SERVER_TLS`、`BMC_AGENT_STATE_DIR`、`BMC_RESTIC_CACHE_DIR`、`BMC_AGENT_DATA_DIR`。Agent 状态目录由镜像默认固定为 `/var/lib/bmc-agent`，缓存（`/var/lib/bmc-agent/.cache/restic`）与暂存（`/var/lib/bmc-agent/scratch`）自动基于状态目录推导。升级时保留原 `bmc-agent-state` 与 `bmc-agent-scratch` 卷即可无缝延续身份凭据与缓存。
+- **Agent 配置精简与已有卷升级**：推荐 Compose 模板已精简 `BMC_SERVER_TLS`、`BMC_AGENT_STATE_DIR`、`BMC_RESTIC_CACHE_DIR`、`BMC_AGENT_DATA_DIR`。Agent 状态目录由镜像默认固定为 `/var/lib/bmc-agent`，缓存（`/var/lib/bmc-agent/.cache/restic`）与暂存（`/var/lib/bmc-agent/scratch`）自动基于状态目录推导。升级时保留原 `bmc-agent-state` 卷即可无缝延续身份凭据与缓存；原 `bmc-agent-scratch` 卷不再使用，其内容为临时暂存文件，可安全删除。
 - **旧版 Agent 配置升级注意**：若旧部署 `.env.agent` 使用不带 scheme 的裸 `host:port` 并配合 `BMC_SERVER_TLS=0`，升级前必须先将 URL 改为 `http://host:port`（若此前为 `BMC_SERVER_TLS=1` 则改为 `https://host:port`）。由于新 Compose 不再透传 `BMC_SERVER_TLS`，未带 scheme 的地址默认启用 TLS，直接升级明文连接将导致握手失败。
 ## 3. 旧部署迁移
 

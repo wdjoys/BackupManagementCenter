@@ -297,10 +297,10 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
               {t('snapshots.delete.message')}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 pt-2">
-            <div className="space-y-1">
-              <span className="text-xs font-mono text-muted-foreground block">
-                Target ID: <strong className="text-foreground">{snapshotToDelete?.id}</strong>
+          <div className="space-y-4 pt-2 min-w-0">
+            <div className="space-y-1 min-w-0">
+              <span className="text-xs font-mono text-muted-foreground block break-all">
+                Target ID: <strong className="text-foreground select-all break-all">{snapshotToDelete?.id}</strong>
               </span>
               <p className="text-[11px] text-muted-foreground">
                 Type the full snapshot ID to confirm deletion:

@@ -15,6 +15,7 @@ on:
       - 'internal/**'
       - 'api/**'
       - 'web/**'
+      - '.github/workflows/docker.yml'
 
 permissions:
   contents: read
@@ -172,14 +173,29 @@ jobs:
       vars.DEPLOY_ENABLED == 'true' &&
       (needs.build.result == 'success') &&
       (needs.changes.outputs.server == 'true' || needs.changes.outputs.agent == 'true')
-    steps: 
+    steps:
       - name: Check deploy secrets
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
         run: |
-          echo "DEPLOY_HOST: ${{ secrets.DEPLOY_HOST != '' }}"
-          echo "DEPLOY_USER: ${{ secrets.DEPLOY_USER != '' }}"
-          echo "DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY != '' }}"
-          echo "DEPLOY_PORT: ${{ secrets.DEPLOY_PORT != '' }}"
-  
+          missing=''
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY; do
+            if [ -n "$(printenv "$name" || true)" ]; then
+              echo "$name: set"
+            else
+              echo "$name: MISSING"
+              missing="$missing $name"
+            fi
+          done
+          echo "DEPLOY_PORT: ${DEPLOY_PORT:-未设置（默认 22）}"
+          if [ -n "$missing" ]; then
+            echo "::error::部署 Secret 缺失:$missing"
+            exit 1
+          fi
+
       - name: Update Compose services
         uses: appleboy/ssh-action@v1.2.2
         with:
@@ -190,6 +206,16 @@ jobs:
           script: |
             set -eu
 
-            cd /data/bmc-agent  &&  docker compose -f docker-compose.yml up -d --no-build --remove-orphans
-            cd /data/bmc-server &&  docker compose -f docker-compose.yml up -d --no-build --remove-orphans
+            deploy() {
+              dir="$1"
+              if ! output="$(cd "$dir" && docker compose -f docker-compose.yml up -d --no-build --remove-orphans 2>&1)"; then
+                printf '%s\n' "$output"
+                echo "::error::compose 更新失败 $dir :: $(printf '%s' "$output" | tail -n 5 | tr '\n' ' ' | cut -c1-300)"
+                return 1
+              fi
+              printf '%s\n' "$output"
+            }
+
+            deploy /data/bmc-agent
+            deploy /data/bmc-server
 

@@ -336,7 +336,7 @@ export const PlansView: React.FC = () => {
                         <TableHead className="text-xs font-medium">{t('plans.columns.path')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('plans.columns.lastRunAt')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('plans.columns.timeout')}</TableHead>
-                        <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('common.actions')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>

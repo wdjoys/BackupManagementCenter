@@ -369,7 +369,7 @@ export const RunsView: React.FC = () => {
                         <TableHead className="text-xs font-medium">{t('common.status')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('runs.columns.snapshot')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('runs.columns.duration')}</TableHead>
-                        <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('common.actions')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>

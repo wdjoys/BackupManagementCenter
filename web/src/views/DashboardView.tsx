@@ -177,7 +177,7 @@ export const DashboardView: React.FC = () => {
                   <TableHeader>
                     <TableRow className="border-border hover:bg-transparent">
                       <TableHead className="text-xs font-medium">{t('dashboard.plan')}</TableHead>
-                      <TableHead className="text-xs font-medium text-right">
+                      <TableHead className="text-xs font-medium">
                         {t('dashboard.nextFireAt')}
                       </TableHead>
                     </TableRow>
@@ -220,7 +220,7 @@ export const DashboardView: React.FC = () => {
                   <TableHeader>
                     <TableRow className="border-border hover:bg-transparent">
                       <TableHead className="text-xs font-medium">{t('common.name')}</TableHead>
-                      <TableHead className="text-xs font-medium text-right">
+                      <TableHead className="text-xs font-medium">
                         {t('dashboard.lastCheck')}
                       </TableHead>
                     </TableRow>

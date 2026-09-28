@@ -62,7 +62,7 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                     <TableHead className="text-xs font-medium">{t('snapshots.browseTable.type')}</TableHead>
                     <TableHead className="text-xs font-medium">{t('snapshots.browseTable.content')}</TableHead>
                     <TableHead className="text-xs font-medium">{t('snapshots.browseTable.agent')}</TableHead>
-                    <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
+                    <TableHead className="text-xs font-medium">{t('common.actions')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

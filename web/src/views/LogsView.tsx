@@ -21,7 +21,16 @@ import { AppErrorState } from '@/components/AppErrorState'
 import { StatusBadge, type BadgeTone } from '@/components/StatusBadge'
 import { PageLoadingState } from '@/components/PageLoadingState'
 import { RefreshCw, RotateCcw, Loader2, Server, Activity, Info } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
+const LOG_PAGE_SIZE = 30
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error']
 const LOG_TYPES = ['system', 'http', 'agent', 'run', 'scheduler', 'dispatcher', 'connection', 'command', 'notification']
 
@@ -44,9 +53,17 @@ export const LogsView: React.FC = () => {
   const [logs, setLogs] = useState<SystemLog[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [appendError, setAppendError] = useState<string | null>(null)
+  const [selectedMessage, setSelectedMessage] = useState<string | null>(null)
+
   const abortControllerRef = useRef<AbortController | null>(null)
+  const isFetchingRef = useRef(false)
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const logsRef = useRef<SystemLog[]>([])
+  logsRef.current = logs
 
   // Initialize query sync
   useEffect(() => {
@@ -72,33 +89,57 @@ export const LogsView: React.FC = () => {
 
   const loadLogs = async (reset = false, level = levelFilter, type = typeFilter) => {
     if (scope === 'agent' && !selectedAgentId) {
+      abortControllerRef.current?.abort()
+      isFetchingRef.current = false
       setLogs([])
       setHasMore(false)
+      setError(null)
+      setAppendError(null)
+      setLoading(false)
+      setLoadingMore(false)
       return
     }
 
     abortControllerRef.current?.abort()
     const controller = new AbortController()
     abortControllerRef.current = controller
+    isFetchingRef.current = true
 
-    setLoading(true)
-    setError(null)
+    if (reset) {
+      setLoading(true)
+      setError(null)
+      setAppendError(null)
+      setLogs([])
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = 0
+      }
+    } else {
+      setLoadingMore(true)
+      setAppendError(null)
+    }
+
     try {
       const endpoint = scope === 'server' ? '/logs/server' : `/agents/${selectedAgentId}/logs`
       const params: Record<string, string | number | undefined> = {
-        limit: 500,
+        limit: LOG_PAGE_SIZE,
         level: level === 'all' ? undefined : level,
         type: type === 'all' ? undefined : type,
       }
 
-      if (!reset && logs.length > 0) {
-        const minId = Math.min(...logs.map((l) => l.id))
+      const currentLogs = logsRef.current
+      if (!reset && currentLogs.length > 0) {
+        const minId = Math.min(...currentLogs.map((l) => l.id))
         params.before_id = minId
       }
 
       const data = await apiGet<SystemLog[]>(endpoint, params, { signal: controller.signal })
+      if (abortControllerRef.current !== controller) return
+
       if (reset) {
         setLogs(data)
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = 0
+        }
       } else {
         setLogs((prev) => {
           const map = new Map<number, SystemLog>()
@@ -108,13 +149,23 @@ export const LogsView: React.FC = () => {
           return Array.from(map.values()).sort((a, b) => b.id - a.id)
         })
       }
-      setHasMore(data.length >= 500)
+      setHasMore(data.length === LOG_PAGE_SIZE)
+      setError(null)
+      setAppendError(null)
     } catch (err: unknown) {
       if (isAbortError(err)) return
-      setError(isApiClientError(err) ? err.message : t('logs.loadFailed'))
+      if (abortControllerRef.current !== controller) return
+      const errMsg = isApiClientError(err) ? err.message : t('logs.loadFailed')
+      if (reset || logsRef.current.length === 0) {
+        setError(errMsg)
+      } else {
+        setAppendError(errMsg)
+      }
     } finally {
       if (abortControllerRef.current === controller) {
+        isFetchingRef.current = false
         setLoading(false)
+        setLoadingMore(false)
       }
     }
   }
@@ -149,6 +200,26 @@ export const LogsView: React.FC = () => {
     }
   }
 
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget
+    if (
+      !hasMore ||
+      loading ||
+      loadingMore ||
+      isFetchingRef.current ||
+      error ||
+      appendError ||
+      logs.length === 0
+    ) {
+      return
+    }
+    const { scrollTop, clientHeight, scrollHeight } = target
+    if (scrollTop + clientHeight >= scrollHeight - 24) {
+      isFetchingRef.current = true
+      loadLogs(false)
+    }
+  }
+
   const filteredLogs = logs
 
   return (
@@ -166,7 +237,7 @@ export const LogsView: React.FC = () => {
           variant="outline"
           size="sm"
           onClick={() => loadLogs(true)}
-          disabled={loading}
+          disabled={loading || loadingMore}
           className="h-8 text-xs gap-1.5 self-start sm:self-auto"
         >
           <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
@@ -267,26 +338,18 @@ export const LogsView: React.FC = () => {
             <CardTitle className="text-xs font-semibold">
               {scope === 'server' ? t('logs.serverLogs') : t('logs.agentLogs')} ({t('logs.loadedCount', { count: filteredLogs.length })})
             </CardTitle>
-            {hasMore && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => loadLogs(false)}
-                disabled={loading}
-                className="h-7 text-xs gap-1.5"
-              >
-                {loading ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-3 w-3" aria-hidden="true" />}
-                {t('logs.loadMore')}
-              </Button>
-            )}
           </CardHeader>
           <CardContent className="p-0">
             {loading && logs.length === 0 ? (
               <PageLoadingState compact />
             ) : filteredLogs.length > 0 ? (
-              <div className="rounded-md overflow-hidden">
+              <div
+                ref={scrollContainerRef}
+                onScroll={handleScroll}
+                className="max-h-[480px] overflow-y-auto"
+              >
                 {/* Desktop Table */}
-                <div className="hidden md:block overflow-x-auto">
+                <div className="hidden md:block">
                   <Table className="min-w-[800px]">
                     <TableHeader>
                       <TableRow className="border-border hover:bg-transparent">
@@ -324,8 +387,24 @@ export const LogsView: React.FC = () => {
                               {item.level.toUpperCase()}
                             </StatusBadge>
                           </TableCell>
-                          <TableCell className="text-xs font-mono text-foreground break-all whitespace-normal py-2">
-                            {item.message}
+                          <TableCell className="text-xs font-mono text-foreground py-2">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedMessage(item.message)}
+                                  className="block max-w-[min(28rem,35vw)] truncate text-left font-mono hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm cursor-pointer"
+                                >
+                                  {item.message}
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="top"
+                                className="max-w-sm max-h-64 overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs"
+                              >
+                                {item.message}
+                              </TooltipContent>
+                            </Tooltip>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -355,12 +434,49 @@ export const LogsView: React.FC = () => {
                           {t('logs.columns.seq')}: #{item.source_seq}
                         </div>
                       )}
-                      <p className="font-mono text-foreground break-all text-xs">
-                        {item.message}
-                      </p>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedMessage(item.message)}
+                            className="block w-full truncate text-left font-mono text-xs text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm cursor-pointer"
+                          >
+                            {item.message}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side="top"
+                          className="max-w-sm max-h-64 overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs"
+                        >
+                          {item.message}
+                        </TooltipContent>
+                      </Tooltip>
                     </div>
                   ))}
                 </div>
+
+                {/* Append Loading and Error Indicators */}
+                {loadingMore && (
+                  <div className="flex items-center justify-center gap-2 p-3 text-xs text-muted-foreground border-t border-border">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                    <span>{t('logs.loading')}</span>
+                  </div>
+                )}
+                {appendError && (
+                  <div className="flex items-center justify-center gap-3 p-3 text-xs text-destructive border-t border-border bg-destructive/5">
+                    <span>{appendError}</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => loadLogs(false)}
+                      disabled={loadingMore}
+                      className="h-6 text-xs gap-1.5"
+                    >
+                      <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                      {t('common.retry')}
+                    </Button>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="p-8">
@@ -373,6 +489,19 @@ export const LogsView: React.FC = () => {
           </CardContent>
         </Card>
       )}
+
+      {/* Full Message Dialog */}
+      <Dialog open={selectedMessage !== null} onOpenChange={(open) => { if (!open) setSelectedMessage(null) }}>
+        <DialogContent className="sm:max-w-xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-semibold">{t('logs.columns.message')}</DialogTitle>
+            <DialogDescription className="sr-only">{t('logs.columns.message')}</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto rounded bg-muted/40 p-3 text-xs font-mono text-foreground whitespace-pre-wrap break-words select-text">
+            {selectedMessage}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

@@ -104,7 +104,7 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                         <TableHead className="text-xs font-medium">{t('storage.columns.repositoryPath')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('common.status')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('storage.columns.lastCheck')}</TableHead>
-                        <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('common.actions')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>

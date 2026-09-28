@@ -605,7 +605,6 @@ export default {
       "notification": "Notification"
     },
     "selectAgentHint": "Select an agent to view its process logs.",
-    "loadMore": "Load More",
     "loading": "Loading...",
     "empty": "No process logs",
     "loadFailed": "Failed to load process logs",

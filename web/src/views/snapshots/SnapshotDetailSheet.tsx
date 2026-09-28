@@ -170,13 +170,13 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
                 <Table>
                   <TableHeader>
                     <TableRow className="border-border hover:bg-transparent">
-                      <TableHead className="w-8"></TableHead>
-                      <TableHead className="text-xs font-medium">{t('common.name')}</TableHead>
-                      <TableHead className="text-xs font-medium w-16">{t('snapshots.browseTable.type')}</TableHead>
-                      <TableHead className="text-xs font-medium w-24 text-right">
+                      <TableHead className="w-8 px-2"></TableHead>
+                      <TableHead className="text-xs font-medium px-2">{t('common.name')}</TableHead>
+                      <TableHead className="text-xs font-medium w-16 px-2">{t('snapshots.browseTable.type')}</TableHead>
+                      <TableHead className="text-xs font-medium w-24 px-2">
                         {t('snapshots.browseTable.size')}
                       </TableHead>
-                      <TableHead className="text-xs font-medium w-36 text-right">
+                      <TableHead className="text-xs font-medium w-36 px-2">
                         {t('snapshots.browseTable.modified')}
                       </TableHead>
                     </TableRow>
@@ -198,7 +198,7 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
                               aria-label={fullPath}
                             />
                           </TableCell>
-                          <TableCell className="font-medium font-mono text-foreground">
+                          <TableCell className="font-medium font-mono text-foreground px-2">
                             {isDir ? (
                               <button
                                 type="button"
@@ -215,13 +215,13 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
                               </div>
                             )}
                           </TableCell>
-                          <TableCell className="text-[11px] text-muted-foreground font-mono">
+                          <TableCell className="text-[11px] text-muted-foreground font-mono px-2">
                             {entry.type}
                           </TableCell>
-                          <TableCell className="text-xs text-muted-foreground font-mono text-right">
+                          <TableCell className="text-xs text-muted-foreground font-mono text-right px-2">
                             {formatSize(entry.size)}
                           </TableCell>
-                          <TableCell className="text-xs text-muted-foreground font-mono text-right">
+                          <TableCell className="text-xs text-muted-foreground font-mono text-right px-2">
                             {formatDateTime(entry.mtime)}
                           </TableCell>
                         </TableRow>

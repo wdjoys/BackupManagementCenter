@@ -605,7 +605,6 @@ export default {
       "notification": "通知"
     },
     "selectAgentHint": "请选择 Agent 以查看其进程日志。",
-    "loadMore": "加载更多",
     "loading": "加载中...",
     "empty": "暂无进程日志",
     "loadFailed": "加载进程日志失败",

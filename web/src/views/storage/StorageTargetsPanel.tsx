@@ -82,7 +82,7 @@ export const StorageTargetsPanel: React.FC<StorageTargetsPanelProps> = ({
                         <TableHead className="text-xs font-medium">{t('storage.columns.remotePath')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('storage.columns.createdAt')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('storage.columns.updatedAt')}</TableHead>
-                        <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('common.actions')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>

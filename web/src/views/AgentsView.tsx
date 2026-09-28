@@ -240,7 +240,7 @@ export const AgentsView: React.FC = () => {
                       <TableHead className="text-xs font-medium">{t('common.status')}</TableHead>
                       <TableHead className="text-xs font-medium">{t('agents.columns.lastSeen')}</TableHead>
                       <TableHead className="text-xs font-medium">{t('agents.columns.enrolledAt')}</TableHead>
-                      <TableHead className="text-xs font-medium text-right">{t('common.actions')}</TableHead>
+                      <TableHead className="text-xs font-medium">{t('common.actions')}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -360,13 +360,13 @@ export const AgentsView: React.FC = () => {
                                       <Table>
                                         <TableHeader>
                                           <TableRow className="border-border">
-                                            <TableHead className="text-[11px] h-8 font-medium">
+                                            <TableHead className="text-[11px] h-8 font-medium px-2">
                                               {t('agents.capabilities.tool')}
                                             </TableHead>
-                                            <TableHead className="text-[11px] h-8 font-medium">
+                                            <TableHead className="text-[11px] h-8 font-medium px-2">
                                               {t('agents.columns.version')}
                                             </TableHead>
-                                            <TableHead className="text-[11px] h-8 font-medium">
+                                            <TableHead className="text-[11px] h-8 font-medium px-2">
                                               {t('agents.capabilities.path')}
                                             </TableHead>
                                           </TableRow>
@@ -374,13 +374,13 @@ export const AgentsView: React.FC = () => {
                                         <TableBody>
                                           {agent.capabilities.map((cap) => (
                                             <TableRow key={cap.name} className="border-border">
-                                              <TableCell className="text-xs font-medium py-1.5">
+                                              <TableCell className="text-xs font-medium py-1.5 px-2">
                                                 {cap.name}
                                               </TableCell>
-                                              <TableCell className="text-xs text-muted-foreground py-1.5">
+                                              <TableCell className="text-xs text-muted-foreground py-1.5 px-2">
                                                 {cap.version || '—'}
                                               </TableCell>
-                                              <TableCell className="text-xs font-mono text-muted-foreground py-1.5">
+                                              <TableCell className="text-xs font-mono text-muted-foreground py-1.5 px-2">
                                                 {cap.path || '—'}
                                               </TableCell>
                                             </TableRow>

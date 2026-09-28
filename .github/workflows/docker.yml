@@ -172,7 +172,14 @@ jobs:
       vars.DEPLOY_ENABLED == 'true' &&
       (needs.build.result == 'success') &&
       (needs.changes.outputs.server == 'true' || needs.changes.outputs.agent == 'true')
-    steps:
+    steps: 
+      - name: Check deploy secrets
+        run: |
+          echo "DEPLOY_HOST: ${{ secrets.DEPLOY_HOST != '' }}"
+          echo "DEPLOY_USER: ${{ secrets.DEPLOY_USER != '' }}"
+          echo "DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY != '' }}"
+          echo "DEPLOY_PORT: ${{ secrets.DEPLOY_PORT != '' }}"
+  
       - name: Update Compose services
         uses: appleboy/ssh-action@v1.2.2
         with:

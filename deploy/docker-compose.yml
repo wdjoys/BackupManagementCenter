@@ -1,23 +1,33 @@
 # Server 部署模板：推荐由外部反向代理终止公网 TLS 并转发 Web/API 与 gRPC。
 services:
   bmc-server:
+    # Server 镜像地址
     image: ${BMC_SERVER_IMAGE:-wdjoys/backup-management-center-server:latest}
     pull_policy: always
     build:
       context: ..
       dockerfile: Dockerfile.server
       args:
+        # 构建版本号
         VERSION: ${VERSION:-0.1.0}
     restart: unless-stopped
     ports:
+      # Web / HTTP API 监听绑定地址与宿主机端口（默认绑定本地 127.0.0.1:8080，由外部反向代理转发）
       - "${BMC_SERVER_BIND:-127.0.0.1}:${BMC_SERVER_PORT:-8080}:8080"
+      # Agent gRPC 控制面监听绑定地址与宿主机端口（默认绑定本地 127.0.0.1:9090）
       - "${BMC_GRPC_BIND:-127.0.0.1}:${BMC_GRPC_PORT:-9090}:9090"
     environment:
+      # TLS 模式：none（反向代理模式，内部纯 HTTP 与纯 gRPC）或 auto（直接加载 TLS 证书）
       BMC_TLS_MODE: none
+      # 容器内 Web / HTTP API 监听地址
       BMC_LISTEN_ADDR: ":8080"
+      # 容器内 Agent gRPC 控制通道监听地址
       BMC_GRPC_ADDR: ":9090"
+      # 容器内 Prometheus 指标监听地址（仅限容器本地访问）
       BMC_METRICS_ADDR: "127.0.0.1:9100"
+      # 容器内持久化数据目录（存放 SQLite 数据库、master.key 等）
       BMC_DATA_DIR: /var/lib/bmc
+      # BMC 对外公开访问的根 URL（供 Web 控制台、回调及 Agent 下载凭据等引用，结尾不加斜杠）
       BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:-https://backup.example.com}
     volumes:
       - bmc-data:/var/lib/bmc

@@ -3,34 +3,52 @@
 services:
   bmc-agent:
     container_name: bmc-agent
+    # Agent 镜像地址
     image: ${BMC_AGENT_IMAGE:-wdjoys/backup-management-center-agent:latest}
     build:
       context: ..
       dockerfile: Dockerfile.agent
       args:
+        # 构建版本号
         VERSION: ${VERSION:-0.1.0}
     user: "0:0"
     restart: unless-stopped
     # network_mode: host
     environment:
+      # 必填：Server gRPC 服务端地址，建议带 scheme（如 https://backup.example.com:9090 或 http://host:9090）
       BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC endpoint}
+      # 遗留兼容项：是否启用 gRPC TLS（1 启用，0 禁用；若 URL 已包含 https:// 或 http:// 则会自动推导）
       BMC_SERVER_TLS: ${BMC_SERVER_TLS-}
+      # 首次注册令牌（从 Server Web UI 生成的一次性注册令牌；注册完成后建议清空并重启）
       BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
+      # 容器内 Agent 状态持久化目录（存放身份凭据、UUID、私钥等，不可多主机共享）
       BMC_AGENT_STATE_DIR: /var/lib/bmc-agent
+      # restic 缓存目录（存放 restic 索引与元数据缓存，加速备份）
       BMC_RESTIC_CACHE_DIR: ${BMC_RESTIC_CACHE_DIR:-/var/lib/bmc-agent/.cache/restic}
+      # 备份/恢复时的本地暂存与临时工作目录（数据库转储等临时文件存放处）
       BMC_AGENT_DATA_DIR: /var/lib/bmc-agent/scratch
+      # 允许作为备份源的容器内根目录列表（逗号分隔，限制只能备份指定路径范围）
       BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
+      # 宿主机路径到容器内路径的映射配置（JSON 格式，告知 Server 在计划配置宿主机路径时对应的容器路径）
       BMC_SOURCE_PATH_MAPPINGS: '${BMC_SOURCE_PATH_MAPPINGS:-{"/etc":"/backup-sources/etc","/srv":"/backup-sources/srv"}}'
+      # 宿主机恢复目标根目录（自动映射到容器内 /backup-restore，必须是绝对路径且非根目录）
       BMC_RESTORE_ROOT: ${BMC_RESTORE_ROOT:-/var/lib/bmc-restore}
+      # 自定义恢复路径映射（JSON 格式，设置后将优先于 BMC_RESTORE_ROOT）
       BMC_RESTORE_PATH_MAPPINGS: '${BMC_RESTORE_PATH_MAPPINGS-}'
+      # 允许作为恢复目标的容器内根目录列表（逗号分隔；未指定时默认基于 BMC_RESTORE_ROOT 推导）
       BMC_RESTORE_ROOTS: ${BMC_RESTORE_ROOTS-}
+      # 本地暂存目录所需的最小可用空间阈值（单位字节，0 表示不检查，空间不足时拒绝执行任务）
       BMC_SCRATCH_MIN_FREE_BYTES: ${BMC_SCRATCH_MIN_FREE_BYTES:-0}
+      # Agent 并发执行任务的最大数量限制
       BMC_AGENT_MAX_CONCURRENCY: ${BMC_AGENT_MAX_CONCURRENCY:-2}
     volumes:
       - bmc-agent-state:/var/lib/bmc-agent
       - bmc-agent-scratch:/var/lib/bmc-agent/scratch
+      # 宿主机待备份目录 /etc 挂载到容器内（只读）
       - ${BMC_SOURCE_ETC:-/etc}:/backup-sources/etc:ro
+      # 宿主机待备份目录 /srv 挂载到容器内（只读）
       - ${BMC_SOURCE_SRV:-/srv}:/backup-sources/srv:ro
+      # 宿主机恢复目标目录挂载到容器内（读写）
       - ${BMC_RESTORE_ROOT:-/var/lib/bmc-restore}:/backup-restore
     read_only: true
     tmpfs:

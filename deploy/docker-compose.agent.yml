@@ -24,9 +24,9 @@ services:
       # Agent 并发执行任务的最大数量限制
       BMC_AGENT_MAX_CONCURRENCY: ${BMC_AGENT_MAX_CONCURRENCY:-2}
       #--------------------------------------------------------------------------------------------------------------------
-      # 备份源根目录（容器内路径，逗号分隔）：计划的源路径在容器内统一位于此目录下
+      # 备份源根目录（容器内路径，可多个逗号分隔，默认 /backup-sources）：计划里的源路径统一位于此目录下
       BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
-      # 恢复根目录
+      # 恢复根目录（单个绝对路径，默认 /backup-restore）：恢复文件都写入该目录，容器内固定为 /backup-restore
       BMC_RESTORE_ROOT: ${BMC_RESTORE_ROOT:-/backup-restore}
     volumes:
       - bmc-agent-state:/var/lib/bmc-agent

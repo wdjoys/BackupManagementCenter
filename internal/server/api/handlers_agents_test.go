@@ -103,6 +103,9 @@ func TestAgentRevokeAndRestore(t *testing.T) {
 	if rec := do(http.MethodPost, "/api/v1/agents/nope/restore"); rec.Code != http.StatusNotFound {
 		t.Fatalf("restore unknown agent: expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
+	if rec := do(http.MethodDelete, "/api/v1/agents/nope"); rec.Code != http.StatusNotFound {
+		t.Fatalf("revoke unknown agent: expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
 
 	// 未登录/无 CSRF 时不允许恢复。
 	anon := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-restore-1/restore", nil)

@@ -478,9 +478,12 @@ func (s *sqliteStore) ListAgents(ctx context.Context) ([]model.Agent, error) {
 }
 
 func (s *sqliteStore) RevokeAgent(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE agents SET revoked = 1 WHERE id = ?", id)
+	res, err := s.db.ExecContext(ctx, "UPDATE agents SET revoked = 1 WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("revoke agent: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

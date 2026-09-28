@@ -88,6 +88,7 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 ## 5. 运维与升级
 
 - **升级顺序**：始终先升级 Server，通过 `curl --fail <PUBLIC_URL>/health/ready` 确认返回 HTTP 200 后，再滚动升级各受管主机上的 Agent。
+- **Agent 撤销与恢复**：Web「Agent」页面的「撤销」会立即断开该 Agent 的连接并拒绝其后续重连，但保留其身份与已有仓库、计划、运行记录引用。误操作时可在同页点击「恢复」（等价于 `POST /api/v1/agents/{id}/restore`），恢复后重启 Agent 进程即可用原身份重连，不会产生新的 Agent ID，也不需要重新注册。
 - **数据保留**：日常维护使用 `docker compose down` 停止容器，数据卷不会丢失；**严禁使用 `down -v`**，否则会永久销毁数据库及生成的本地主密钥。
 
 ## 6. 管理员密码重置

@@ -4,12 +4,6 @@ services:
     # Server 镜像地址
     image: ${BMC_SERVER_IMAGE:-wdjoys/backup-management-center-server:latest}
     pull_policy: always
-    build:
-      context: ..
-      dockerfile: Dockerfile.server
-      args:
-        # 构建版本号
-        VERSION: ${VERSION:-0.1.0}
     restart: unless-stopped
     ports:
       # Web / HTTP API 监听绑定地址与宿主机端口（默认绑定本地 127.0.0.1:8080，由外部反向代理转发）

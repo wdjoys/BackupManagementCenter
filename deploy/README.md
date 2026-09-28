@@ -17,9 +17,14 @@
 ```sh
 cp deploy/.env.example deploy/.env
 # 编辑 deploy/.env，修改必填项 BMC_PUBLIC_URL（例如 https://backup.example.com）
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 curl --fail https://backup.example.com/health/ready
 ```
+
+> **数据目录权限**：Server 容器以非 root 用户（uid/gid `65532`）运行。模板使用的 `bmc-data` 命名卷由镜像预置好属主，可直接使用；若自行改为宿主机目录 bind mount（例如 `./bmc-server-data:/var/lib/bmc`），首次启动前必须把宿主机目录归属该用户，否则容器会以 `[FATAL] instance id: open /var/lib/bmc/instance_id: permission denied` 反复重启退出：
+> ```sh
+> mkdir -p ./bmc-server-data && sudo chown -R 65532:65532 ./bmc-server-data
+> ```
 
 主密钥首次启动时自动生成并保存于 `bmc-data` 命名卷中的 `/var/lib/bmc/master.key`（权限 `0600`）。**首次启动后必须立即备份主密钥**；若主密钥丢失，数据库中所有已加密的存储目标与凭据均无法恢复：
 
@@ -90,13 +95,13 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - **Docker Compose 环境**：
   ```sh
   # 停止运行中的 Server 容器
-  docker compose --env-file deploy/.env -f deploy/docker-compose.yml stop server
+  docker compose --env-file deploy/.env -f deploy/docker-compose.yml stop bmc-server
 
   # 使用 reset-admin 命令清除管理员信息并重新开放 Web 引导
-  docker compose --env-file deploy/.env -f deploy/docker-compose.yml run --rm server reset-admin
+  docker compose --env-file deploy/.env -f deploy/docker-compose.yml run --rm bmc-server reset-admin
 
   # 重新启动 Server
-  docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d server
+  docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d bmc-server
   ```
 - **本地二进制或 systemd 环境**：
   ```sh

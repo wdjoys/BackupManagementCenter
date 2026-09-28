@@ -232,6 +232,11 @@ type Run struct {
 	// ScheduledAt is the cron slot this run fulfils; (plan_id, scheduled_at)
 	// is unique to prevent double-queueing. Empty for manual runs.
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	// DedupKey identifies runs with equivalent task parameters. While a run
+	// carrying the key is queued/dispatched/running the store rejects another
+	// run with the same key (ErrDuplicateRun); terminal runs release it.
+	// Empty means the run does not participate in queue dedup.
+	DedupKey string `json:"-"`
 }
 
 type Progress struct {

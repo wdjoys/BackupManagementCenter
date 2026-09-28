@@ -160,6 +160,39 @@ func TestSnapshotsUsesCacheDir(t *testing.T) {
 	}
 }
 
+// lineExecutor 按真实执行器的方式逐行回调 stdout。
+type lineExecutor struct{ stdout string }
+
+func (e lineExecutor) Run(_ context.Context, _ backup.Cmd, onStdout func(string), onStderr func(string)) (int, error) {
+	if onStdout != nil && e.stdout != "" {
+		for _, line := range strings.Split(strings.TrimSuffix(e.stdout, "\n"), "\n") {
+			onStdout(line)
+		}
+	}
+	return 0, nil
+}
+
+// 回归：snapshots --json 是单个 JSON 文档（可能跨多行），必须整段解析；逐行解析会
+// 静默返回空列表，前端于是显示“没有快照”且没有任何错误。
+func TestSnapshotsParsesWholeDocument(t *testing.T) {
+	stdout := "[\n  {\"id\":\"snap-a\",\"host\":\"host-1\"},\n  {\"id\":\"snap-b\",\"host\":\"host-1\"}\n]"
+	snaps, err := Snapshots(context.Background(), lineExecutor{stdout: stdout}, Options{Exe: "restic", RepoPath: "repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) != 2 || snaps[0].ID != "snap-a" || snaps[1].ID != "snap-b" {
+		t.Fatalf("snapshots = %+v", snaps)
+	}
+}
+
+// 回归：命令成功但没有输出（输出被丢弃/截断）必须报错，不能当成空仓库。
+func TestSnapshotsMissingOutputIsError(t *testing.T) {
+	_, err := Snapshots(context.Background(), lineExecutor{}, Options{Exe: "restic", RepoPath: "repo"})
+	if err == nil {
+		t.Fatal("expected error when restic prints no snapshot output")
+	}
+}
+
 func TestCheckIncludesCommandOutputOnFailure(t *testing.T) {
 	err := Check(context.Background(), checkExecutor{stdout: `{"message_type":"error","message":"index is damaged"}`, stderr: "Fatal: repository check failed", code: 1}, Options{Exe: "restic", RepoPath: "rclone:remote:/repo"})
 	if err == nil {

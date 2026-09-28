@@ -170,16 +170,22 @@ func Snapshots(ctx context.Context, exec backup.Executor, opts Options) ([]Snaps
 	env := buildEnv(opts)
 
 	var stderrTail strings.Builder
-	var snapshots []Snapshot
+	// `restic snapshots --json` 输出单个 JSON 数组文档（可能是多行）：必须整段
+	// 解析，逐行解析在换行布局下会静默丢成空列表。
+	var stdout strings.Builder
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
-		func(line string) {
-			var snaps []Snapshot
-			if err := json.Unmarshal([]byte(line), &snaps); err == nil {
-				snapshots = snaps
-			}
-		}, func(line string) { stderrTail.WriteString(line + "\n") })
+		func(line string) { stdout.WriteString(line); stdout.WriteByte('\n') },
+		func(line string) { stderrTail.WriteString(line + "\n") })
 	if exitCode != 0 {
 		return nil, enriched(mapResticError(exitCode, err), stderrTail.String())
+	}
+	raw := strings.TrimSpace(stdout.String())
+	if raw == "" {
+		return nil, enriched(errors.New("restic snapshots returned no output"), stderrTail.String())
+	}
+	snapshots := []Snapshot{}
+	if err := json.Unmarshal([]byte(raw), &snapshots); err != nil {
+		return nil, enriched(fmt.Errorf("parse restic snapshots output: %w", err), stderrTail.String())
 	}
 	return snapshots, nil
 }

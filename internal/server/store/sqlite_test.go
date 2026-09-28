@@ -2,10 +2,18 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
+	"path"
+	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -979,6 +987,288 @@ func TestCreateRunDuplicateSlot(t *testing.T) {
 	}
 }
 
+// 队列去重：同一 dedup_key 在未终结期间只允许一个 run；终态后可以再次入队。
+func TestCreateRunDedupKey(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	newRun := func(id, key string) *model.Run {
+		return &model.Run{
+			ID: id, AgentID: "agent-1", Operation: model.OpBackup,
+			Status: model.RunQueued, QueuedAt: now, ProgressJSON: "{}",
+			DedupKey: key,
+		}
+	}
+
+	if err := ts.CreateRun(ctx, newRun("run-1", "k")); err != nil {
+		t.Fatalf("CreateRun first: %v", err)
+	}
+	if err := ts.CreateRun(ctx, newRun("run-2", "k")); !errors.Is(err, ErrDuplicateRun) {
+		t.Fatalf("expected ErrDuplicateRun, got %v", err)
+	}
+	// 不同参数（不同 key）可以并存；无 key 的 run 不参与去重。
+	if err := ts.CreateRun(ctx, newRun("run-3", "k2")); err != nil {
+		t.Fatalf("different key should coexist: %v", err)
+	}
+	if err := ts.CreateRun(ctx, newRun("run-4", "")); err != nil {
+		t.Fatalf("keyless run should coexist: %v", err)
+	}
+	if err := ts.CreateRun(ctx, newRun("run-5", "")); err != nil {
+		t.Fatalf("second keyless run should coexist: %v", err)
+	}
+
+	// 队列中的 run 是该 key 的复用目标。
+	active, err := ts.FindActiveRunByDedupKey(ctx, "k")
+	if err != nil || active.ID != "run-1" {
+		t.Fatalf("expected run-1 active, got %+v err=%v", active, err)
+	}
+
+	// 取消后立即释放队列位。
+	if err := ts.TransitionRun(ctx, "run-1", model.RunQueued, model.RunCancelled, nil); err != nil {
+		t.Fatalf("cancel queued run: %v", err)
+	}
+	if _, err := ts.FindActiveRunByDedupKey(ctx, "k"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cancelled run must not own the key, got %v", err)
+	}
+	if err := ts.CreateRun(ctx, newRun("run-6", "k")); err != nil {
+		t.Fatalf("re-run after cancel: %v", err)
+	}
+
+	// 执行中的 run 继续占用，成功终结后再次释放。
+	if err := ts.TransitionRun(ctx, "run-6", model.RunQueued, model.RunDispatched, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.CreateRun(ctx, newRun("run-7", "k")); !errors.Is(err, ErrDuplicateRun) {
+		t.Fatalf("dispatched run must hold the key, got %v", err)
+	}
+	if err := ts.TransitionRun(ctx, "run-6", model.RunDispatched, model.RunSucceeded, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.CreateRun(ctx, newRun("run-8", "k")); err != nil {
+		t.Fatalf("re-run after success: %v", err)
+	}
+
+	// 空 key 永不匹配。
+	if _, err := ts.FindActiveRunByDedupKey(ctx, ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("empty key must not match, got %v", err)
+	}
+}
+
+// 并发创建同一 dedup_key：唯一索引只放行一个，其余拿到 ErrDuplicateRun。
+func TestCreateRunDedupKeyConcurrent(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	const n = 8
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = ts.CreateRun(ctx, &model.Run{
+				ID: fmt.Sprintf("run-%d", i), AgentID: "agent-1", Operation: model.OpBackup,
+				Status: model.RunQueued, QueuedAt: now, ProgressJSON: "{}", DedupKey: "k",
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	winners, duplicates := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			winners++
+		case errors.Is(err, ErrDuplicateRun):
+			duplicates++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if winners != 1 || duplicates != n-1 {
+		t.Fatalf("expected 1 winner / %d duplicates, got %d / %d", n-1, winners, duplicates)
+	}
+	runs, err := ts.ListRuns(ctx, RunFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 queued run, got %d", len(runs))
+	}
+}
+
+// newLegacyStore 构造一个尚未应用 0013（run 去重）的旧库：按文件名顺序应用
+// 之前的迁移并登记版本，返回的库已经可以正常读写 runs。
+func newLegacyStore(t *testing.T) (Store, *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := New(filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	db := st.(*sqliteStore).db
+
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create schema_migrations: %v", err)
+	}
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") || e.Name() >= runDedupMigration {
+			continue
+		}
+		data, err := fs.ReadFile(migrationsFS, path.Join("migrations", e.Name()))
+		if err != nil {
+			t.Fatalf("read migration %s: %v", e.Name(), err)
+		}
+		if _, err := db.ExecContext(ctx, string(data)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", e.Name(), err)
+		}
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+			e.Name(), now.Format(time.RFC3339)); err != nil {
+			t.Fatalf("record legacy migration %s: %v", e.Name(), err)
+		}
+	}
+	return st, db
+}
+
+const runDedupMigration = "0013_run_dedup.sql"
+
+// 旧库升级：0013 之后新增列与部分唯一索引，历史行保持可用且不参与去重，
+// 并覆盖重复升级（第二次 Migrate 必须是 no-op）。
+func TestMigrateRunDedupOnLegacyDB(t *testing.T) {
+	ctx := context.Background()
+	st, db := newLegacyStore(t)
+
+	// 升级前就有队列里的 run（旧 schema 没有 dedup_key 列）。
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO runs (id, agent_id, operation, status, queued_at, progress_json, attempt)
+		 VALUES ('legacy-1', 'agent-1', 'backup', 'queued', ?, '{}', 0)`,
+		now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert legacy run: %v", err)
+	}
+
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate legacy db: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate again: %v", err)
+	}
+
+	legacy, err := st.GetRun(ctx, "legacy-1")
+	if err != nil {
+		t.Fatalf("legacy run after upgrade: %v", err)
+	}
+	if legacy.DedupKey != "" {
+		t.Fatalf("legacy run must have no dedup key, got %q", legacy.DedupKey)
+	}
+
+	// 新列参与去重，且不受 NULL 历史行影响。
+	run := &model.Run{
+		ID: "run-1", AgentID: "agent-1", Operation: model.OpBackup,
+		Status: model.RunQueued, QueuedAt: now, ProgressJSON: "{}", DedupKey: "k",
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun after upgrade: %v", err)
+	}
+	if err := st.CreateRun(ctx, &model.Run{
+		ID: "run-2", AgentID: "agent-1", Operation: model.OpBackup,
+		Status: model.RunQueued, QueuedAt: now, ProgressJSON: "{}", DedupKey: "k",
+	}); !errors.Is(err, ErrDuplicateRun) {
+		t.Fatalf("expected ErrDuplicateRun after upgrade, got %v", err)
+	}
+}
+
+// 迁移失败必须整体回滚：不记录版本、不留半份 schema；障碍清除后重新升级成功。
+func TestMigrateRunDedupRollbackAndRetry(t *testing.T) {
+	ctx := context.Background()
+	st, db := newLegacyStore(t)
+
+	// 与索引同名的表会让 CREATE INDEX 失败（SQLite 名称冲突）。
+	if _, err := db.ExecContext(ctx, `CREATE TABLE idx_runs_active_dedup (x)`); err != nil {
+		t.Fatalf("create conflicting table: %v", err)
+	}
+	if err := st.Migrate(ctx); err == nil {
+		t.Fatal("expected Migrate to fail on index name conflict")
+	}
+
+	var recorded int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = ?", runDedupMigration,
+	).Scan(&recorded); err != nil {
+		t.Fatalf("query schema_migrations: %v", err)
+	}
+	if recorded != 0 {
+		t.Fatal("failed migration must not be recorded")
+	}
+	if cols, err := runColumns(ctx, db); err != nil {
+		t.Fatal(err)
+	} else if slices.Contains(cols, "dedup_key") {
+		t.Fatalf("failed migration must roll back the added column, columns=%v", cols)
+	}
+
+	// 清除障碍后重新升级成功，且去重生效。
+	if _, err := db.ExecContext(ctx, `DROP TABLE idx_runs_active_dedup`); err != nil {
+		t.Fatalf("drop conflicting table: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate after fixing conflict: %v", err)
+	}
+	cols, err := runColumns(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(cols, "dedup_key") {
+		t.Fatalf("dedup_key column missing after retry, columns=%v", cols)
+	}
+	run := &model.Run{
+		ID: "run-1", AgentID: "agent-1", Operation: model.OpBackup,
+		Status: model.RunQueued, QueuedAt: now, ProgressJSON: "{}", DedupKey: "k",
+	}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun after retry: %v", err)
+	}
+	if err := st.CreateRun(ctx, &model.Run{
+		ID: "run-2", AgentID: "agent-1", Operation: model.OpBackup,
+		Status: model.RunQueued, QueuedAt: now, ProgressJSON: "{}", DedupKey: "k",
+	}); !errors.Is(err, ErrDuplicateRun) {
+		t.Fatalf("expected dedup to work after retry, got %v", err)
+	}
+}
+
+func runColumns(ctx context.Context, db *sql.DB) ([]string, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(runs)")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols = append(cols, name)
+	}
+	return cols, rows.Err()
+}
+
 func TestCreateGetRun(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)
@@ -1471,6 +1761,18 @@ func TestRestoreRequest(t *testing.T) {
 	listed, _ := ts.ListRestoreRequests(ctx, 5)
 	if len(listed) != 1 {
 		t.Fatal("list count wrong")
+	}
+
+	// 队列去重的复用路径按 run_id 取回同一条 request。
+	byRun, err := ts.GetRestoreRequestByRunID(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byRun.ID != "rr-1" {
+		t.Fatalf("expected rr-1, got %s", byRun.ID)
+	}
+	if _, err := ts.GetRestoreRequestByRunID(ctx, "run-missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 

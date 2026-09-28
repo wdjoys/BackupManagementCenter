@@ -163,7 +163,9 @@ func New(st store.Store, seal secrets.Sealer, disp dispatch.Dispatcher, bus even
 // ---------------------------------------------------------------------------
 
 // StartPlanRun creates a backup run for the given plan. scheduledAt is the
-// cron slot (unique with planID). Nil scheduledAt means a manual run.
+// cron slot (unique with planID). Nil scheduledAt means a manual run, which is
+// deduplicated by plan: while an equivalent run is queued/dispatched/running
+// the existing run is returned and nothing is enqueued again.
 func (o *Orchestrator) StartPlanRun(ctx context.Context, planID string, scheduledAt *time.Time) (*model.Run, error) {
 	plan, err := o.Store.GetPlan(ctx, planID)
 	if err != nil {
@@ -211,9 +213,14 @@ func (o *Orchestrator) StartPlanRun(ctx context.Context, planID string, schedule
 		ScheduledAt:  scheduledAt,
 		ProgressJSON: "{}",
 	}
+	if scheduledAt == nil {
+		// 手动运行的等价参数就是计划本身：重复点击复用已有 run（不重复入队）。
+		// cron 槽位继续由 UNIQUE(plan_id, scheduled_at) 去重。
+		run.DedupKey = manualRunDedupKey(plan.ID)
+	}
 	if err := o.Store.CreateRun(ctx, run); err != nil {
-		if errors.Is(err, store.ErrDuplicateRun) {
-			return nil, store.ErrDuplicateRun
+		if existing, ok := o.joinDuplicateRun(ctx, err, run.DedupKey); ok {
+			return existing, nil
 		}
 		return nil, err
 	}
@@ -285,6 +292,13 @@ func (o *Orchestrator) systemRun(ctx context.Context, agentID, repositoryID, ope
 		}
 	}
 
+	// verify-remote 的临时 rclone 配置也属于凭据：只以密钥化指纹参与去重，
+	// 既避免不同凭据互相复用，也避免把配置（可能内嵌弱口令）以裸哈希落库。
+	confFingerprint := ""
+	if conf != "" {
+		confFingerprint = o.Seal.Fingerprint("system_run.rclone_conf", conf)
+	}
+
 	now := time.Now().UTC()
 	run := &model.Run{
 		ID:           model.NewUUIDv7(),
@@ -294,8 +308,14 @@ func (o *Orchestrator) systemRun(ctx context.Context, agentID, repositoryID, ope
 		QueuedAt:     now,
 		RepositoryID: repositoryID,
 		ProgressJSON: paramsJSON,
+		DedupKey:     systemRunDedupKey(agentID, repositoryID, operation, paramsJSON, confFingerprint),
 	}
 	if err := o.Store.CreateRun(ctx, run); err != nil {
+		// 相同 agent/操作/仓库/参数的运行仍在队列或执行中：复用该 run，
+		// 不再重复入队，也不再覆盖它的 rclone 临时配置。
+		if existing, ok := o.joinDuplicateRun(ctx, err, run.DedupKey); ok {
+			return existing, nil
+		}
 		return nil, err
 	}
 
@@ -325,6 +345,49 @@ func (o *Orchestrator) systemRun(ctx context.Context, agentID, repositoryID, ope
 	o.Bus.Publish(run.ID, events.Event{Type: events.State, Run: run})
 
 	return run, nil
+}
+
+// manualRunDedupKey 是“手动运行同一计划”的等价参数键。
+func manualRunDedupKey(planID string) string {
+	return "plan\x00" + planID
+}
+
+// systemRunDedupKey 是系统运行的等价参数键：agent、操作、仓库、参数完全相同
+// 视为同一任务（verify-remote 还要带上临时 rclone 配置的密钥化指纹
+// confFingerprint，避免不同凭据互相复用）。
+func systemRunDedupKey(agentID, repositoryID, operation, paramsJSON, confFingerprint string) string {
+	key := "sys\x00" + operation + "\x00" + agentID + "\x00" + repositoryID + "\x00" + paramsJSON
+	if confFingerprint != "" {
+		key += "\x00" + confFingerprint
+	}
+	return key
+}
+
+// restoreRunDedupKey 是“同一仓库、同一快照、同一目标、同一覆盖模式、同一目标凭据”
+// 的等价恢复参数键。凭据只以 master key 作密钥的 HMAC 指纹参与（见
+// secrets.Sealer.Fingerprint）：既落不下明文，也无法在只拿到数据库时离线穷举。
+func restoreRunDedupKey(repoID, snapshotID, kind, targetJSON string, overwrite bool, credentialFingerprint string) string {
+	key := "restore\x00" + repoID + "\x00" + snapshotID + "\x00" + kind + "\x00" + targetJSON
+	if overwrite {
+		key += "\x001"
+	} else {
+		key += "\x000"
+	}
+	return key + "\x00" + credentialFingerprint
+}
+
+// joinDuplicateRun 在 CreateRun 被队列去重拒绝时返回已在队列/执行中的等价 run，
+// 供调用方直接复用。返回 ok=false 表示没有可复用的 run（例如 cron 槽位被已终结
+// 的 run 占用），调用方保留原始错误。
+func (o *Orchestrator) joinDuplicateRun(ctx context.Context, createErr error, dedupKey string) (*model.Run, bool) {
+	if dedupKey == "" || !errors.Is(createErr, store.ErrDuplicateRun) {
+		return nil, false
+	}
+	existing, err := o.Store.FindActiveRunByDedupKey(ctx, dedupKey)
+	if err != nil {
+		return nil, false
+	}
+	return existing, true
 }
 
 // ---------------------------------------------------------------------------
@@ -1206,7 +1269,18 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		CreatedAt:        time.Now().UTC(),
 	}
 
+	// 目标口令属于任务参数：不同口令必须视为不同任务，否则同参数会误复用别人的
+	// run（用错误的凭据执行）。这里只参与 master key 作密钥的 HMAC 指纹
+	// （secrets.Sealer.Fingerprint），既不落明文，也不落可离线穷举的裸哈希。
+	// 注意：轮换 master key 会让旧指纹失配，仅影响未终结 run 的去重窗口。
+	credentialFingerprint := ""
+	if in.TargetPassword != "" {
+		credentialFingerprint = o.Seal.Fingerprint("restore.target_password", in.TargetPassword)
+	}
+
 	// Create the restore run first so we have a runID for the request.
+	// 同一仓库/快照/目标/覆盖模式/凭据的恢复在队列或执行中只保留一个 run：重复
+	// 提交复用已有 run 与其 request 行，不再新建 request、不再重复入队。
 	now := time.Now().UTC()
 	run := &model.Run{
 		ID:           model.NewUUIDv7(),
@@ -1216,9 +1290,20 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		QueuedAt:     now,
 		RepositoryID: repo.ID,
 		ProgressJSON: "{}",
+		DedupKey:     restoreRunDedupKey(repo.ID, in.SnapshotID, in.RestoreKind, string(targetJSON), in.Overwrite, credentialFingerprint),
 	}
 	if err := o.Store.CreateRun(ctx, run); err != nil {
-		return nil, nil, err
+		existing, ok := o.joinDuplicateRun(ctx, err, run.DedupKey)
+		if !ok {
+			return nil, nil, err
+		}
+		// 复用者必须拿到原 request 行（phase/pre_restore 状态属于它）。并发提交下
+		// request 行可能尚未落库，此时保留原始冲突错误，由调用方重试。
+		existingRR, err := o.Store.GetRestoreRequestByRunID(ctx, existing.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return existingRR, existing, nil
 	}
 
 	rr.RunID = run.ID

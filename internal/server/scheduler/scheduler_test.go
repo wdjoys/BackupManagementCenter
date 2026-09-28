@@ -139,7 +139,7 @@ func (f *fakeStore) GetAdminByID(_ context.Context, _ string) (*model.Admin, err
 	return nil, store.ErrNotFound
 }
 func (f *fakeStore) UpdateAdminLastLogin(_ context.Context, _ string, _ time.Time) error { return nil }
-func (f *fakeStore) ResetAdmin(_ context.Context) error { return nil }
+func (f *fakeStore) ResetAdmin(_ context.Context) error                                  { return nil }
 func (f *fakeStore) CreateSession(_ context.Context, _ *model.Session) error             { return nil }
 func (f *fakeStore) GetSession(_ context.Context, _ string) (*model.Session, error) {
 	return nil, store.ErrNotFound
@@ -203,6 +203,9 @@ func (f *fakeStore) UpdatePlan(_ context.Context, _ *model.Plan) error          
 func (f *fakeStore) DeletePlan(_ context.Context, _ string) error                         { return nil }
 func (f *fakeStore) ListPlans(_ context.Context, _ string) ([]model.Plan, error)          { return nil, nil }
 func (f *fakeStore) CreateRun(_ context.Context, _ *model.Run) error                      { return nil }
+func (f *fakeStore) FindActiveRunByDedupKey(_ context.Context, _ string) (*model.Run, error) {
+	return nil, store.ErrNotFound
+}
 func (f *fakeStore) GetRun(_ context.Context, _ string) (*model.Run, error) {
 	return nil, store.ErrNotFound
 }
@@ -240,6 +243,9 @@ func (f *fakeStore) CreateRestoreRequest(_ context.Context, _ *model.RestoreRequ
 	return nil
 }
 func (f *fakeStore) GetRestoreRequest(_ context.Context, _ string) (*model.RestoreRequest, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) GetRestoreRequestByRunID(_ context.Context, _ string) (*model.RestoreRequest, error) {
 	return nil, store.ErrNotFound
 }
 func (f *fakeStore) ListRestoreRequests(_ context.Context, _ int) ([]model.RestoreRequest, error) {

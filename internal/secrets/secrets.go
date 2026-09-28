@@ -9,6 +9,7 @@ package secrets
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -29,11 +30,20 @@ var ErrTooShort = errors.New("secrets: ciphertext too short")
 type Sealer interface {
 	Seal(table, rowID, column, plaintext string) ([]byte, error)
 	Open(table, rowID, column string, data []byte) (string, error)
+	// Fingerprint returns a deterministic, non-reversible fingerprint of value
+	// scoped by name. Callers use it to distinguish credentials without
+	// persisting them (e.g. 队列去重时判断两次恢复是否使用同一目标口令）:
+	// equal values give equal fingerprints, different values do not, and the
+	// fingerprint is keyed so a stolen database alone cannot be dictionary
+	// attacked. AESGCMSealer keys it with the master key; NoopSealer cannot and
+	// degrades to a bare hash (dev only).
+	Fingerprint(scope, value string) string
 }
 
 // AESGCMSealer seals with AES-256-GCM and AAD "<table>:<row-id>:<column>".
 type AESGCMSealer struct {
 	aead cipher.AEAD
+	key  []byte
 }
 
 // LoadKey reads exactly 32 bytes from path.
@@ -104,7 +114,16 @@ func NewSealer(key []byte) (Sealer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AESGCMSealer{aead: aead}, nil
+	return &AESGCMSealer{aead: aead, key: append([]byte(nil), key...)}, nil
+}
+
+// Fingerprint returns hex HMAC-SHA256(master key, scope || 0x00 || value).
+func (s *AESGCMSealer) Fingerprint(scope, value string) string {
+	mac := hmac.New(sha256.New, s.key)
+	mac.Write([]byte(scope))
+	mac.Write([]byte{0})
+	mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func aad(table, rowID, column string) []byte {

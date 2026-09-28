@@ -1,7 +1,9 @@
 package secrets
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"sync"
 )
@@ -38,4 +40,11 @@ func (n *NoopSealer) Open(table, rowID, column string, data []byte) (string, err
 		return "", fmt.Errorf("secrets: noop: invalid payload")
 	}
 	return string(raw[len(prefix):]), nil
+}
+
+// Fingerprint 在无密钥的开发实现里只能退化为裸哈希（与 Seal 一样不提供任何机密性保证）。
+// 生产部署必须使用 AESGCMSealer，其指纹是以 master key 为密钥的 HMAC。
+func (n *NoopSealer) Fingerprint(scope, value string) string {
+	sum := sha256.Sum256([]byte(scope + "\x00" + value))
+	return hex.EncodeToString(sum[:])
 }

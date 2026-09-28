@@ -65,8 +65,30 @@ func (s *fakeStore) CreateRun(ctx context.Context, r *model.Run) error {
 	if key != "" {
 		s.seenSlots[key] = true
 	}
+	// 队列去重：相同 DedupKey 的未终结 run 只允许一个（真实 store 由部分唯一索引保证）。
+	if r.DedupKey != "" {
+		for _, existing := range s.runs {
+			if existing.DedupKey == r.DedupKey && !isTerminal(existing.Status) {
+				return store.ErrDuplicateRun
+			}
+		}
+	}
 	s.runs[r.ID] = r
 	return nil
+}
+
+func (s *fakeStore) FindActiveRunByDedupKey(ctx context.Context, dedupKey string) (*model.Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if dedupKey == "" {
+		return nil, store.ErrNotFound
+	}
+	for _, r := range s.runs {
+		if r.DedupKey == dedupKey && !isTerminal(r.Status) {
+			return r, nil
+		}
+	}
+	return nil, store.ErrNotFound
 }
 
 func (s *fakeStore) GetRun(ctx context.Context, id string) (*model.Run, error) {
@@ -193,6 +215,17 @@ func (s *fakeStore) ListRestoreRequests(ctx context.Context, limit int) ([]model
 	return out, nil
 }
 
+func (s *fakeStore) GetRestoreRequestByRunID(ctx context.Context, runID string) (*model.RestoreRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rr := range s.restoreRequests {
+		if rr.RunID == runID {
+			return rr, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+
 func (s *fakeStore) AppendAuditEvent(ctx context.Context, e *model.AuditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -214,7 +247,7 @@ func (s *fakeStore) GetAdminByID(ctx context.Context, id string) (*model.Admin, 
 func (s *fakeStore) UpdateAdminLastLogin(ctx context.Context, id string, at time.Time) error {
 	return nil
 }
-func (s *fakeStore) ResetAdmin(ctx context.Context) error { return nil }
+func (s *fakeStore) ResetAdmin(ctx context.Context) error                       { return nil }
 func (s *fakeStore) CreateSession(ctx context.Context, s1 *model.Session) error { return nil }
 func (s *fakeStore) GetSession(ctx context.Context, idHash string) (*model.Session, error) {
 	return nil, store.ErrNotFound
@@ -656,6 +689,194 @@ func TestStartPlanRunDuplicateSlot(t *testing.T) {
 	}
 }
 
+func startPlanRunFixture(t *testing.T) (*Orchestrator, *fakeStore, *fakeDispatcher, *model.Plan) {
+	t.Helper()
+	st := newFakeStore()
+	disp := newFakeDispatcher()
+	o, seal := newTestOrchestrator(st, disp)
+	agent := testAgent()
+	st.agents[agent.ID] = agent
+	target := testTarget(seal)
+	if err := st.CreateStorageTarget(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	repo := testRepo(seal, st, target)
+	return o, st, disp, testPlan(st, agent, repo)
+}
+
+// 相同计划的手动运行在队列期间只创建一个 run：重复请求复用已有 run 且不重复入队。
+func TestManualRunReusesQueuedRun(t *testing.T) {
+	o, st, disp, plan := startPlanRunFixture(t)
+	ctx := context.Background()
+
+	first, err := o.ManualRun(ctx, plan.ID)
+	if err != nil {
+		t.Fatalf("first ManualRun: %v", err)
+	}
+	second, err := o.ManualRun(ctx, plan.ID)
+	if err != nil {
+		t.Fatalf("second ManualRun: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected reuse of run %s, got %s", first.ID, second.ID)
+	}
+	if got := len(st.runs); got != 1 {
+		t.Fatalf("expected 1 queued run, got %d", got)
+	}
+	if enq := disp.Enqueued(); len(enq) != 1 || enq[0] != first.ID {
+		t.Fatalf("expected single enqueue of %s, got %v", first.ID, enq)
+	}
+
+	// 不同参数（另一个计划）可以并存。
+	other := *plan
+	other.ID = "plan-2"
+	st.plans[other.ID] = &other
+	third, err := o.ManualRun(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("manual run of second plan: %v", err)
+	}
+	if third.ID == first.ID {
+		t.Fatal("different plan must not reuse the queued run")
+	}
+	if got := len(st.runs); got != 2 {
+		t.Fatalf("expected 2 queued runs, got %d", got)
+	}
+	if enq := disp.Enqueued(); len(enq) != 2 {
+		t.Fatalf("expected 2 enqueues, got %v", enq)
+	}
+}
+
+// 取消或失败之后，同样的手动运行必须重新入队（终态释放队列位）。
+func TestManualRunAfterTerminalStartsNewRun(t *testing.T) {
+	o, st, disp, plan := startPlanRunFixture(t)
+	ctx := context.Background()
+
+	cancelled, err := o.ManualRun(ctx, plan.ID)
+	if err != nil {
+		t.Fatalf("ManualRun: %v", err)
+	}
+	if err := o.CancelRun(ctx, cancelled.ID); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	if st.runs[cancelled.ID].Status != model.RunCancelled {
+		t.Fatalf("expected cancelled, got %s", st.runs[cancelled.ID].Status)
+	}
+
+	afterCancel, err := o.ManualRun(ctx, plan.ID)
+	if err != nil {
+		t.Fatalf("ManualRun after cancel: %v", err)
+	}
+	if afterCancel.ID == cancelled.ID {
+		t.Fatal("cancelled run must not be reused")
+	}
+
+	if err := st.TransitionRun(ctx, afterCancel.ID, model.RunQueued, model.RunFailed, nil); err != nil {
+		t.Fatalf("fail run: %v", err)
+	}
+	afterFailure, err := o.ManualRun(ctx, plan.ID)
+	if err != nil {
+		t.Fatalf("ManualRun after failure: %v", err)
+	}
+	if afterFailure.ID == afterCancel.ID {
+		t.Fatal("failed run must not be reused")
+	}
+	if enq := disp.Enqueued(); len(enq) != 3 {
+		t.Fatalf("expected 3 enqueues, got %v", enq)
+	}
+}
+
+// 系统运行按 agent/操作/仓库/参数去重：相同参数复用队列中的 run，不同参数并存。
+func TestSystemRunReusesQueuedRun(t *testing.T) {
+	st := newFakeStore()
+	disp := newFakeDispatcher()
+	o, seal := newTestOrchestrator(st, disp)
+	agent := testAgent()
+	st.agents[agent.ID] = agent
+	target := testTarget(seal)
+	if err := st.CreateStorageTarget(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	repo := testRepo(seal, st, target)
+
+	ctx := context.Background()
+	params := model.SnapshotsTask{Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath}}
+
+	first, err := o.SystemRun(ctx, agent.ID, repo.ID, model.OpSnapshots, params, 0)
+	if err != nil {
+		t.Fatalf("first SystemRun: %v", err)
+	}
+	second, err := o.SystemRun(ctx, agent.ID, repo.ID, model.OpSnapshots, params, 0)
+	if err != nil {
+		t.Fatalf("second SystemRun: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected reuse of run %s, got %s", first.ID, second.ID)
+	}
+
+	// 不同参数（不同仓库路径）可以并存。
+	other, err := o.SystemRun(ctx, agent.ID, repo.ID, model.OpSnapshots,
+		model.SnapshotsTask{Repository: model.RepoAccess{RepositoryPath: "/another/path"}}, 0)
+	if err != nil {
+		t.Fatalf("SystemRun with different params: %v", err)
+	}
+	if other.ID == first.ID {
+		t.Fatal("different params must not reuse the queued run")
+	}
+	if enq := disp.Enqueued(); len(enq) != 2 {
+		t.Fatalf("expected 2 enqueues, got %v", enq)
+	}
+
+	// 终态后同样的系统运行重新入队。
+	if err := st.TransitionRun(ctx, first.ID, model.RunQueued, model.RunSucceeded, nil); err != nil {
+		t.Fatal(err)
+	}
+	third, err := o.SystemRun(ctx, agent.ID, repo.ID, model.OpSnapshots, params, 0)
+	if err != nil {
+		t.Fatalf("SystemRun after success: %v", err)
+	}
+	if third.ID == first.ID {
+		t.Fatal("succeeded run must not be reused")
+	}
+	if enq := disp.Enqueued(); len(enq) != 3 {
+		t.Fatalf("expected 3 enqueues, got %v", enq)
+	}
+}
+
+// verify-remote 的临时 rclone 配置以密钥化指纹参与去重：同配置复用，换配置不复用
+// （否则会用错误凭据执行）。
+func TestSystemRunWithConfDeduplicatesByCredential(t *testing.T) {
+	st := newFakeStore()
+	disp := newFakeDispatcher()
+	o, _ := newTestOrchestrator(st, disp)
+	agent := testAgent()
+	st.agents[agent.ID] = agent
+
+	ctx := context.Background()
+	params := model.VerifyRemoteTask{ConfigProvided: true, RemoteName: "gdrive"}
+
+	first, err := o.SystemRunWithConf(ctx, agent.ID, "", model.OpVerifyRemote, params, 0, "conf-a")
+	if err != nil {
+		t.Fatalf("first SystemRunWithConf: %v", err)
+	}
+	again, err := o.SystemRunWithConf(ctx, agent.ID, "", model.OpVerifyRemote, params, 0, "conf-a")
+	if err != nil {
+		t.Fatalf("second SystemRunWithConf: %v", err)
+	}
+	if again.ID != first.ID {
+		t.Fatalf("same conf must reuse run %s, got %s", first.ID, again.ID)
+	}
+	other, err := o.SystemRunWithConf(ctx, agent.ID, "", model.OpVerifyRemote, params, 0, "conf-b")
+	if err != nil {
+		t.Fatalf("SystemRunWithConf with other conf: %v", err)
+	}
+	if other.ID == first.ID {
+		t.Fatal("different conf must not reuse the queued run")
+	}
+	if enq := disp.Enqueued(); len(enq) != 2 {
+		t.Fatalf("expected 2 enqueues, got %v", enq)
+	}
+}
+
 func TestStartPlanRunAgentRevoked(t *testing.T) {
 	st := newFakeStore()
 	disp := newFakeDispatcher()
@@ -829,6 +1050,104 @@ func TestBuildCommandVerifyRemoteStashedConf(t *testing.T) {
 	}
 	if cmd.Secrets.RcloneConf != "stashed-rclone-conf" {
 		t.Fatalf("expected stashed conf, got %q", cmd.Secrets.RcloneConf)
+	}
+}
+
+// 相同参数的恢复提交只创建一个 run 与一条 request：重复请求复用二者，不重复入队。
+func TestStartRestoreReusesQueuedRun(t *testing.T) {
+	st := newFakeStore()
+	disp := newFakeDispatcher()
+	seal, _ := secrets.NewSealer(fakeKey())
+	o := New(st, seal, disp, events.New(), "inst-1")
+
+	agent := testAgent()
+	st.agents[agent.ID] = agent
+	target := testTarget(seal)
+	_ = st.CreateStorageTarget(context.Background(), target)
+	repo := testRepo(seal, st, target)
+
+	ctx := context.Background()
+	dbName := "mydb"
+	in := RestoreInput{
+		RepositoryID: repo.ID,
+		SnapshotID:   "snap-1",
+		RestoreKind:  model.KindPostgreSQL,
+		Target:       model.RestoreTarget{Host: "localhost", Port: 5432, Username: "pg", Database: dbName},
+		Overwrite:    true,
+		Confirmation: secrets.HashToken(dbName),
+	}
+
+	firstRR, firstRun, err := o.StartRestore(ctx, "admin-1", in)
+	if err != nil {
+		t.Fatalf("first StartRestore: %v", err)
+	}
+	secondRR, secondRun, err := o.StartRestore(ctx, "admin-1", in)
+	if err != nil {
+		t.Fatalf("second StartRestore: %v", err)
+	}
+	if secondRun.ID != firstRun.ID {
+		t.Fatalf("expected reuse of run %s, got %s", firstRun.ID, secondRun.ID)
+	}
+	if secondRR.ID != firstRR.ID {
+		t.Fatalf("expected reuse of request %s, got %s", firstRR.ID, secondRR.ID)
+	}
+	if len(st.runs) != 1 || len(st.restoreRequests) != 1 {
+		t.Fatalf("expected 1 run and 1 request, got %d and %d", len(st.runs), len(st.restoreRequests))
+	}
+	if enq := disp.Enqueued(); len(enq) != 1 || enq[0] != firstRun.ID {
+		t.Fatalf("expected single enqueue of %s, got %v", firstRun.ID, enq)
+	}
+
+	// 目标口令是任务参数：换口令必须是另一个任务，不能复用已有 run
+	// （否则会用错误凭据执行）；相同口令重复提交仍复用同一 run。
+	withPassword := in
+	withPassword.TargetPassword = "secret-1"
+	pwRR, pwRun, err := o.StartRestore(ctx, "admin-1", withPassword)
+	if err != nil {
+		t.Fatalf("StartRestore with credential: %v", err)
+	}
+	if pwRun.ID == firstRun.ID || pwRR.ID == firstRR.ID {
+		t.Fatal("different credential must not reuse the queued run")
+	}
+	if _, again, err := o.StartRestore(ctx, "admin-1", withPassword); err != nil || again.ID != pwRun.ID {
+		t.Fatalf("expected reuse with identical credential, got run=%v err=%v", again, err)
+	}
+
+	otherPassword := withPassword
+	otherPassword.TargetPassword = "secret-2"
+	if _, run, err := o.StartRestore(ctx, "admin-1", otherPassword); err != nil || run.ID == pwRun.ID {
+		t.Fatalf("different password must not reuse the queued run, got run=%v err=%v", run, err)
+	}
+
+	// 不同目标参数可以并存。
+	other := in
+	other.Target.Database = "otherdb"
+	other.Confirmation = secrets.HashToken("otherdb")
+	_, otherRun, err := o.StartRestore(ctx, "admin-1", other)
+	if err != nil {
+		t.Fatalf("StartRestore with other target: %v", err)
+	}
+	if otherRun.ID == firstRun.ID {
+		t.Fatal("different target must not reuse the queued run")
+	}
+
+	// 终态后同样的恢复重新入队。
+	if err := st.TransitionRun(ctx, firstRun.ID, model.RunQueued, model.RunSucceeded, nil); err != nil {
+		t.Fatal(err)
+	}
+	retryRR, retryRun, err := o.StartRestore(ctx, "admin-1", in)
+	if err != nil {
+		t.Fatalf("StartRestore after success: %v", err)
+	}
+	if retryRun.ID == firstRun.ID || retryRR.ID == firstRR.ID {
+		t.Fatal("succeeded restore must not be reused")
+	}
+	// first(in) + pwRun + otherPassword + other + retry；口令相同的重复提交不重复入队。
+	if enq := disp.Enqueued(); len(enq) != 5 {
+		t.Fatalf("expected 5 enqueues, got %v", enq)
+	}
+	if len(st.runs) != 5 {
+		t.Fatalf("expected 5 runs, got %d", len(st.runs))
 	}
 }
 

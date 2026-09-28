@@ -94,9 +94,14 @@ type Store interface {
 	ListPlans(ctx context.Context, agentID string) ([]model.Plan, error)
 	ListEnabledPlans(ctx context.Context) ([]model.Plan, error)
 
-	// Runs. CreateRun enforces unique (plan_id, scheduled_at); returns
-	// ErrDuplicateRun when the slot already has a run.
+	// Runs. CreateRun enforces unique (plan_id, scheduled_at) and unique
+	// Run.DedupKey among queued/dispatched/running runs; both violations
+	// return ErrDuplicateRun.
 	CreateRun(ctx context.Context, r *model.Run) error
+	// FindActiveRunByDedupKey returns the newest queued/dispatched/running run
+	// carrying dedupKey, or ErrNotFound. Callers use it to join the in-flight
+	// task instead of queueing a duplicate.
+	FindActiveRunByDedupKey(ctx context.Context, dedupKey string) (*model.Run, error)
 	GetRun(ctx context.Context, id string) (*model.Run, error)
 	ListRuns(ctx context.Context, f RunFilter) ([]model.Run, error)
 	// TransitionRun moves status forward along the state machine only;
@@ -115,6 +120,10 @@ type Store interface {
 	// Restore requests
 	CreateRestoreRequest(ctx context.Context, rr *model.RestoreRequest) error
 	GetRestoreRequest(ctx context.Context, id string) (*model.RestoreRequest, error)
+	// GetRestoreRequestByRunID returns the restore request bound to a restore
+	// run, used to reuse an already queued restore instead of queueing a
+	// duplicate. Returns ErrNotFound when the run has no request row yet.
+	GetRestoreRequestByRunID(ctx context.Context, runID string) (*model.RestoreRequest, error)
 	ListRestoreRequests(ctx context.Context, limit int) ([]model.RestoreRequest, error)
 
 	// Audit

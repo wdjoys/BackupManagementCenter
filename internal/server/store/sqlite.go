@@ -1058,8 +1058,9 @@ func (s *sqliteStore) CreateRun(ctx context.Context, r *model.Run) error {
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO runs (id, plan_id, agent_id, operation, status,
 		   queued_at, started_at, finished_at, progress_json, snapshot_id,
-		   error_code, error_message, repository_id, scheduled_at, attempt, lease_expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   error_code, error_message, repository_id, scheduled_at, attempt, lease_expires_at,
+		   dedup_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, planID, r.AgentID, r.Operation, r.Status,
 		r.QueuedAt.Format(time.RFC3339),
 		nullTime(r.StartedAt),
@@ -1070,6 +1071,7 @@ func (s *sqliteStore) CreateRun(ctx context.Context, r *model.Run) error {
 		nullTime(r.ScheduledAt),
 		r.Attempt,
 		nullTime(r.LeaseExpiresAt),
+		nullString(r.DedupKey),
 	)
 	if err != nil {
 		if isUniqueConstraint(err) {
@@ -1094,8 +1096,26 @@ func (s *sqliteStore) GetRun(ctx context.Context, id string) (*model.Run, error)
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
 		        error_code, error_message, repository_id, scheduled_at,
-		        attempt, lease_expires_at
+		        attempt, lease_expires_at, dedup_key
 		 FROM runs WHERE id = ?`, id,
+	)
+	return scanRun(row)
+}
+
+// FindActiveRunByDedupKey 返回占用 dedupKey 的未终结 run（队列去重的复用目标）。
+// 去重键只保证未终结期间唯一，因此该查询最多返回一行。
+func (s *sqliteStore) FindActiveRunByDedupKey(ctx context.Context, dedupKey string) (*model.Run, error) {
+	if dedupKey == "" {
+		return nil, ErrNotFound
+	}
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, plan_id, agent_id, operation, status,
+		        queued_at, started_at, finished_at, progress_json, snapshot_id,
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at, dedup_key
+		 FROM runs
+		 WHERE dedup_key = ? AND status IN ('queued','dispatched','running')
+		 ORDER BY queued_at DESC LIMIT 1`, dedupKey,
 	)
 	return scanRun(row)
 }
@@ -1137,7 +1157,7 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
 		        error_code, error_message, repository_id, scheduled_at,
-		        attempt, lease_expires_at
+		        attempt, lease_expires_at, dedup_key
 		 FROM runs WHERE %s ORDER BY queued_at DESC LIMIT ? OFFSET ?`,
 		strings.Join(where, " AND "),
 	)
@@ -1163,9 +1183,10 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 // Early failure exits are legal: the dispatcher fails permanently
 // un-buildable jobs straight from queued, fast-finished runs may report a
 // terminal state while still dispatched, and both watchdogs force-fail from
-// dispatched/running. Terminal states remain final.
+// dispatched/running. Cancel may also hit a still-queued run (jobs.CancelRun
+// and Dispatcher.Cancel both do). Terminal states remain final.
 var validTransitions = map[string]map[string]bool{
-	model.RunQueued:     {model.RunDispatched: true, model.RunFailed: true},
+	model.RunQueued:     {model.RunDispatched: true, model.RunFailed: true, model.RunCancelled: true},
 	model.RunDispatched: {model.RunQueued: true, model.RunRunning: true, model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
 	model.RunRunning:    {model.RunQueued: true, model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
 }
@@ -1189,7 +1210,7 @@ func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mu
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
 		        error_code, error_message, repository_id, scheduled_at,
-		        attempt, lease_expires_at
+		        attempt, lease_expires_at, dedup_key
 		 FROM runs WHERE id = ?`, id,
 	)
 	run, err := scanRun(row)
@@ -1253,7 +1274,7 @@ func (s *sqliteStore) ListRunsByStatus(ctx context.Context, statuses []string) (
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
 		        error_code, error_message, repository_id, scheduled_at,
-		        attempt, lease_expires_at
+		        attempt, lease_expires_at, dedup_key
 		 FROM runs WHERE status IN (%s) ORDER BY queued_at DESC`,
 		strings.Join(placeholders, ","),
 	)
@@ -1620,6 +1641,16 @@ func (s *sqliteStore) GetRestoreRequest(ctx context.Context, id string) (*model.
 	return scanRestoreRequest(row)
 }
 
+func (s *sqliteStore) GetRestoreRequestByRunID(ctx context.Context, runID string) (*model.RestoreRequest, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, run_id, snapshot_id, restore_kind,
+		        target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		        rollback_snapshot_id, phase, created_at
+		 FROM restore_requests WHERE run_id = ? ORDER BY created_at DESC LIMIT 1`, runID,
+	)
+	return scanRestoreRequest(row)
+}
+
 func (s *sqliteStore) ListRestoreRequests(ctx context.Context, limit int) ([]model.RestoreRequest, error) {
 	if limit <= 0 {
 		limit = 50
@@ -1906,14 +1937,16 @@ func scanRun(row interface{ Scan(dest ...any) error }) (*model.Run, error) {
 		id, agentID, operation, status string
 		queuedAt                       string
 		startedAt, finishedAt          sql.NullString
-		progressJSON, snapshotID       string
+		progressJSON                   string
+		snapshotID                     sql.NullString
 		errorCode, errorMessage        sql.NullString
 		planID, repositoryID           sql.NullString
 		scheduledAt                    sql.NullString
 		attempt                        int
 		leaseExpiresAt                 sql.NullString
+		dedupKey                       sql.NullString
 	)
-	if err := row.Scan(&id, &planID, &agentID, &operation, &status, &queuedAt, &startedAt, &finishedAt, &progressJSON, &snapshotID, &errorCode, &errorMessage, &repositoryID, &scheduledAt, &attempt, &leaseExpiresAt); err != nil {
+	if err := row.Scan(&id, &planID, &agentID, &operation, &status, &queuedAt, &startedAt, &finishedAt, &progressJSON, &snapshotID, &errorCode, &errorMessage, &repositoryID, &scheduledAt, &attempt, &leaseExpiresAt, &dedupKey); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1934,13 +1967,14 @@ func scanRun(row interface{ Scan(dest ...any) error }) (*model.Run, error) {
 		FinishedAt:     parseTimePtr(finishedAt),
 		Progress:       prog,
 		ProgressJSON:   progressJSON,
-		SnapshotID:     snapshotID,
+		SnapshotID:     snapshotID.String,
 		ErrorCode:      errorCode.String,
 		ErrorMessage:   errorMessage.String,
 		RepositoryID:   repositoryID.String,
 		Attempt:        attempt,
 		LeaseExpiresAt: parseTimePtr(leaseExpiresAt),
 		ScheduledAt:    parseTimePtr(scheduledAt),
+		DedupKey:       dedupKey.String,
 	}, nil
 }
 

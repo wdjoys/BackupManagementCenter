@@ -301,3 +301,58 @@ func TestSnapshotBrowseFlightMergesMisses(t *testing.T) {
 		t.Fatalf("merged misses enqueued %d runs", got)
 	}
 }
+
+func TestWarmSnapshotCache(t *testing.T) {
+	o, st, d := setupBrowse(t)
+	ctx := context.Background()
+
+	// 1. 成功预热：强制刷新列表并拉取根目录
+	if err := o.WarmSnapshotCache(ctx, "repo-1", "agent-1", "snap-1"); err != nil {
+		t.Fatalf("WarmSnapshotCache failed: %v", err)
+	}
+	if got := len(d.Enqueued()); got != 2 {
+		t.Fatalf("expected 2 enqueued runs (snapshots + tree), got %d", got)
+	}
+
+	// 再次读取列表和根目录均为缓存命中，无额外排队运行
+	if _, _, info, err := o.SnapshotsWithOptions(ctx, "repo-1", "agent-1", false); err != nil || !info.Hit {
+		t.Fatalf("snapshots hit after warm: hit=%v, err=%v", info.Hit, err)
+	}
+	if _, _, info, err := o.SnapshotTreeWithOptions(ctx, "repo-1", "agent-1", "snap-1", "/", false); err != nil || !info.Hit {
+		t.Fatalf("tree hit after warm: hit=%v, err=%v", info.Hit, err)
+	}
+	if got := len(d.Enqueued()); got != 2 {
+		t.Fatalf("cache read after warm should not enqueue extra runs, got %d", got)
+	}
+
+	// 2. 空快照 ID：只刷新列表，不拉取树
+	enqueuedBefore := len(d.Enqueued())
+	if err := o.WarmSnapshotCache(ctx, "repo-1", "agent-1", ""); err != nil {
+		t.Fatalf("empty snapshotID WarmSnapshotCache failed: %v", err)
+	}
+	if got := len(d.Enqueued()) - enqueuedBefore; got != 1 {
+		t.Fatalf("empty snapshotID should only enqueue 1 list run, got %d", got)
+	}
+
+	// 3. 快照 ID 不在列表中：返回 ErrNotFound，不拉取树
+	enqueuedBefore = len(d.Enqueued())
+	if err := o.WarmSnapshotCache(ctx, "repo-1", "agent-1", "missing-snap"); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound for missing snapshot, got %v", err)
+	}
+	if got := len(d.Enqueued()) - enqueuedBefore; got != 1 {
+		t.Fatalf("missing snapshot should only enqueue list run, got %d", got)
+	}
+	if _, err := st.GetSnapshotTreeCache(ctx, "repo-1", "missing-snap", "/"); err == nil {
+		t.Fatal("tree cache must not be written for missing snapshot")
+	}
+
+	// 4. 远端失败：返回错误，根树不被写入
+	d.fail = true
+	_ = st.InvalidateSnapshotCache(ctx, "repo-1", true)
+	if err := o.WarmSnapshotCache(ctx, "repo-1", "agent-1", "snap-1"); err == nil {
+		t.Fatal("expected error on remote failure, got nil")
+	}
+	if _, err := st.GetSnapshotTreeCache(ctx, "repo-1", "snap-1", "/"); err == nil {
+		t.Fatal("tree cache must not be written when remote check fails")
+	}
+}

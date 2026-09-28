@@ -528,6 +528,29 @@ func (o *Orchestrator) SnapshotsWithOptions(ctx context.Context, repoID, agentID
 	return o.finishListFlight(flight, o.filterHiddenSnapshots(ctx, repoID, snaps), term, CacheInfo{Hit: false}, nil)
 }
 
+// WarmSnapshotCache 预热快照列表及新快照根目录缓存。
+func (o *Orchestrator) WarmSnapshotCache(ctx context.Context, repoID, agentID, snapshotID string) error {
+	snaps, _, _, err := o.SnapshotsWithOptions(ctx, repoID, agentID, true)
+	if err != nil {
+		return err
+	}
+	if snapshotID == "" {
+		return nil
+	}
+	var found bool
+	for _, s := range snaps {
+		if s.ID == snapshotID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ErrNotFound
+	}
+	_, _, _, err = o.SnapshotTreeWithOptions(ctx, repoID, agentID, snapshotID, "/", false)
+	return err
+}
+
 // SnapshotTree 返回快照目录树。
 func (o *Orchestrator) SnapshotTree(ctx context.Context, repoID, agentID, snapshotID, cachePath string) (*TreeResult, *model.Run, error) {
 	tree, run, _, err := o.SnapshotTreeWithOptions(ctx, repoID, agentID, snapshotID, cachePath, false)

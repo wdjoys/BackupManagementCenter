@@ -291,3 +291,130 @@ func TestSnapshotListEmptyCacheAndCorruptCache(t *testing.T) {
 		t.Fatalf("fingerprint mismatch should return 204, got %d", rec.Code)
 	}
 }
+
+type smokeBrowseDispatcher struct {
+	st store.Store
+}
+
+func (d *smokeBrowseDispatcher) Enqueue(ctx context.Context, runID, agentID, repositoryID string) {
+	go func() {
+		run, err := d.st.GetRun(ctx, runID)
+		if err != nil {
+			return
+		}
+		_ = d.st.TransitionRun(ctx, runID, model.RunQueued, model.RunDispatched, nil)
+		_ = d.st.TransitionRun(ctx, runID, model.RunDispatched, model.RunRunning, nil)
+		_ = d.st.TransitionRun(ctx, runID, model.RunRunning, model.RunSucceeded, func(r *model.Run) {
+			if run.Operation == model.OpSnapshots {
+				payload, _ := json.Marshal([]model.Snapshot{{ID: "snap-warm-1", Host: "host-1", Paths: []string{"/data"}}})
+				r.ProgressJSON = string(payload)
+			} else {
+				var lsTask model.SnapshotLsTask
+				_ = json.Unmarshal([]byte(run.ProgressJSON), &lsTask)
+				path := lsTask.Path
+				if path == "" || path == "/" {
+					payload, _ := json.Marshal(&jobs.TreeResult{Path: "/", Entries: []jobs.TreeEntry{{Name: "subdir", Type: "dir"}}})
+					r.ProgressJSON = string(payload)
+				} else {
+					payload, _ := json.Marshal(&jobs.TreeResult{Path: path, Entries: []jobs.TreeEntry{{Name: "file.txt", Type: "file"}}})
+					r.ProgressJSON = string(payload)
+				}
+			}
+		})
+	}()
+}
+func (d *smokeBrowseDispatcher) Cancel(ctx context.Context, runID string) error { return nil }
+func (d *smokeBrowseDispatcher) ConnectedAgents() []string                     { return nil }
+func (d *smokeBrowseDispatcher) IsConnected(agentID string) bool               { return true }
+
+func TestSnapshotWarmCacheAndAPISmoke(t *testing.T) {
+	s, st, cleanup := newTestServerWithAdmin(t)
+	defer cleanup()
+
+	disp := &smokeBrowseDispatcher{st: st}
+	orch := jobs.New(st, nil, disp, events.New(), "inst-smoke")
+	s.Jobs = orch
+
+	handler := New(s)
+	cookie := loginTestAdmin(t, handler)
+	repo, _ := setupTestRepoAndSnapshots(t, s, st)
+	s.Jobs = orch
+	ctx := context.Background()
+
+	// 1. 执行 WarmSnapshotCache 预热列表和根目录
+	if err := orch.WarmSnapshotCache(ctx, repo.ID, repo.AgentID, "snap-warm-1"); err != nil {
+		t.Fatalf("WarmSnapshotCache failed: %v", err)
+	}
+
+	// 2. 模拟前端打开 /snapshots: ?cached=1 查列表 -> 应返回 200, X-BMC-Cache: HIT, 带 X-BMC-Verified-At
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/"+repo.ID+"/snapshots?cached=1", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshots?cached=1 expected 200, got %d", rec.Code)
+	}
+	if rec.Header().Get("X-BMC-Cache") != "HIT" {
+		t.Fatalf("snapshots?cached=1 expected X-BMC-Cache: HIT, got %q", rec.Header().Get("X-BMC-Cache"))
+	}
+	if rec.Header().Get("X-BMC-Verified-At") == "" {
+		t.Fatal("snapshots?cached=1 expected X-BMC-Verified-At header")
+	}
+	var snaps []model.Snapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snaps); err != nil || len(snaps) != 1 || snaps[0].ID != "snap-warm-1" {
+		t.Fatalf("unexpected snapshot list: %v", snaps)
+	}
+
+	// 3. 模拟前端打开详情查看根目录: ?cached=1 查 path=/ -> 应返回 200, X-BMC-Cache: HIT, 带 X-BMC-Verified-At
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/snap-warm-1/tree?repo="+repo.ID+"&path=/&cached=1", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tree?path=/&cached=1 expected 200, got %d", rec.Code)
+	}
+	if rec.Header().Get("X-BMC-Cache") != "HIT" {
+		t.Fatalf("tree?path=/&cached=1 expected X-BMC-Cache: HIT, got %q", rec.Header().Get("X-BMC-Cache"))
+	}
+	if rec.Header().Get("X-BMC-Verified-At") == "" {
+		t.Fatal("tree?path=/&cached=1 expected X-BMC-Verified-At header")
+	}
+	var rootTree struct {
+		Path    string           `json:"path"`
+		Entries []jobs.TreeEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rootTree); err != nil || len(rootTree.Entries) != 1 || rootTree.Entries[0].Name != "subdir" {
+		t.Fatalf("unexpected root tree: %+v", rootTree)
+	}
+
+	// 4. 模拟前端点击未预热的子目录: ?cached=1 查 path=/subdir -> 应返回 204 No Content
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/snap-warm-1/tree?repo="+repo.ID+"&path=/subdir&cached=1", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("tree?path=/subdir&cached=1 expected 204, got %d", rec.Code)
+	}
+
+	// 5. 模拟前端 204 后回退执行普通 GET /subdir -> 应返回 200, X-BMC-Cache: MISS, 带 X-BMC-Verified-At
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/snap-warm-1/tree?repo="+repo.ID+"&path=/subdir", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tree?path=/subdir normal GET expected 200, got %d", rec.Code)
+	}
+	if rec.Header().Get("X-BMC-Cache") != "MISS" {
+		t.Fatalf("tree?path=/subdir normal GET expected X-BMC-Cache: MISS, got %q", rec.Header().Get("X-BMC-Cache"))
+	}
+	if rec.Header().Get("X-BMC-Verified-At") == "" {
+		t.Fatal("tree?path=/subdir normal GET expected X-BMC-Verified-At header")
+	}
+	var subTree struct {
+		Path    string           `json:"path"`
+		Entries []jobs.TreeEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &subTree); err != nil || len(subTree.Entries) != 1 || subTree.Entries[0].Name != "file.txt" {
+		t.Fatalf("unexpected subdir tree: %+v", subTree)
+	}
+}

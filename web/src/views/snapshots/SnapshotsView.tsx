@@ -323,13 +323,16 @@ export const SnapshotsView: React.FC = () => {
         )
         if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
         const freshData = freshResp.data || []
+        const isConfirmed =
+          freshResp.meta.cache === 'HIT' ||
+          (freshResp.meta.cache === 'MISS' && Boolean(freshResp.meta.verifiedAt))
         setSnapshots(freshData)
-        setSnapshotsCache((freshResp.meta.cache as CacheStatus) || 'HIT')
+        setSnapshotsCache(isConfirmed ? 'HIT' : (freshResp.meta.cache === 'STALE' ? 'STALE' : null))
         setSnapshotsVerifiedAt(freshResp.meta.verifiedAt)
-        setServerConfirmedHit(freshResp.meta.cache === 'HIT')
+        setServerConfirmedHit(isConfirmed)
         setCachedSnapshotList(repoId, {
           snapshots: freshData,
-          cacheStatus: (freshResp.meta.cache as CacheStatus) || 'HIT',
+          cacheStatus: isConfirmed ? 'HIT' : (freshResp.meta.cache === 'STALE' ? 'STALE' : null),
           verifiedAt: freshResp.meta.verifiedAt,
         })
         reconcileCachedTrees(repoId, new Set(freshData.map((s) => s.id)))
@@ -372,13 +375,16 @@ export const SnapshotsView: React.FC = () => {
         )
         if (reqId !== snapshotsReqRef.current || repoId !== selectedRepoId) return
         const verifyData = verifyResp.data || []
+        const isConfirmed =
+          verifyResp.meta.cache === 'HIT' ||
+          (verifyResp.meta.cache === 'MISS' && Boolean(verifyResp.meta.verifiedAt))
         setSnapshots(verifyData)
-        setSnapshotsCache((verifyResp.meta.cache as CacheStatus) || 'HIT')
+        setSnapshotsCache(isConfirmed ? 'HIT' : (verifyResp.meta.cache === 'STALE' ? 'STALE' : null))
         setSnapshotsVerifiedAt(verifyResp.meta.verifiedAt)
-        setServerConfirmedHit(verifyResp.meta.cache === 'HIT')
+        setServerConfirmedHit(isConfirmed)
         setCachedSnapshotList(repoId, {
           snapshots: verifyData,
-          cacheStatus: (verifyResp.meta.cache as CacheStatus) || 'HIT',
+          cacheStatus: isConfirmed ? 'HIT' : (verifyResp.meta.cache === 'STALE' ? 'STALE' : null),
           verifiedAt: verifyResp.meta.verifiedAt,
         })
         reconcileCachedTrees(repoId, new Set(verifyData.map((s) => s.id)))
@@ -518,15 +524,18 @@ export const SnapshotsView: React.FC = () => {
         if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
         const freshEntries = freshResp.data.entries || []
         const freshPath = freshResp.data.path || normPath
+        const isConfirmed =
+          freshResp.meta.cache === 'HIT' ||
+          (freshResp.meta.cache === 'MISS' && Boolean(freshResp.meta.verifiedAt))
         setTreeEntries(freshEntries)
         setTreePath(freshPath)
-        setTreeCacheStatus((freshResp.meta.cache as CacheStatus) || 'HIT')
+        setTreeCacheStatus(isConfirmed ? 'HIT' : (freshResp.meta.cache === 'STALE' ? 'STALE' : null))
         setTreeVerifiedAt(freshResp.meta.verifiedAt)
-        setTreeServerConfirmedHit(freshResp.meta.cache === 'HIT')
+        setTreeServerConfirmedHit(isConfirmed)
         setCachedTree(repoId, snapshotId, normPath, {
           entries: freshEntries,
           path: freshPath,
-          cacheStatus: (freshResp.meta.cache as CacheStatus) || 'HIT',
+          cacheStatus: isConfirmed ? 'HIT' : (freshResp.meta.cache === 'STALE' ? 'STALE' : null),
           verifiedAt: freshResp.meta.verifiedAt,
         })
         return
@@ -578,15 +587,18 @@ export const SnapshotsView: React.FC = () => {
         if (reqId !== treeReqRef.current || snapshotId !== selectedSnapshot?.id || repoId !== selectedRepoId) return
         const entries = verifyResp.data.entries || []
         const retPath = verifyResp.data.path || normPath
+        const isConfirmed =
+          verifyResp.meta.cache === 'HIT' ||
+          (verifyResp.meta.cache === 'MISS' && Boolean(verifyResp.meta.verifiedAt))
         setTreeEntries(entries)
         setTreePath(retPath)
-        setTreeCacheStatus((verifyResp.meta.cache as CacheStatus) || 'HIT')
+        setTreeCacheStatus(isConfirmed ? 'HIT' : (verifyResp.meta.cache === 'STALE' ? 'STALE' : null))
         setTreeVerifiedAt(verifyResp.meta.verifiedAt)
-        setTreeServerConfirmedHit(verifyResp.meta.cache === 'HIT')
+        setTreeServerConfirmedHit(isConfirmed)
         setCachedTree(repoId, snapshotId, normPath, {
           entries,
           path: retPath,
-          cacheStatus: (verifyResp.meta.cache as CacheStatus) || 'HIT',
+          cacheStatus: isConfirmed ? 'HIT' : (verifyResp.meta.cache === 'STALE' ? 'STALE' : null),
           verifiedAt: verifyResp.meta.verifiedAt,
         })
       } catch (err: unknown) {

@@ -161,7 +161,7 @@ func main() {
 		HeartbeatIntervalSeconds: 30,
 		OfflineCheckInterval:     30 * time.Second,
 		OfflineThreshold:         90 * time.Second,
-	}, notifier)
+	}, notifier, orch.WarmSnapshotCache)
 
 	// Restart recovery: retry idempotent work left in-flight, but fail
 	// destructive operations because their external side effects are unknown.
@@ -281,6 +281,7 @@ func main() {
 	defer cancel()
 	_ = httpSrv.Shutdown(shCtx)
 	gs.GracefulStop()
+	svc.Stop()
 }
 
 func periodicSQLiteBackup(dbPath, dataDir string) {

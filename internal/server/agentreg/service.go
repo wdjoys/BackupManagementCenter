@@ -50,14 +50,19 @@ type Service struct {
 	bus      events.Bus
 	cfg      Config
 	notifier notification.FailureNotifier
+	warmCache func(ctx context.Context, repoID, agentID, snapshotID string) error
 
 	// mu protects lastSeenWrite for the heartbeat throttle
 	lastSeenMu     sync.Mutex
 	lastSeenWrites map[string]time.Time
 
 	// Once started goroutines
-	startOnce sync.Once
-	stopCh    chan struct{}
+	startOnce  sync.Once
+	stopOnce   sync.Once
+	stopCh     chan struct{}
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
+	warmWg     sync.WaitGroup
 }
 
 // Config holds optional configuration for the gRPC service.
@@ -81,18 +86,22 @@ func DefaultConfig() Config {
 
 // NewService creates a new AgentControl gRPC service. notifier receives one
 // call per persisted plan-bound failed run; nil falls back to a no-op.
-func NewService(s store.Store, reg *Registry, bus events.Bus, cfg Config, notifier notification.FailureNotifier) *Service {
+func NewService(s store.Store, reg *Registry, bus events.Bus, cfg Config, notifier notification.FailureNotifier, warmCache func(context.Context, string, string, string) error) *Service {
 	if notifier == nil {
 		notifier = notification.NopNotifier{}
 	}
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	return &Service{
 		store:          s,
 		reg:            reg,
 		bus:            bus,
 		cfg:            cfg,
 		notifier:       notifier,
+		warmCache:      warmCache,
 		lastSeenWrites: make(map[string]time.Time),
 		stopCh:         make(chan struct{}),
+		stopCtx:        stopCtx,
+		stopCancel:     stopCancel,
 	}
 }
 
@@ -105,7 +114,11 @@ func (s *Service) Start() {
 
 // Stop signals the background goroutine to shut down.
 func (s *Service) Stop() {
-	close(s.stopCh)
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		s.stopCancel()
+	})
+	s.warmWg.Wait()
 }
 
 // ---------------------------------------------------------------------------
@@ -666,12 +679,13 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	}
 
 	// Mark repository checked for backup/check operations on success
+	var repositoryID string
 	if toStatus == model.RunSucceeded && run.Operation != "" {
 		if run.Operation == model.OpBackup || run.Operation == model.OpCheck {
 			// Scheduled repository checks are system runs with no plan ID, so
 			// prefer the repository carried directly on the run. Backups keep
 			// the plan lookup as a compatibility fallback for older rows.
-			repositoryID := run.RepositoryID
+			repositoryID = run.RepositoryID
 			if repositoryID == "" && run.PlanID != "" {
 				plan, planErr := s.store.GetPlan(ctx, run.PlanID)
 				if planErr == nil {
@@ -693,6 +707,23 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 		})
 	}
 
+	// Trigger background snapshot cache warm after backup success
+	if toStatus == model.RunSucceeded && run.Operation == model.OpBackup && s.warmCache != nil && repositoryID != "" && agentID != "" {
+		select {
+		case <-s.stopCtx.Done():
+		default:
+			s.warmWg.Add(1)
+			go func(repoID, agID, snapID, rID string) {
+				defer s.warmWg.Done()
+				warmCtx, cancel := context.WithTimeout(s.stopCtx, 2*time.Minute)
+				defer cancel()
+				if err := s.warmCache(warmCtx, repoID, agID, snapID); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("snapshot cache warm failed for repo %s run %s: %v", repoID, rID, err)
+				}
+			}(repositoryID, agentID, snapshotID, runID)
+		}
+	}
+
 	// Notify only after the failed terminal state is durably committed and
 	// the state event published. Duplicate agent results return earlier via
 	// ErrInvalidTransition and never reach this point.
@@ -701,7 +732,6 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 			notification.LogFailure(runID, err)
 		}
 	}
-
 	return nil
 }
 

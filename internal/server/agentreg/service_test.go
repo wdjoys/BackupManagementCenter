@@ -173,7 +173,7 @@ func (r *recordingNotifier) calls() []string {
 
 func newTestService(st *fakeStore) (*Service, *recordingNotifier) {
 	rec := &recordingNotifier{}
-	svc := NewService(st, NewRegistry(), events.New(), DefaultConfig(), rec)
+	svc := NewService(st, NewRegistry(), events.New(), DefaultConfig(), rec, nil)
 	return svc, rec
 }
 
@@ -375,6 +375,172 @@ func TestHandleRunResultNotifierErrorKeepsStoredFailure(t *testing.T) {
 	run := st.snapshot("run-5")
 	if run.Status != model.RunFailed || run.ErrorMessage != "snapshot exited 3" {
 		t.Fatalf("stored failure changed after notifier error: %+v", run)
+	}
+}
+
+func TestHandleRunResult_WarmSnapshotCache(t *testing.T) {
+	st := newFakeStore()
+	run := model.Run{
+		ID:           "run-backup-1",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpBackup,
+		Status:       model.RunRunning,
+	}
+	st.addRun(run)
+
+	type warmCall struct {
+		repoID     string
+		agentID    string
+		snapshotID string
+		ctxErr     error
+	}
+	var mu sync.Mutex
+	var calls []warmCall
+	warmCh := make(chan struct{}, 10)
+
+	warmFn := func(ctx context.Context, repoID, agentID, snapshotID string) error {
+		mu.Lock()
+		calls = append(calls, warmCall{
+			repoID:     repoID,
+			agentID:    agentID,
+			snapshotID: snapshotID,
+			ctxErr:     ctx.Err(),
+		})
+		mu.Unlock()
+		warmCh <- struct{}{}
+		return nil
+	}
+
+	rec := &recordingNotifier{}
+	svc := NewService(st, NewRegistry(), events.New(), DefaultConfig(), rec, warmFn)
+
+	// 1. 成功备份携带 snapshot ID：请求 context 立即取消，回调 context 仍可正常执行
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	res := &bmcv1.RunResult{
+		RunId:       run.ID,
+		Status:      bmcv1.RunResult_SUCCEEDED,
+		SnapshotIds: []string{"snap-123", "snap-456"},
+	}
+	if err := svc.handleRunResult(reqCtx, "agent-1", res); err != nil {
+		t.Fatalf("handleRunResult failed: %v", err)
+	}
+	cancelReq()
+
+	select {
+	case <-warmCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for warmSnapshotCache callback")
+	}
+
+	mu.Lock()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 warm call, got %d", len(calls))
+	}
+	if calls[0].repoID != "repo-1" || calls[0].agentID != "agent-1" || calls[0].snapshotID != "snap-123" {
+		t.Fatalf("unexpected call args: %+v", calls[0])
+	}
+	if calls[0].ctxErr != nil {
+		t.Fatalf("warmCtx should not be cancelled by reqCtx: %v", calls[0].ctxErr)
+	}
+	mu.Unlock()
+
+	// 2. 重复回调：幂等忽略，不再调用预热
+	if err := svc.handleRunResult(context.Background(), "agent-1", res); err != nil {
+		t.Fatalf("duplicate handleRunResult failed: %v", err)
+	}
+	select {
+	case <-warmCh:
+		t.Fatal("duplicate result must not trigger warmSnapshotCache")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// 3. 失败/取消运行：不预热
+	failedRun := model.Run{
+		ID:           "run-backup-fail",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpBackup,
+		Status:       model.RunRunning,
+	}
+	st.addRun(failedRun)
+	_ = svc.handleRunResult(context.Background(), "agent-1", failedResult("run-backup-fail"))
+
+	cancelledRun := model.Run{
+		ID:           "run-backup-cancel",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpBackup,
+		Status:       model.RunRunning,
+	}
+	st.addRun(cancelledRun)
+	_ = svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:  "run-backup-cancel",
+		Status: bmcv1.RunResult_CANCELLED,
+	})
+
+	// 4. 非备份操作：不预热
+	restoreRun := model.Run{
+		ID:           "run-restore",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpRestore,
+		Status:       model.RunRunning,
+	}
+	st.addRun(restoreRun)
+	_ = svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:  "run-restore",
+		Status: bmcv1.RunResult_SUCCEEDED,
+	})
+
+	select {
+	case <-warmCh:
+		t.Fatal("failed/cancelled/non-backup runs must not trigger warm")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// 5. Service.Stop() 取消在途预热并等待退出
+	blockingRun := model.Run{
+		ID:           "run-blocking",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpBackup,
+		Status:       model.RunRunning,
+	}
+	st.addRun(blockingRun)
+
+	stopStarted := make(chan struct{})
+	stopExited := make(chan struct{})
+	blockingSvc := NewService(st, NewRegistry(), events.New(), DefaultConfig(), rec, func(ctx context.Context, repoID, agentID, snapshotID string) error {
+		close(stopStarted)
+		<-ctx.Done()
+		close(stopExited)
+		return ctx.Err()
+	})
+
+	_ = blockingSvc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:       "run-blocking",
+		Status:      bmcv1.RunResult_SUCCEEDED,
+		SnapshotIds: []string{"snap-block"},
+	})
+	<-stopStarted
+
+	stopDone := make(chan struct{})
+	go func() {
+		blockingSvc.Stop()
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking warm worker was not cancelled by Stop()")
+	}
+
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not wait for warm worker to finish")
 	}
 }
 func TestEnrollTakeoverSuccessAndOfflineCheck(t *testing.T) {

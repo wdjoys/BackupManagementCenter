@@ -21,10 +21,12 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 curl --fail https://backup.example.com/health/ready
 ```
 
-> **数据目录权限**：Server 容器以非 root 用户（uid/gid `65532`）运行。模板使用的 `bmc-data` 命名卷由镜像预置好属主，可直接使用；若自行改为宿主机目录 bind mount（例如 `./bmc-server-data:/var/lib/bmc`），首次启动前必须把宿主机目录归属该用户，否则容器会以 `[FATAL] instance id: open /var/lib/bmc/instance_id: permission denied` 反复重启退出：
-> ```sh
-> mkdir -p ./bmc-server-data && sudo chown -R 65532:65532 ./bmc-server-data
-> ```
+> **数据目录权限**：Server 容器以非 root 用户（uid/gid `65532`）运行，`/var/lib/bmc` 必须能被该用户写入，二选一：
+> - **用模板默认的命名卷**（`bmc-data:/var/lib/bmc`）：**无需任何 chown**。镜像已把 `/var/lib/bmc` 预置为 `65532:65532`，命名卷首次挂载会继承该属主，直接启动即可。
+> - **坚持宿主机目录 bind mount**（如 `./bmc-server-data:/var/lib/bmc`）：bind mount 只做覆盖、不继承镜像属主，宿主机目录默认 `root:root`，启动前必须改归属，否则容器以 `[FATAL] instance id: open /var/lib/bmc/instance_id: permission denied` 退出，并在 `restart: unless-stopped` 下反复重启：
+>   ```sh
+>   mkdir -p ./bmc-server-data && sudo chown -R 65532:65532 ./bmc-server-data
+>   ```
 
 主密钥首次启动时自动生成并保存于 `bmc-data` 命名卷中的 `/var/lib/bmc/master.key`（权限 `0600`）。**首次启动后必须立即备份主密钥**；若主密钥丢失，数据库中所有已加密的存储目标与凭据均无法恢复：
 

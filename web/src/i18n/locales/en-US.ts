@@ -501,6 +501,7 @@ export default {
     },
     "columns": {
       "queuedAt": "Queued At",
+      "agent": "Agent",
       "snapshot": "Snapshot",
       "duration": "Duration",
       "error": "Error"

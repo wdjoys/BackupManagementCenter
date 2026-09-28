@@ -501,6 +501,7 @@ export default {
     },
     "columns": {
       "queuedAt": "入队时间",
+      "agent": "Agent",
       "snapshot": "快照",
       "duration": "耗时",
       "error": "错误"

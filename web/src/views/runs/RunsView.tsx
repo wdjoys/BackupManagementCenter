@@ -104,6 +104,14 @@ export const RunsView: React.FC = () => {
     }
     return map
   }, [plans])
+  const agentMap = useMemo(() => {
+    const map = new Map<string, Agent>()
+    for (const a of agents) {
+      map.set(a.id, a)
+    }
+    return map
+  }, [agents])
+
 
   const loadRuns = async (query: RunQuery) => {
     abortControllerRef.current?.abort()
@@ -360,11 +368,12 @@ export const RunsView: React.FC = () => {
               <div className="rounded-md overflow-hidden">
                 {/* Desktop table */}
                 <div className="hidden md:block overflow-x-auto">
-                  <Table className="min-w-[850px]">
+                  <Table className="min-w-[950px]">
                     <TableHeader>
                       <TableRow className="border-border hover:bg-transparent">
                         <TableHead className="text-xs font-medium">{t('runs.columns.queuedAt')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('dashboard.plan')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('runs.columns.agent')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('runs.filters.operation')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('common.status')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('runs.columns.snapshot')}</TableHead>
@@ -376,6 +385,7 @@ export const RunsView: React.FC = () => {
                       {runs.map((run) => {
                         const plan = planMap.get(run.plan_id)
                         const planLabel = plan ? plan.name : run.plan_id
+                        const agent = agentMap.get(run.agent_id)
                         const canCancel = isCancelable(run.status)
                         return (
                           <TableRow key={run.id} className="border-border hover:bg-muted/40">
@@ -394,6 +404,20 @@ export const RunsView: React.FC = () => {
                               >
                                 {planLabel}
                               </Link>
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {agent ? (
+                                <span>
+                                  <span className="text-foreground font-medium">{agent.name}</span>
+                                  {agent.hostname && (
+                                    <span className="text-[11px] text-muted-foreground/75 ml-1.5 font-mono">
+                                      ({agent.hostname})
+                                    </span>
+                                  )}
+                                </span>
+                              ) : (
+                                <span className="font-mono">{run.agent_id || '—'}</span>
+                              )}
                             </TableCell>
                             <TableCell className="text-xs">
                               <StatusBadge tone={operationTagType(run.operation)}>
@@ -453,6 +477,7 @@ export const RunsView: React.FC = () => {
                   {runs.map((run) => {
                     const plan = planMap.get(run.plan_id)
                     const planLabel = plan ? plan.name : run.plan_id
+                    const agent = agentMap.get(run.agent_id)
                     const canCancel = isCancelable(run.status)
                     return (
                       <div key={run.id} className="p-3 space-y-2 text-xs">
@@ -478,6 +503,12 @@ export const RunsView: React.FC = () => {
                           <div>
                             <span className="text-muted-foreground/70">{t('runs.columns.duration')}: </span>
                             {formatDuration(run.started_at, run.finished_at)}
+                          </div>
+                          <div className="col-span-2 truncate">
+                            <span className="text-muted-foreground/70">{t('runs.columns.agent')}: </span>
+                            <span className="text-foreground font-sans">
+                              {agent ? `${agent.name} (${agent.hostname})` : (run.agent_id || '—')}
+                            </span>
                           </div>
                         </div>
                         <div className="flex items-center justify-between pt-1">

@@ -37,6 +37,7 @@ import {
   Loader2,
   AlertTriangle,
   ShieldAlert,
+  RotateCcw,
 } from 'lucide-react'
 
 export const AgentsView: React.FC = () => {
@@ -63,6 +64,10 @@ export const AgentsView: React.FC = () => {
   // Revoke Dialog
   const [revokeDialogOpen, setRevokeDialogOpen] = useState(false)
   const [agentToRevoke, setAgentToRevoke] = useState<Agent | null>(null)
+
+  // Restore Dialog
+  const [restoreDialogOpen, setRestoreDialogOpen] = useState(false)
+  const [agentToRestore, setAgentToRestore] = useState<Agent | null>(null)
 
   const loadAgents = async () => {
     setLoading(true)
@@ -165,6 +170,11 @@ export const AgentsView: React.FC = () => {
     setRevokeDialogOpen(true)
   }
 
+  const openRestore = (agent: Agent) => {
+    setAgentToRestore(agent)
+    setRestoreDialogOpen(true)
+  }
+
   const handleRevokeConfirm = async () => {
     if (!agentToRevoke) return
     try {
@@ -173,6 +183,17 @@ export const AgentsView: React.FC = () => {
       await loadAgents()
     } catch (err: unknown) {
       toastError(isApiClientError(err) ? err.message : t('agents.revokeFailed'))
+    }
+  }
+
+  const handleRestoreConfirm = async () => {
+    if (!agentToRestore) return
+    try {
+      await apiPost(`/agents/${agentToRestore.id}/restore`)
+      toastSuccess(t('agents.restored'))
+      await loadAgents()
+    } catch (err: unknown) {
+      toastError(isApiClientError(err) ? err.message : t('agents.restoreFailed'))
     }
   }
 
@@ -332,17 +353,29 @@ export const AgentsView: React.FC = () => {
                                     {t('agents.takeover')}
                                   </Button>
                                 )}
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
-                                  disabled={agent.revoked}
-                                  onClick={() => openRevoke(agent)}
-                                  aria-label={t('agents.revoke')}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                                  {t('agents.revoke')}
-                                </Button>
+                                {agent.revoked ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 text-xs text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 gap-1"
+                                    onClick={() => openRestore(agent)}
+                                    aria-label={t('agents.restore')}
+                                  >
+                                    <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                                    {t('agents.restore')}
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                                    onClick={() => openRevoke(agent)}
+                                    aria-label={t('agents.revoke')}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                    {t('agents.revoke')}
+                                  </Button>
+                                )}
                               </div>
                             </TableCell>
                           </TableRow>
@@ -478,17 +511,29 @@ export const AgentsView: React.FC = () => {
                             {t('agents.takeover')}
                           </Button>
                         )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
-                          disabled={agent.revoked}
-                          onClick={() => openRevoke(agent)}
-                          aria-label={t('agents.revoke')}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                          {t('agents.revoke')}
-                        </Button>
+                        {agent.revoked ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 gap-1"
+                            onClick={() => openRestore(agent)}
+                            aria-label={t('agents.restore')}
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                            {t('agents.restore')}
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                            onClick={() => openRevoke(agent)}
+                            aria-label={t('agents.revoke')}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            {t('agents.revoke')}
+                          </Button>
+                        )}
                       </div>
                     </div>
                     {expandedRows.has(agent.id) && (
@@ -677,6 +722,23 @@ export const AgentsView: React.FC = () => {
         }
         destructive
         onConfirm={handleRevokeConfirm}
+      />
+
+      {/* Restore Confirm Dialog */}
+      <ConfirmActionDialog
+        open={restoreDialogOpen}
+        onOpenChange={setRestoreDialogOpen}
+        title={t('agents.restoreDialog.title')}
+        description={
+          agentToRestore
+            ? t('agents.restoreDialog.confirm', {
+                name: agentToRestore.name,
+                hostname: agentToRestore.hostname,
+              })
+            : ''
+        }
+        confirmText={t('agents.restore')}
+        onConfirm={handleRestoreConfirm}
       />
     </div>
   )

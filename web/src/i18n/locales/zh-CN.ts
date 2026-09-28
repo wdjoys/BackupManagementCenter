@@ -214,6 +214,13 @@ export default {
     },
     "revoked": "Agent 已撤销",
     "revokeFailed": "撤销失败",
+    "restore": "恢复",
+    "restored": "Agent 已恢复",
+    "restoreFailed": "恢复失败",
+    "restoreDialog": {
+      "title": "恢复 Agent",
+      "confirm": "确定要恢复 Agent \"{{name}}\"（{{hostname}}）吗？恢复后该 Agent 可用原身份重新连接，原有仓库与计划继续有效。"
+    },
     "subtitle": "受管执行节点及其在线状态与探测能力",
     "noAgents": "暂无 Agent",
     "noAgents_desc": "请在受管机器部署 Agent 并使用 Enrollment Token 完成注册",

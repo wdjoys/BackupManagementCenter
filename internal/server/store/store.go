@@ -55,6 +55,9 @@ type Store interface {
 	GetAgentBySecretHash(ctx context.Context, tokenHash string) (*model.Agent, error)
 	ListAgents(ctx context.Context) ([]model.Agent, error)
 	RevokeAgent(ctx context.Context, id string) error
+	// UnrevokeAgent clears the revoked flag and marks the agent offline so it
+	// can reconnect with its existing identity/hash; ErrNotFound when unknown.
+	UnrevokeAgent(ctx context.Context, id string) error
 	RenameAgent(ctx context.Context, id, name string) error
 	// TelegramSettings: single-row web-configured failure-notification
 	// target. GetTelegramSettings returns ErrNotFound when unset; the token

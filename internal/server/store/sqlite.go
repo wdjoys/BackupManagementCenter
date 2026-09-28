@@ -514,6 +514,17 @@ func (s *sqliteStore) ReEnrollAgent(ctx context.Context, agentID string, tokenHa
 	}
 	return nil
 }
+func (s *sqliteStore) UnrevokeAgent(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE agents SET revoked = 0, status = 'offline' WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("unrevoke agent: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *sqliteStore) RenameAgent(ctx context.Context, id, name string) error {
 	res, err := s.db.ExecContext(ctx, "UPDATE agents SET name = ? WHERE id = ?", name, id)
 	if err != nil {

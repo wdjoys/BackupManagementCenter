@@ -169,6 +169,7 @@ func (f *fakeStore) GetAgentBySecretHash(_ context.Context, _ string) (*model.Ag
 }
 func (f *fakeStore) ListAgents(_ context.Context) ([]model.Agent, error) { return nil, nil }
 func (f *fakeStore) RevokeAgent(_ context.Context, _ string) error       { return nil }
+func (f *fakeStore) UnrevokeAgent(_ context.Context, _ string) error     { return nil }
 func (f *fakeStore) RenameAgent(_ context.Context, _, _ string) error    { return nil }
 func (f *fakeStore) GetTelegramSettings(_ context.Context) (*model.TelegramSettings, error) {
 	return nil, store.ErrNotFound

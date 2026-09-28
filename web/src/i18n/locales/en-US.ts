@@ -214,6 +214,13 @@ export default {
     },
     "revoked": "Agent revoked",
     "revokeFailed": "Revoke failed",
+    "restore": "Restore",
+    "restored": "Agent restored",
+    "restoreFailed": "Restore failed",
+    "restoreDialog": {
+      "title": "Restore Agent",
+      "confirm": "Restore agent \"{{name}}\" ({{hostname}})? It can reconnect with its original identity, and its repositories and plans stay valid."
+    },
     "subtitle": "Managed host agents, health statuses, and probing tools",
     "noAgents": "No agents connected",
     "noAgents_desc": "Deploy an agent on a host and enroll using a token",

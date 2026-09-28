@@ -110,6 +110,7 @@ func New(s *Server) http.Handler {
 			r.Patch("/agents/{id}", s.handleRenameAgent)
 			r.Get("/agents", s.handleListAgents)
 			r.Delete("/agents/{id}", s.handleRevokeAgent)
+			r.Post("/agents/{id}/restore", s.handleRestoreAgent)
 			r.Post("/enrollment-tokens", s.handleCreateEnrollmentToken)
 			r.Get("/enrollment-tokens", s.handleListEnrollmentTokens)
 

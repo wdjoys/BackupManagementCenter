@@ -112,6 +112,19 @@ func (s *Server) handleRevokeAgent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// POST /agents/{id}/restore — reverse a revoke.
+func (s *Server) handleRestoreAgent(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	if err := s.ST.UnrevokeAgent(r.Context(), id); err != nil {
+		if !mapStoreErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		}
+		return
+	}
+	s.Jobs.Audit(r.Context(), "admin", actorID(r), "agent.restore", "agent", id, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // PATCH /agents/{id} — rename.
 func (s *Server) handleRenameAgent(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")

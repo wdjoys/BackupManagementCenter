@@ -701,7 +701,7 @@ export default {
       "title": "Restore Snapshot (Filesystem)",
       "snapshot": "Snapshot",
       "targetPath": "Host Target Path",
-      "targetPathPlaceholder": "/var/lib/bmc-restore/job-1",
+      "targetPathPlaceholder": "/backup-restore/job-1",
       "targetPathHint": "Absolute host path to restore into.",
       "availableHostPaths": "Available host restore directories:",
       "pathMappingCompatibilityHint": "This agent has not reported restore path mappings. For bare-metal and legacy agent compatibility, absolute paths are used as entered.",

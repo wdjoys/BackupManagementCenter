@@ -701,7 +701,7 @@ export default {
       "title": "恢复快照（文件系统）",
       "snapshot": "快照",
       "targetPath": "宿主机目标路径",
-      "targetPathPlaceholder": "/var/lib/bmc-restore/job-1",
+      "targetPathPlaceholder": "/backup-restore/job-1",
       "targetPathHint": "要恢复到的宿主机绝对路径。",
       "availableHostPaths": "可恢复的宿主机目录：",
       "pathMappingCompatibilityHint": "此 Agent 未报告恢复路径映射；为兼容裸机或旧 Agent，绝对路径将按原值使用。",

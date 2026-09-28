@@ -43,8 +43,11 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 
 **注意事项**：
 - Agent 首次注册成功后，建议清空 `.env.agent` 中的 `BMC_ENROLLMENT_TOKEN` 并重建容器（`docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml up -d`）。
-- 备份源目录（`/etc`、`/srv`）以只读方式（`:ro`）挂载；恢复目标目录（默认 `/var/lib/bmc-restore`）以读写方式挂载。
-- **备份/恢复路径约定**：只保留两个根变量。`BMC_SOURCE_ROOTS`（默认 `/backup-sources`）是容器内备份源根；计划的源路径可直接写宿主机路径（`/etc` → 容器内 `/backup-sources/etc`），约定把宿主机目录挂到同名容器路径 `/backup-sources/<同名路径>`。`BMC_RESTORE_ROOT`（默认 `/var/lib/bmc-restore`）是宿主机恢复根，自动映射到容器内固定目录 `/backup-restore`，恢复操作只写入该目录。
+- 备份源目录（`/etc`、`/srv`）以只读方式（`:ro`）挂载；恢复目标目录（默认宿主机 `./backup-restore`，请按需改为绝对路径）以读写方式挂载到容器内 `/backup-restore`。
+- **备份/恢复路径约定（仅两个环境变量）**：
+  - `BMC_SOURCE_ROOTS`：容器内备份源根目录，可多个用逗号分隔，默认 `/backup-sources`。计划的源路径可直接写宿主机路径（`/etc` → 容器内 `/backup-sources/etc`），约定把宿主机目录挂到同名容器路径 `/backup-sources/<同名路径>`。
+  - `BMC_RESTORE_ROOT`：单个恢复目标根目录，默认 `/backup-restore`；恢复的文件都落在此目录下。容器内恢复目录固定为 `/backup-restore`，宿主机目录挂载到该路径即可（默认挂载 `./backup-restore`）。
+  - 裸机运行时：`BMC_SOURCE_ROOTS` 缺省不限制源路径；恢复根缺省为 `/backup-restore`，可显式设置 `BMC_RESTORE_ROOT` 指向其他目录（此时恢复目标必须落在该目录内）。
 - `bmc-agent-state` 卷用于持久化 Agent 身份，不可多主机共享。
 - **重新安装接管（Takeover）**：若 Agent 状态卷丢失或需更换新机器接管原 Agent 数据，请在 Server Web UI 的 Agent 列表（离线状态）点击“重新安装接管”生成专用令牌，并在 `.env.agent` 中设置 `BMC_TARGET_AGENT_ID=<原AgentID>` 与 `BMC_ENROLLMENT_TOKEN=<接管令牌>`。启动后服务端会自动复用原 ID、保留全部仓库与计划并轮换密钥，接管成功后同样建议清空这两个变量。
 - **备份/恢复环境变量精简**：推荐 Compose 模板不再透传 `BMC_SOURCE_PATH_MAPPINGS`、`BMC_RESTORE_PATH_MAPPINGS`、`BMC_RESTORE_ROOTS`。源路径按「宿主机路径 ↔ `/backup-sources` + 宿主机路径」自动映射，既有计划无需修改；已在 `/backup-sources` 内的容器路径保持原样；显式设置 `BMC_SOURCE_PATH_MAPPINGS` 时仍按显式映射处理（非镜像挂载布局请显式配置）。恢复白名单由 `BMC_RESTORE_ROOT` 推导为 `/backup-restore`。注意：源侧映射不再上报给 Server，计划表单不再显示“可用宿主机路径”提示，运行日志中的源路径按容器内路径显示。

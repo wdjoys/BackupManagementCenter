@@ -19,14 +19,15 @@ services:
       BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC endpoint}
       # 首次注册令牌（从 Server Web UI 生成的一次性注册令牌；注册完成后建议清空并重启）
       BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
-      # 备份源根目录（容器内路径，逗号分隔）：计划的源路径在容器内统一位于此目录下
-      BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
-      # 宿主机恢复根目录（自动映射到容器内 /backup-restore，必须是绝对路径且非根目录）
-      BMC_RESTORE_ROOT: ${BMC_RESTORE_ROOT:-/var/lib/bmc-restore}
       # 本地暂存目录所需的最小可用空间阈值（单位字节，0 表示不检查，空间不足时拒绝执行任务）
       BMC_SCRATCH_MIN_FREE_BYTES: ${BMC_SCRATCH_MIN_FREE_BYTES:-0}
       # Agent 并发执行任务的最大数量限制
       BMC_AGENT_MAX_CONCURRENCY: ${BMC_AGENT_MAX_CONCURRENCY:-2}
+      #--------------------------------------------------------------------------------------------------------------------
+      # 备份源根目录（容器内路径，逗号分隔）：计划的源路径在容器内统一位于此目录下
+      BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
+      # 恢复根目录
+      BMC_RESTORE_ROOT: ${BMC_RESTORE_ROOT:-/backup-restore}
     volumes:
       - bmc-agent-state:/var/lib/bmc-agent
       - bmc-agent-scratch:/var/lib/bmc-agent/scratch
@@ -35,7 +36,7 @@ services:
       - ${BMC_SOURCE_ETC:-/etc}:/backup-sources/etc:ro
       - ${BMC_SOURCE_SRV:-/srv}:/backup-sources/srv:ro
       # 宿主机恢复目标目录挂载到容器内（读写），恢复操作只写入 /backup-restore
-      - ${BMC_RESTORE_ROOT:-/var/lib/bmc-restore}:/backup-restore
+      - ${BMC_RESTORE_ROOT:-./backup-restore}:/backup-restore
     read_only: true
     tmpfs:
       - /tmp:uid=65532,gid=65532,mode=0700

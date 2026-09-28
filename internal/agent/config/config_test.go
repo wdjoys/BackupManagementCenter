@@ -139,7 +139,7 @@ func TestLoadAgentRestoreConfigurationExplicitValuesOverrideRoot(t *testing.T) {
 	}
 }
 
-func TestLoadAgentRestoreConfigurationEmptyIsCompatible(t *testing.T) {
+func TestLoadAgentRestoreDefaultsToBackupRestore(t *testing.T) {
 	t.Setenv("BMC_SERVER_GRPC_URL", "server:9090")
 	t.Setenv("BMC_RESTORE_ROOT", "")
 	t.Setenv("BMC_RESTORE_PATH_MAPPINGS", "")
@@ -149,8 +149,11 @@ func TestLoadAgentRestoreConfigurationEmptyIsCompatible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.RestorePathMappings) != 0 || len(cfg.RestoreRoots) != 0 {
-		t.Fatalf("restore configuration = mappings %#v, roots %#v", cfg.RestorePathMappings, cfg.RestoreRoots)
+	if len(cfg.RestoreRoots) != 1 || cfg.RestoreRoots[0] != DefaultRestoreRoot {
+		t.Fatalf("restore roots = %#v", cfg.RestoreRoots)
+	}
+	if len(cfg.RestorePathMappings) != 1 || cfg.RestorePathMappings[0].HostPath != DefaultRestoreRoot || cfg.RestorePathMappings[0].RuntimePath != DefaultRestoreRoot {
+		t.Fatalf("restore mappings = %#v", cfg.RestorePathMappings)
 	}
 }
 

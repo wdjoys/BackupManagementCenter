@@ -85,6 +85,10 @@ func parseServerEndpoint(rawURL, legacyTLS string) (string, bool, error) {
 	return u.Host, tls, nil
 }
 
+// DefaultRestoreRoot is the restore target root used when BMC_RESTORE_ROOT is
+// unset; it matches the container path fixed in the agent image.
+const DefaultRestoreRoot = "/backup-restore"
+
 func loadRestoreConfiguration() ([]model.PathMapping, []string, error) {
 	pathMappingsRaw := os.Getenv("BMC_RESTORE_PATH_MAPPINGS")
 	restoreRootsRaw := os.Getenv("BMC_RESTORE_ROOTS")
@@ -97,13 +101,13 @@ func loadRestoreConfiguration() ([]model.PathMapping, []string, error) {
 		}
 		return mappings, splitPaths(restoreRootsRaw), nil
 	}
-	if restoreRootRaw == "" {
-		return nil, splitPaths(restoreRootsRaw), nil
-	}
 
-	hostPath := filepath.Clean(restoreRootRaw)
-	if !isAbsolutePath(hostPath) || hostPath == "." || isRootPath(hostPath) {
-		return nil, nil, fmt.Errorf("config: invalid BMC_RESTORE_ROOT %q: path must be absolute and non-root", restoreRootRaw)
+	hostPath := DefaultRestoreRoot
+	if restoreRootRaw != "" {
+		hostPath = filepath.Clean(restoreRootRaw)
+		if !isAbsolutePath(restoreRootRaw) || hostPath == "." || isRootPath(hostPath) {
+			return nil, nil, fmt.Errorf("config: invalid BMC_RESTORE_ROOT %q: path must be absolute and non-root", restoreRootRaw)
+		}
 	}
 	return []model.PathMapping{{HostPath: hostPath, RuntimePath: "/backup-restore", ReadOnly: false}}, restoreRootsOrDefault(restoreRootsRaw), nil
 }

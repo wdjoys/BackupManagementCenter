@@ -4,10 +4,21 @@ import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '@/stores/auth'
 import { apiGet } from '@/api/client'
 import type { SetupStatus } from '@/api/types'
-import { PageLoadingState } from '@/components/PageLoadingState'
+import { Loader2 } from 'lucide-react'
+
+export const AppLoading: React.FC = () => {
+  const { t } = useTranslation()
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
+      <div className="flex flex-col items-center gap-3">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <span className="text-xs text-muted-foreground">{t('app.initializing')}</span>
+      </div>
+    </div>
+  )
+}
 
 export const AppGuard: React.FC = () => {
-  const { t } = useTranslation()
   const { initialized, isLoggedIn, fetchMe } = useAuthStore()
   const [setupChecked, setSetupChecked] = useState(false)
   const [isSetupNeeded, setIsSetupNeeded] = useState(false)
@@ -47,11 +58,7 @@ export const AppGuard: React.FC = () => {
   }, [fetchMe])
 
   if (!setupChecked || (!isSetupNeeded && !initialized)) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-        <PageLoadingState label={t('app.initializing')} />
-      </div>
-    )
+    return <AppLoading />
   }
 
   // Setup needed

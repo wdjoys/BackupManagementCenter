@@ -1,12 +1,12 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom'
-import { AppGuard } from '@/router/AppGuard'
+import { AppGuard, AppLoading } from '@/router/AppGuard'
 import { MainLayout } from '@/layouts/MainLayout'
 import { PageLoadingState } from '@/components/PageLoadingState'
 // Route-level code splitting: pages are loaded dynamically via route `lazy` to optimize initial bundle size.
 export const router = createBrowserRouter([
   {
     element: <AppGuard />,
-    HydrateFallback: PageLoadingState,
+    HydrateFallback: AppLoading,
     children: [
       {
         path: '/login',

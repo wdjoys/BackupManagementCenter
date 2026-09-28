@@ -387,13 +387,13 @@ export const LogsView: React.FC = () => {
                               {item.level.toUpperCase()}
                             </StatusBadge>
                           </TableCell>
-                          <TableCell className="text-xs font-mono text-foreground py-2">
+                          <TableCell className="text-xs font-mono text-foreground py-2 max-w-0">
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <button
                                   type="button"
                                   onClick={() => setSelectedMessage(item.message)}
-                                  className="block max-w-[min(28rem,35vw)] truncate text-left font-mono hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm cursor-pointer"
+                                  className="block w-full truncate text-left font-mono hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm cursor-pointer"
                                 >
                                   {item.message}
                                 </button>

@@ -622,7 +622,7 @@ export default {
     "selectAgentDescription": "请从上方下拉菜单中选择一个 Agent 查看日志",
     "serverLogs": "服务器日志",
     "agentLogs": "Agent 日志",
-    "loadedCount": "已加载 {count} 条",
+    "loadedCount": "已加载 {{count}} 条",
     "empty_desc": "暂无符合条件的日志记录"
   },
   "snapshots": {

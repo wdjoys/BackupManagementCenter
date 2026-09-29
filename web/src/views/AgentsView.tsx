@@ -390,16 +390,17 @@ export const AgentsView: React.FC = () => {
                                   </span>
                                   {agent.capabilities && agent.capabilities.length > 0 ? (
                                     <div className="rounded border border-border/80 overflow-hidden max-w-2xl bg-card/40">
-                                      <Table>
+                                      {/* 固定列宽：版本串可能很长（如 sqlite3 构建 ID），否则会挤掉路径列 */}
+                                      <Table className="table-fixed">
                                         <TableHeader>
                                           <TableRow className="border-border">
-                                            <TableHead className="text-[11px] h-8 font-medium px-2">
+                                            <TableHead className="text-[11px] h-8 font-medium px-2 w-28">
                                               {t('agents.capabilities.tool')}
                                             </TableHead>
                                             <TableHead className="text-[11px] h-8 font-medium px-2">
                                               {t('agents.columns.version')}
                                             </TableHead>
-                                            <TableHead className="text-[11px] h-8 font-medium px-2">
+                                            <TableHead className="text-[11px] h-8 font-medium px-2 w-44">
                                               {t('agents.capabilities.path')}
                                             </TableHead>
                                           </TableRow>
@@ -410,10 +411,10 @@ export const AgentsView: React.FC = () => {
                                               <TableCell className="text-xs font-medium py-1.5 px-2">
                                                 {cap.name}
                                               </TableCell>
-                                              <TableCell className="text-xs text-muted-foreground py-1.5 px-2">
+                                              <TableCell className="text-xs text-muted-foreground py-1.5 px-2 whitespace-normal break-all">
                                                 {cap.version || '—'}
                                               </TableCell>
-                                              <TableCell className="text-xs font-mono text-muted-foreground py-1.5 px-2">
+                                              <TableCell className="text-xs font-mono text-muted-foreground py-1.5 px-2 whitespace-normal break-all">
                                                 {cap.path || '—'}
                                               </TableCell>
                                             </TableRow>

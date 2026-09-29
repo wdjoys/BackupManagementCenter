@@ -89,7 +89,8 @@ export async function api<T = unknown>(
         response.status,
       )
     }
-    return body as T
+    // 空列表在 Go 侧为 nil slice，JSON 编码为 null；列表消费方统一假设数组，这里归一为 []。
+    return (body === null ? [] : body) as T
   }
 
   // Non-JSON failure

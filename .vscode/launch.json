@@ -11,8 +11,7 @@
       "env": {
         "BMC_DEV_INSECURE": "1",
         "BMC_GRPC_ADDR": ":9091",
-        "BMC_DATA_DIR": "${workspaceFolder}/data",
-        "BMC_PUBLIC_URL": "http://localhost:5173"
+        "BMC_DATA_DIR": "${workspaceFolder}/data"
       }
     },
     {
@@ -35,7 +34,7 @@
       "name": "Web 前端 (Chrome)",
       "type": "chrome",
       "request": "launch",
-      "url": "http://localhost:5173",
+      "url": "http://127.0.0.1:5178",
       "webRoot": "${workspaceFolder}/web/src"
     }
   ],

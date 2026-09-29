@@ -20,7 +20,8 @@ export default defineConfig({
       '/api/v1': {
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
-        // 浏览器 Origin 是 localhost:5173；后端 CSRF 要求它与代理目标一致。
+        // 浏览器 Origin 是 127.0.0.1:5178；后端 CSRF 要求它与代理目标一致。
+        // 因此开发 Server 不要设置 BMC_PUBLIC_URL，让校验退回 Host 同源。
         configure: (proxy) => {
           proxy.on('proxyReq', (request) => {
             request.setHeader('Origin', 'http://127.0.0.1:8080')

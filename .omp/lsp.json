@@ -2,9 +2,6 @@
   "servers": {
     "typescript-language-server": {
       "rootMarkers": ["tsconfig.json", "package.json", "jsconfig.json", ".git"]
-    },
-    "vue-language-server": {
-      "disabled": true
     }
   },
   "idleTimeoutMs": 600000

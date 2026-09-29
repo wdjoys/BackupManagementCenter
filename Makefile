@@ -22,7 +22,7 @@ generate:
 	       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
 	       api/proto/v1/agent.proto
 
-## web-build: build the Vue app into internal/server/webui/dist
+## web-build: build the React web app into internal/server/webui/dist
 web-build:
 	cd web && $(PNPM) --ignore-workspace install --frozen-lockfile && $(PNPM) --ignore-workspace rebuild esbuild && $(PNPM) --ignore-workspace run build
 	rm -rf $(WEB_DIST)
@@ -66,8 +66,10 @@ test:
 tidy:
 	$(GO) mod tidy
 
+## dev-server: local Server for the Vite dev proxy；不要设置 BMC_PUBLIC_URL，
+## 否则 Origin 必须等于代理目标（http://127.0.0.1:8080），默认按 Host 同源校验。
 dev-server:
-	BMC_DATA_DIR=./data BMC_PUBLIC_URL=http://localhost:5173 BMC_GRPC_ADDR=:9091 $(GO) run ./cmd/server
+	BMC_DATA_DIR=./data BMC_GRPC_ADDR=:9091 $(GO) run ./cmd/server
 
 dev-agent:
 	BMC_SERVER_GRPC_URL=127.0.0.1:9091 BMC_SERVER_TLS=0 $(GO) run ./cmd/agent

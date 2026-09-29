@@ -32,7 +32,7 @@ func (s *Server) nextFireFor(ctx context.Context, planID string) (time.Time, err
 	return sched.Next(time.Now().In(loc)).UTC(), nil
 }
 
-// spaHandler serves the embedded Vue app with index.html fallback.
+// spaHandler serves the embedded web UI with index.html fallback.
 func spaHandler() http.Handler {
 	sub, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {

@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
-
 	"backupmanagementcenter/internal/agent/backup"
 	"backupmanagementcenter/internal/model"
 )
@@ -98,9 +98,9 @@ func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []str
 			switch msg.MessageType {
 			case "status":
 				if onProgress != nil && msg.Data != nil {
-					var prog model.Progress
-					if err := json.Unmarshal(msg.Data, &prog); err == nil {
-						onProgress(prog)
+					var s resticStatus
+					if err := json.Unmarshal(msg.Data, &s); err == nil {
+						onProgress(s.toProgress())
 					}
 				}
 			case "summary":
@@ -109,6 +109,9 @@ func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []str
 					if err := json.Unmarshal(msg.Data, &summary); err == nil {
 						snapshotID = summary.SnapshotID
 						lastSummary = string(msg.Data)
+						if onProgress != nil {
+							onProgress(summary.toProgress())
+						}
 					}
 				}
 			case "error", "exit_error":
@@ -608,8 +611,55 @@ type jsonMessage struct {
 	Data        json.RawMessage `json:"data,omitempty"`
 }
 
+type resticStatus struct {
+	PercentDone float64 `json:"percent_done"`
+	TotalBytes  int64   `json:"total_bytes"`
+	BytesDone   int64   `json:"bytes_done"`
+	TotalFiles  int64   `json:"total_files"`
+	FilesDone   int64   `json:"files_done"`
+}
+
+func (s resticStatus) toProgress() model.Progress {
+	// restic status 的 percent_done 范围是 0.0 ~ 1.0，UI 按 0 ~ 100 百分比展示
+	pct := math.Round(s.PercentDone*10000) / 100
+	if pct > 100 {
+		pct = 100
+	}
+	return model.Progress{
+		Phase:      "backup",
+		Percent:    pct,
+		BytesDone:  s.BytesDone,
+		BytesTotal: s.TotalBytes,
+		FilesDone:  s.FilesDone,
+		FilesTotal: s.TotalFiles,
+	}
+}
+
 type backupSummary struct {
-	SnapshotID string `json:"snapshot_id"`
+	SnapshotID      string `json:"snapshot_id"`
+	TotalBytes      int64  `json:"total_bytes_processed"`
+	TotalFiles      int64  `json:"total_files_processed"`
+	FilesDone       int64  `json:"files_done"`
+	TotalBytesDone  int64  `json:"bytes_done"`
+}
+
+func (s backupSummary) toProgress() model.Progress {
+	bytesTotal := s.TotalBytes
+	if bytesTotal <= 0 {
+		bytesTotal = s.TotalBytesDone
+	}
+	filesTotal := s.TotalFiles
+	if filesTotal <= 0 {
+		filesTotal = s.FilesDone
+	}
+	return model.Progress{
+		Phase:      "done",
+		Percent:    100,
+		BytesDone:  bytesTotal,
+		BytesTotal: bytesTotal,
+		FilesDone:  filesTotal,
+		FilesTotal: filesTotal,
+	}
 }
 
 // mapResticError maps restic exit codes to stable error codes.

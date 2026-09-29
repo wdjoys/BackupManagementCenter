@@ -555,8 +555,8 @@ export const RunDetailView: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* Progress Card (When Available) */}
-      {run.progress && (
+      {/* Progress Card (When Available and active/populated) */}
+      {run.progress && (run.progress.phase || (run.progress.percent ?? 0) > 0 || (run.progress.bytes_total ?? 0) > 0) && (
         <Card className="border-border bg-card/60 shadow-sm">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
@@ -564,12 +564,12 @@ export const RunDetailView: React.FC = () => {
                 {t('runDetail.progress.title')}
               </CardTitle>
               <span className="text-xs font-mono font-medium text-primary">
-                {run.progress.percent}%
+                {Math.round(run.progress.percent ?? 0)}%
               </span>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            <Progress value={run.progress.percent} className="h-2 bg-muted" />
+            <Progress value={run.progress.percent ?? 0} className="h-2 bg-muted" />
             <div className="flex flex-wrap items-center justify-between text-xs text-muted-foreground gap-2 pt-1">
               <div>
                 <span className="font-medium text-foreground">
@@ -590,7 +590,7 @@ export const RunDetailView: React.FC = () => {
                   {t('runDetail.progress.files')}:{' '}
                 </span>
                 <span className="font-mono">
-                  {run.progress.files_done} / {run.progress.files_total}
+                  {run.progress.files_done ?? '—'} / {run.progress.files_total ?? '—'}
                 </span>
               </div>
             </div>
@@ -659,10 +659,14 @@ export const RunDetailView: React.FC = () => {
                     </span>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className="select-none shrink-0">
-                          <StatusBadge tone={fromServer ? 'default' : 'secondary'}>
-                            {sourceLabel}
-                          </StatusBadge>
+                        <span
+                          className={
+                            fromServer
+                              ? 'select-none shrink-0 font-bold text-sky-500 dark:text-sky-400'
+                              : 'select-none shrink-0 font-medium text-muted-foreground'
+                          }
+                        >
+                          [{sourceLabel}]
                         </span>
                       </TooltipTrigger>
                       <TooltipContent side="top" className="font-mono text-xs">

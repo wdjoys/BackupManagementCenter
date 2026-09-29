@@ -21,7 +21,11 @@ func (e checkExecutor) Run(_ context.Context, cmd backup.Cmd, onStdout func(stri
 		*e.cmd = cmd
 	}
 	if onStdout != nil && e.stdout != "" {
-		onStdout(e.stdout)
+		for _, line := range strings.Split(e.stdout, "\n") {
+			if line != "" {
+				onStdout(line)
+			}
+		}
 	}
 	if onStderr != nil && e.stderr != "" {
 		onStderr(e.stderr)
@@ -217,6 +221,63 @@ func TestBackupIncludesCommandOutputOnFailure(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("error %q does not contain %q", msg, want)
 		}
+	}
+}
+func TestBackupEmitsStatusAndSummaryProgress(t *testing.T) {
+	stdoutLines := strings.Join([]string{
+		`{"message_type":"status","data":{"percent_done":0.25,"total_bytes":104857600,"bytes_done":26214400,"total_files":100,"files_done":25}}`,
+		`{"message_type":"summary","data":{"snapshot_id":"snap-123","total_bytes_processed":104857600,"total_files_processed":100}}`,
+	}, "\n")
+
+	var got []model.Progress
+	onProg := func(p model.Progress) {
+		got = append(got, p)
+	}
+
+	summary, snapID, err := Backup(context.Background(), checkExecutor{stdout: stdoutLines}, Options{
+		Exe: "restic", RepoPath: "rclone:remote:/repo",
+	}, []string{"/data"}, "", nil, false, onProg)
+	if err != nil {
+		t.Fatalf("Backup failed: %v", err)
+	}
+	if snapID != "snap-123" {
+		t.Fatalf("snapID = %q, want snap-123", snapID)
+	}
+	if summary == "" {
+		t.Fatal("expected summary")
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d progress events, want 2: %+v", len(got), got)
+	}
+
+	// 验证 status 解析出的字节总量与百分比
+	status := got[0]
+	if status.Percent != 25.0 {
+		t.Errorf("status.Percent = %v, want 25", status.Percent)
+	}
+	if status.BytesTotal != 104857600 || status.BytesDone != 26214400 {
+		t.Errorf("status bytes = %d / %d, want 26214400 / 104857600", status.BytesDone, status.BytesTotal)
+	}
+	if status.FilesTotal != 100 || status.FilesDone != 25 {
+		t.Errorf("status files = %d / %d, want 25 / 100", status.FilesDone, status.FilesTotal)
+	}
+	if status.Phase != "backup" {
+		t.Errorf("status.Phase = %q, want backup", status.Phase)
+	}
+
+	// 验证 summary 的 100% 收尾
+	final := got[1]
+	if final.Percent != 100 {
+		t.Errorf("final.Percent = %v, want 100", final.Percent)
+	}
+	if final.BytesDone != 104857600 || final.BytesTotal != 104857600 {
+		t.Errorf("final bytes = %d / %d, want 104857600 / 104857600", final.BytesDone, final.BytesTotal)
+	}
+	if final.FilesDone != 100 || final.FilesTotal != 100 {
+		t.Errorf("final files = %d / %d, want 100 / 100", final.FilesDone, final.FilesTotal)
+	}
+	if final.Phase != "done" {
+		t.Errorf("final.Phase = %q, want done", final.Phase)
 	}
 }
 

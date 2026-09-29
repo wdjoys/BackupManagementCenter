@@ -61,7 +61,20 @@ const (
 	ErrPreRestoreBackupFailed   = "pre_restore_backup_failed"
 	ErrRollbackFailed           = "rollback_failed"
 	ErrPhysicalBackupRequired   = "physical_backup_required"
-	ErrDatabaseRestoreDisabled  = "database_restore_disabled"
+	// ErrDatabaseRestoreBusy 表示已有未安全终结的数据库恢复占用全局互斥。
+	ErrDatabaseRestoreBusy = "database_restore_busy"
+	// ErrAgentCapabilitiesPending 表示目标 Agent 的当前连接尚未完成能力上报。
+	ErrAgentCapabilitiesPending = "agent_capabilities_pending"
+	// ErrSnapshotListRefreshRequired 表示缺少可用的已验证快照列表缓存。
+	ErrSnapshotListRefreshRequired = "snapshot_list_refresh_required"
+	// ErrUnsupportedRestoreManifest 表示来源快照的 manifest 不满足单库恢复范围。
+	ErrUnsupportedRestoreManifest = "unsupported_restore_manifest"
+	// ErrSnapshotRestoreProtected 表示快照被未终结恢复的保护标记引用，拒绝删除。
+	ErrSnapshotRestoreProtected = "snapshot_restore_protected"
+	// ErrAgentUpgradeRequired 表示目标 Agent 明确不支持受保护的数据库恢复。
+	ErrAgentUpgradeRequired = "agent_upgrade_required"
+	// ErrDatabaseRestoreDisabled 表示该部署尚未启用这个 kind 的数据库恢复。
+	ErrDatabaseRestoreDisabled = "database_restore_disabled"
 )
 
 func nowUTC() time.Time { return time.Now().UTC() }
@@ -105,6 +118,9 @@ type Agent struct {
 	RestorePathMappings []PathMapping `json:"restore_path_mappings"`
 	CapabilitiesJSON    string        `json:"-"`
 	Revoked             bool          `json:"revoked"`
+	// SafeDatabaseRestore 表示该 Agent 实现了预备份/回滚保护的数据库恢复。
+	// 持久化值仅用于展示；执行授权只认当前连接上报的值。
+	SafeDatabaseRestore bool `json:"safe_database_restore"`
 }
 
 // PathMapping 描述宿主机路径到 Agent 运行环境路径的映射。
@@ -253,6 +269,9 @@ type Progress struct {
 	FilesSkipped int64    `json:"files_skipped,omitempty"`
 	FilesDeleted int64    `json:"files_deleted,omitempty"`
 	Sample       []string `json:"sample,omitempty"`
+	// DetailJSON 携带阶段相关的非秘密细节（如恢复的保护快照 ID），
+	// 经 RunProgress.detail_json 传回服务端。
+	DetailJSON string `json:"detail_json,omitempty"`
 }
 
 type RunLog struct {
@@ -273,6 +292,56 @@ type SystemLog struct {
 	Type      string    `json:"type"`  // system|http|agent|run|scheduler|dispatcher|connection|command|notification
 	Level     string    `json:"level"` // debug|info|warn|error
 	Message   string    `json:"message"`
+}
+
+// Restore request phases. Intermediate phases describe a restore that may still
+// modify the target; the safe terminal phases release the global database
+// restore occupancy, while the unsafe ones keep it until an operator resolves
+// the restore explicitly.
+const (
+	RestorePhaseQueued       = "queued"
+	RestorePhasePreBackup    = "pre_backup"
+	RestorePhaseRestoring    = "restoring"
+	RestorePhaseRollingBack  = "rolling_back"
+	RestorePhaseCancelling   = "cancelling"
+	RestorePhaseSucceeded    = "succeeded"
+	// RestorePhaseFailed 表示执行失败且已确认目标未被修改。
+	RestorePhaseFailed               = "failed"
+	RestorePhasePreBackupFailed      = "pre_backup_failed"
+	RestorePhaseRolledBack           = "rolled_back"
+	RestorePhaseNewTargetCleaned     = "new_target_cleaned"
+	RestorePhaseRollbackFailed       = "rollback_failed"
+	RestorePhaseManualRecoveryNeeded = "manual_recovery_required"
+	RestorePhaseManualRecoveryDone   = "manual_recovery_resolved"
+)
+
+// RestorePhaseReleasesOccupancy reports whether a restore request phase is
+// safe: the target is either restored to its original content, or provably
+// untouched.
+func RestorePhaseReleasesOccupancy(phase string) bool {
+	switch phase {
+	case RestorePhaseSucceeded, RestorePhaseFailed, RestorePhasePreBackupFailed,
+		RestorePhaseRolledBack, RestorePhaseNewTargetCleaned, RestorePhaseManualRecoveryDone:
+		return true
+	default:
+		return false
+	}
+}
+
+// RestoreSafePhases 返回释放数据库恢复全局占用与仓库阻塞的安全终态 phase。
+func RestoreSafePhases() []string {
+	return []string{
+		RestorePhaseSucceeded, RestorePhaseFailed, RestorePhasePreBackupFailed,
+		RestorePhaseRolledBack, RestorePhaseNewTargetCleaned, RestorePhaseManualRecoveryDone,
+	}
+}
+
+// RestorePhaseIsTerminal reports whether no further agent work is expected for
+// the phase. rollback_failed and manual_recovery_required are terminal for the
+// request yet keep blocking the repository and the occupancy until resolved.
+func RestorePhaseIsTerminal(phase string) bool {
+	return RestorePhaseReleasesOccupancy(phase) ||
+		phase == RestorePhaseRollbackFailed || phase == RestorePhaseManualRecoveryNeeded
 }
 
 type RestoreRequest struct {

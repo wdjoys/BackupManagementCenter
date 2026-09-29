@@ -115,6 +115,16 @@ type RestoreSpec struct {
 	Logf       func(level, format string, args ...any)
 	Progress   func(model.Progress)
 	Exec       Executor
+
+	// RunID 是本次恢复的 run 标识，用于保护标签与审计。
+	RunID string
+	// ArtifactFile/ArtifactDatabase/ArtifactFormat 描述本 run 唯一要导入的产物；
+	// 多库、globals 与 all 范围已在上游拒绝。
+	ArtifactFile     string
+	ArtifactDatabase string
+	ArtifactFormat   string
+	// TargetIsNew 为 true 表示目标由本 run 新建，清理时只允许删除该目标。
+	TargetIsNew bool
 }
 
 // PlanSpec is the validated shape passed to Adapter.Validate.
@@ -128,7 +138,7 @@ type PlanSpec struct {
 type ToolInfo = model.ToolInfo
 
 // Adapter is implemented once per plan kind (filesystem, postgresql, mysql,
-// mongodb, sqlite).
+// mongodb, sqlite). Database kinds also implement DatabaseRestorer.
 type Adapter interface {
 	// Validate checks the plan against this host before it can be created or
 	// enabled (paths exist/readable/absolute; tools present; flags sane).
@@ -136,6 +146,23 @@ type Adapter interface {
 	// Backup produces the artifact to snapshot. It must clean up its own
 	// intermediate state on error; TempDir is wiped by the runner afterwards.
 	Backup(ctx context.Context, rc *RunContext) (*BackupArtifact, error)
-	// Restore imports previously restored snapshot data into the target.
-	Restore(ctx context.Context, spec *RestoreSpec) error
+}
+
+// DatabaseRestorer is the control plane of a database restore. Implementations
+// must be able to tell "target absent" apart from "target unreachable", and must
+// refuse destructive work they cannot prove safe.
+type DatabaseRestorer interface {
+	// TargetExists reports whether the target database/file exists. Permission
+	// or connection failures must return an error, never false.
+	TargetExists(ctx context.Context, spec *RestoreSpec) (bool, error)
+	// Import loads the staged artifact into the target. When TargetIsNew is set
+	// it must create the target with conflict-rejecting semantics; otherwise it
+	// must fully replace the target's content.
+	Import(ctx context.Context, spec *RestoreSpec) error
+	// VerifyRestored proves the imported content matches the snapshot. Exit
+	// codes or a structural integrity check alone are not sufficient.
+	VerifyRestored(ctx context.Context, spec *RestoreSpec) error
+	// RemoveTarget deletes the target created by this run. It must never delete
+	// a database/file another actor created.
+	RemoveTarget(ctx context.Context, spec *RestoreSpec) error
 }

@@ -161,7 +161,24 @@ func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, _ *model.Agent) erro
 func (f *fakeStore) SetAgentStatus(_ context.Context, _ string, _ model.AgentStatus, _ time.Time) error {
 	return nil
 }
-func (f *fakeStore) SaveAgentCapabilities(_ context.Context, _ string, _ []model.ToolInfo, _ []model.PathMapping, _ []model.PathMapping, _ time.Time) error {
+func (f *fakeStore) SaveAgentCapabilities(_ context.Context, _ string, _ []model.ToolInfo, _ []model.PathMapping, _ []model.PathMapping, _ bool, _ time.Time) error {
+	return nil
+}
+
+func (f *fakeStore) CreateDatabaseRestoreRun(context.Context, *model.Run, *model.RestoreRequest) error {
+	return nil
+}
+func (f *fakeStore) ActiveDatabaseRestoreRunID(context.Context) (string, error) { return "", nil }
+func (f *fakeStore) RepositoryRestoreBlocked(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+func (f *fakeStore) ProtectedRestoreSnapshotIDs(context.Context, string) (map[string]struct{}, error) {
+	return nil, nil
+}
+func (f *fakeStore) UpdateRestoreRollbackSnapshot(context.Context, string, string) error { return nil }
+func (f *fakeStore) FinishRestoreRun(context.Context, store.FinishRestoreRunInput) error { return nil }
+func (f *fakeStore) RequestRestoreStop(context.Context, string, time.Time) error         { return nil }
+func (f *fakeStore) ResolveRestoreRequest(context.Context, string, string, string, string, time.Time) error {
 	return nil
 }
 func (f *fakeStore) GetAgentBySecretHash(_ context.Context, _ string) (*model.Agent, error) {

@@ -3,11 +3,12 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/server/jobs"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // POST /restores/dry-run — filesystem only; returns would-be change stats.
@@ -18,6 +19,7 @@ func (s *Server) handleDryRunRestore(w http.ResponseWriter, r *http.Request) {
 		IncludePaths  []string `json:"include_paths,omitempty"`
 		TargetPath    string   `json:"target_path"`
 		OverwriteMode string   `json:"overwrite_mode"`
+		TargetAgentID string   `json:"target_agent_id,omitempty"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -37,7 +39,7 @@ func (s *Server) handleDryRunRestore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation_failed", "overwrite_mode must be never|if-changed|always")
 		return
 	}
-	stats, _, err := s.Jobs.DryRunRestore(r.Context(), body.RepositoryID, body.SnapshotID, body.IncludePaths, body.TargetPath, body.OverwriteMode)
+	stats, _, err := s.Jobs.DryRunRestore(r.Context(), body.RepositoryID, body.SnapshotID, body.IncludePaths, body.TargetPath, body.OverwriteMode, body.TargetAgentID)
 	if err != nil {
 		s.jobsErr(w, err)
 		return
@@ -56,6 +58,8 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 		Confirmation string              `json:"confirmation,omitempty"`
 		// TargetPassword: database kinds only, entered in the UI.
 		TargetPassword string `json:"target_password,omitempty"`
+		// TargetAgentID: optional executor; empty keeps the source agent.
+		TargetAgentID string `json:"target_agent_id,omitempty"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -73,11 +77,16 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case model.KindPostgreSQL, model.KindMySQL, model.KindMongoDB, model.KindSQLite:
-		// Database overwrite/pre-restore rollback is intentionally gated until
-		// the end-to-end restore suite is enabled and passing. Filesystem
-		// restore and read-only browsing remain available meanwhile.
-		if os.Getenv("BMC_ENABLE_DATABASE_RESTORE") != "1" {
-			writeErr(w, http.StatusServiceUnavailable, model.ErrDatabaseRestoreDisabled, "database restore is disabled until pre-restore/rollback verification is enabled")
+		// 整实例还原不开放：同步拒绝，避免来源快照的全部库写入目标实例。
+		if strings.EqualFold(strings.TrimSpace(body.Target.Database), "all") {
+			writeErr(w, http.StatusUnprocessableEntity, model.ErrUnsupportedRestoreManifest,
+				"restoring every database in the snapshot is not supported; pick a single database")
+			return
+		}
+		// 每个 kind 在真实实例上完成预备份/回滚端到端验证前保持 503 禁用。
+		if !s.DatabaseRestoreKinds[body.RestoreKind] {
+			writeErr(w, http.StatusServiceUnavailable, model.ErrDatabaseRestoreDisabled,
+				"database restore for "+body.RestoreKind+" is disabled until pre-restore backup and rollback are verified; enable it with BMC_DATABASE_RESTORE_KINDS")
 			return
 		}
 		if body.Target.Database == "" {
@@ -96,6 +105,7 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 		Overwrite:      body.Overwrite,
 		Confirmation:   body.Confirmation,
 		TargetPassword: body.TargetPassword,
+		TargetAgentID:  body.TargetAgentID,
 	}
 	req, run, err := s.Jobs.StartRestore(r.Context(), actorID(r), in)
 	if err != nil {
@@ -109,6 +119,49 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 		"rollback_snapshot_id": req.RollbackSnapshotID,
 		"phase":                req.Phase,
 		"run":                  runView(run),
+	})
+}
+
+// POST /restores/{id}/resolve — 人工确认并解除被阻塞的恢复请求。
+// 只接受 manual_recovery_required / rollback_failed；要求 run ID 与处理说明，
+// 由操作人承担“旧执行已停止、目标内容已核验/恢复”的确认责任。
+func (s *Server) handleResolveRestore(w http.ResponseWriter, r *http.Request) {
+	requestID := chi.URLParam(r, "id")
+	if requestID == "" {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "restore request id is required")
+		return
+	}
+	var body struct {
+		RunID        string `json:"run_id"`
+		Note         string `json:"note"`
+		ExecutionStopped bool `json:"execution_stopped"`
+		TargetVerified   bool `json:"target_verified"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.RunID) == "" || strings.TrimSpace(body.Note) == "" {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "run_id and note are required")
+		return
+	}
+	if !body.ExecutionStopped || !body.TargetVerified {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "both execution_stopped and target_verified must be confirmed")
+		return
+	}
+	if err := s.Jobs.ResolveRestore(r.Context(), actorID(r), requestID, strings.TrimSpace(body.RunID), strings.TrimSpace(body.Note)); err != nil {
+		s.jobsErr(w, err)
+		return
+	}
+	rr, err := s.ST.GetRestoreRequest(r.Context(), requestID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"restore_request_id": rr.ID,
+		"run_id":             rr.RunID,
+		"phase":              rr.Phase,
+		"rollback_snapshot_id": rr.RollbackSnapshotID,
 	})
 }
 

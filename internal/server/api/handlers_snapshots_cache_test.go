@@ -193,7 +193,21 @@ func TestSnapshotListAndTreeCachedMode(t *testing.T) {
 		t.Fatalf("expected 404 for nonexistent snapshot tree, got %d", rec.Code)
 	}
 
-	// 5. 隐藏的快照（QueueSnapshotDeletion）树返回 404，且在列表中被过滤
+	// 5. 隐藏的快照（QueueSnapshotDeletion）树返回 404，且在列表中被过滤。
+	// 删除前置检查依赖已验证的列表与 kind 标签（保护快照是 fail-closed 的）。
+	snapsForDeletion := []model.Snapshot{
+		{ID: "snap-1", Host: "host-1", Paths: []string{"/data"}, Tags: []string{"kind:filesystem"}},
+		{ID: "snap-2", Host: "host-1", Paths: []string{"/var"}, Tags: []string{"kind:filesystem"}},
+	}
+	// 重新读取当前 generation：前面的校验流程可能已使其推进。
+	curGen, genErr := cs.SnapshotCacheGeneration(ctx, repo.ID)
+	if genErr != nil {
+		t.Fatal(genErr)
+	}
+	fpJSON, _ := json.Marshal(snapsForDeletion)
+	if err := cs.SaveSnapshotListCache(ctx, repo.ID, curGen, string(fpJSON), store.SnapshotFingerprint(snapsForDeletion), now); err != nil {
+		t.Fatal(err)
+	}
 	_, _, err = s.Jobs.QueueSnapshotDeletion(ctx, "admin-1", repo.ID, "snap-2")
 	if err != nil {
 		t.Fatal(err)

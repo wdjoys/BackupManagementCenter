@@ -45,6 +45,27 @@ func newFakeStore() *fakeStore {
 	}
 }
 
+func (f *fakeStore) FinishRestoreRun(_ context.Context, in store.FinishRestoreRunInput) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.runs[in.RunID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if r.Status == model.RunSucceeded || r.Status == model.RunFailed || r.Status == model.RunCancelled {
+		return nil
+	}
+	r.Status = in.ToStatus
+	finished := in.FinishedAt
+	r.FinishedAt = &finished
+	r.ErrorCode = in.ErrorCode
+	r.ErrorMessage = in.ErrorMessage
+	if in.ResultJSON != "" {
+		r.ProgressJSON = in.ResultJSON
+	}
+	return nil
+}
+
 func (f *fakeStore) addRun(r model.Run) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

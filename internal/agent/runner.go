@@ -168,6 +168,7 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 						BytesTotal: p.BytesTotal,
 						FilesDone:  p.FilesDone,
 						FilesTotal: p.FilesTotal,
+						DetailJson: p.DetailJSON,
 					},
 				},
 			}
@@ -206,32 +207,27 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 
 		var runResult *bmcv1.RunResult
 		if err != nil {
+			// 安全恢复结果（保护快照 ID / phase）必须在映射取消状态之前提取：
+			// context 被取消不能吞掉 rollback/new_target_cleaned 等结论。
+			failureJSON := failureResultJSON(err)
 			if runCtx.Err() != nil {
 				log.Printf("[WARN] pipeline cancelled run_id=%s operation=%s error=%v", runID, operationName(cmd.Operation), err)
-				// Context was cancelled — treat as CANCELLED
+				// Context was cancelled — treat as CANCELLED unless the pipeline
+				// produced a trustworthy restore outcome.
+				code := "cancelled"
+				message := "run cancelled by server"
+				if len(failureJSON) > 0 {
+					code, message = failureCodeAndMessage(err, "cancelled", message)
+				}
 				runResult = &bmcv1.RunResult{
 					RunId:        runID,
 					Status:       bmcv1.RunResult_CANCELLED,
-					ErrorCode:    "cancelled",
-					ErrorMessage: "run cancelled by server",
+					ErrorCode:    code,
+					ErrorMessage: message,
+					ResultJson:   string(failureJSON),
 				}
 			} else {
-				code, msg := "pipeline_error", err.Error()
-				var pe *pipeline.PipelineError
-				if errors.As(err, &pe) {
-					if pe.Code != "" {
-						code = pe.Code
-					}
-					// Prefer the stable restic-mapped code (e.g.
-					// repository_missing) over the generic op failure code.
-					var re *restic.ResticError
-					if errors.As(err, &re) && re.Code != "" {
-						code = re.Code
-					}
-					if pe.Cause != nil {
-						msg = pe.Cause.Error()
-					}
-				}
+				code, msg := failureCodeAndMessage(err, "pipeline_error", err.Error())
 				msg = pipeline.HostDisplayText(msg, allMappings)
 				log.Printf("[ERROR] pipeline execute run_id=%s operation=%s error_code=%s error=%s", runID, operationName(cmd.Operation), code, msg)
 				runResult = &bmcv1.RunResult{
@@ -239,6 +235,7 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 					Status:       bmcv1.RunResult_FAILED,
 					ErrorCode:    code,
 					ErrorMessage: msg,
+					ResultJson:   string(failureJSON),
 				}
 			}
 		} else {
@@ -256,6 +253,38 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 		// Send RunResult
 		r.sendRunResult(stream, runResult)
 	}()
+}
+
+// failureResultJSON extracts the non-secret failure payload of a pipeline error.
+func failureResultJSON(err error) []byte {
+	var pe *pipeline.PipelineError
+	if errors.As(err, &pe) {
+		return pe.ResultJSON
+	}
+	return nil
+}
+
+// failureCodeAndMessage maps a pipeline error to its stable code and message,
+// falling back to the supplied defaults.
+func failureCodeAndMessage(err error, code, msg string) (string, string) {
+	var pe *pipeline.PipelineError
+	if errors.As(err, &pe) {
+		if pe.Code != "" {
+			code = pe.Code
+		}
+		// Prefer the stable restic-mapped code (e.g. repository_missing) over
+		// the generic op failure code.
+		var re *restic.ResticError
+		if errors.As(err, &re) && re.Code != "" {
+			code = re.Code
+		}
+		if pe.Cause != nil {
+			msg = pe.Cause.Error()
+		} else if pe.Message != "" {
+			msg = pe.Message
+		}
+	}
+	return code, msg
 }
 
 func (r *Runner) repositoryLock(key string) *sync.Mutex {

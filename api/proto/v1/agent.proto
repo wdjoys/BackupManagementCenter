@@ -156,6 +156,8 @@ message CapabilitiesReport {
   repeated ToolInfo tools = 1;
   repeated PathMapping source_path_mappings = 2;
   repeated PathMapping restore_path_mappings = 3;
+  // 该 Agent 是否实现了预备份/回滚保护的数据库恢复。旧 Agent 缺省 false。
+  bool safe_database_restore = 4;
 }
 
 message ExecuteCommand {

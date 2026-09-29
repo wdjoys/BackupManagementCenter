@@ -23,6 +23,9 @@ services:
       BMC_DATA_DIR: /var/lib/bmc
       # BMC 对外公开访问的根 URL（供 Web 控制台、回调及 Agent 下载凭据等引用，结尾不加斜杠）
       BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:-https://backup.example.com}
+      # 已通过真实隔离实例验证的数据库恢复类型（逗号分隔，默认全部禁用）。
+      # 未列出的类型返回 503，需先验证预备份与回滚后再逐项启用。
+      BMC_DATABASE_RESTORE_KINDS: ${BMC_DATABASE_RESTORE_KINDS:-}
     volumes:
       - bmc-data:/var/lib/bmc
     read_only: true

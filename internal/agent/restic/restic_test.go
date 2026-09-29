@@ -2,10 +2,12 @@ package restic
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"backupmanagementcenter/internal/agent/backup"
+	"backupmanagementcenter/internal/model"
 )
 
 type checkExecutor struct {
@@ -281,5 +283,40 @@ func TestDeleteSnapshotsRejectsEmptyIDs(t *testing.T) {
 	err := DeleteSnapshots(context.Background(), checkExecutor{code: 0}, Options{Exe: "restic"}, nil, true)
 	if err == nil {
 		t.Fatal("expected error for empty snapshot IDs")
+	}
+}
+
+// rclone/sftp 等非本地后端在仓库不存在时只返回 exit 1（本地后端返回 exit 10），
+// 必须按输出文本归类，否则 EnsureRepository 永远走不到 init 分支。
+func TestSnapshotsMissingRepositoryOnRcloneBackend(t *testing.T) {
+	exec := checkExecutor{
+		code: 1,
+		stderr: "Fatal: unable to open config file: <config/> does not exist\n" +
+			"Is there a repository at the following location?\n" +
+			"rclone:localtest:shared/inst/agent\n",
+	}
+	_, err := Snapshots(context.Background(), exec, Options{Exe: "restic", RepoPath: "rclone:localtest:shared/inst/agent"})
+	if err == nil {
+		t.Fatal("expected an error for a missing repository")
+	}
+	var re *ResticError
+	if !errors.As(err, &re) {
+		t.Fatalf("expected ResticError, got %T: %v", err, err)
+	}
+	if re.Code != model.ErrRepositoryMissing {
+		t.Fatalf("expected %s, got %s", model.ErrRepositoryMissing, re.Code)
+	}
+}
+
+// 其他 exit 1 失败不能被误判为“仓库不存在”（否则会触发一次危险的 restic init）。
+func TestSnapshotsUnrelatedFailureStaysGeneric(t *testing.T) {
+	exec := checkExecutor{code: 1, stderr: "Fatal: unexpected backend error\n"}
+	_, err := Snapshots(context.Background(), exec, Options{Exe: "restic", RepoPath: "rclone:localtest:shared/inst/agent"})
+	var re *ResticError
+	if !errors.As(err, &re) {
+		t.Fatalf("expected ResticError, got %T: %v", err, err)
+	}
+	if re.Code != "restic_failed" {
+		t.Fatalf("expected restic_failed, got %s", re.Code)
 	}
 }

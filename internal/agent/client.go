@@ -379,6 +379,8 @@ func (c *ConnectClient) sendCapabilities(ctx context.Context, stream bmcv1.Agent
 		MessageId: newMessageID(),
 		Payload: &bmcv1.AgentMessage_CapabilitiesReport{CapabilitiesReport: &bmcv1.CapabilitiesReport{
 			Tools: protoTools, SourcePathMappings: protoSourceMappings, RestorePathMappings: protoRestoreMappings,
+			// 该构建实现了预备份/回滚保护的数据库恢复；服务端以此授权破坏性恢复。
+			SafeDatabaseRestore: true,
 		}},
 	}
 	if err := stream.Send(msg); err != nil {

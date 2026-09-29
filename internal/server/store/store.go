@@ -50,7 +50,7 @@ type Store interface {
 	// Agents
 	UpsertAgentOnConnect(ctx context.Context, a *model.Agent) error // by ID; updates host/os/arch/version/last_seen/status
 	SetAgentStatus(ctx context.Context, agentID string, st model.AgentStatus, at time.Time) error
-	SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, sourceMappings []model.PathMapping, restoreMappings []model.PathMapping, at time.Time) error
+	SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, sourceMappings []model.PathMapping, restoreMappings []model.PathMapping, safeDatabaseRestore bool, at time.Time) error
 	GetAgent(ctx context.Context, id string) (*model.Agent, error)
 	GetAgentBySecretHash(ctx context.Context, tokenHash string) (*model.Agent, error)
 	ListAgents(ctx context.Context) ([]model.Agent, error)
@@ -125,6 +125,29 @@ type Store interface {
 	// duplicate. Returns ErrNotFound when the run has no request row yet.
 	GetRestoreRequestByRunID(ctx context.Context, runID string) (*model.RestoreRequest, error)
 	ListRestoreRequests(ctx context.Context, limit int) ([]model.RestoreRequest, error)
+	// CreateDatabaseRestoreRun 在同一写事务内校验数据库恢复的全局占用并创建
+	// run 与 request 行；占用冲突返回 ErrDatabaseRestoreBusy，等价任务返回
+	// ErrDuplicateRun（调用方复用已有 run）。
+	CreateDatabaseRestoreRun(ctx context.Context, run *model.Run, rr *model.RestoreRequest) error
+	// ActiveDatabaseRestoreRunID 返回当前占用数据库恢复全局互斥的 run ID；
+	// 没有占用时返回空字符串。
+	ActiveDatabaseRestoreRunID(ctx context.Context) (string, error)
+	// RepositoryRestoreBlocked 报告仓库是否被未安全终结的恢复阻塞，
+	// exceptRunID 用于放行该 run 自身的首次下发。
+	RepositoryRestoreBlocked(ctx context.Context, repositoryID, exceptRunID string) (bool, error)
+	// RequestRestoreStop 请求停止一个已下发的恢复：写入 cancelling 阶段并设置取消宽限截止。
+	RequestRestoreStop(ctx context.Context, runID string, deadline time.Time) error
+	// ProtectedRestoreSnapshotIDs 返回该仓库中未安全终结的恢复所引用的保护快照 ID。
+	ProtectedRestoreSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error)
+	// UpdateRestoreRollbackSnapshot 由 Agent 进度上报同步保护快照 ID；
+	// 不覆盖已记录的非空 ID。
+	UpdateRestoreRollbackSnapshot(ctx context.Context, runID, snapshotID string) error
+	// FinishRestoreRun 在单事务内终结恢复 run 并写入 restore_requests 的
+	// phase/rollback_snapshot_id。重复相同终态幂等；已确认的终态与人工
+	// 解除结论不会被覆盖。
+	FinishRestoreRun(ctx context.Context, in FinishRestoreRunInput) error
+	// ResolveRestoreRequest 人工解除阻塞：写入 manual_recovery_resolved 并终结 run。
+	ResolveRestoreRequest(ctx context.Context, requestID, runID, actorID, note string, at time.Time) error
 
 	// Audit
 	AppendAuditEvent(ctx context.Context, e *model.AuditEvent) error
@@ -265,4 +288,25 @@ var (
 	ErrInUse                  = errors.New("store: resource still referenced")
 	ErrPlanHasSnapshots       = errors.New("store: plan still has snapshots")
 	ErrCacheGenerationChanged = errors.New("store: snapshot cache generation changed")
+	// ErrDatabaseRestoreBusy 表示已有未安全终结的数据库恢复占用全局互斥。
+	ErrDatabaseRestoreBusy = errors.New("store: database restore busy")
+	// ErrRestoreConflict 表示已有不同的确认结果，不能覆盖。
+	ErrRestoreConflict = errors.New("store: restore result conflict")
 )
+
+// FinishRestoreRunInput 描述一次恢复 run 的原子终结。
+type FinishRestoreRunInput struct {
+	RunID        string
+	FromStatuses []string
+	ToStatus     string
+	ErrorCode    string
+	ErrorMessage string
+	SnapshotID   string
+	ResultJSON   string
+	// Phase 与 RollbackSnapshotID 写入 restore_requests；phase 为空表示不改动。
+	Phase              string
+	RollbackSnapshotID string
+	// AllowUnsafeTerminal 允许在没有可信结果时以不安全 phase 终结（人工解除）。
+	AllowUnsafeTerminal bool
+	FinishedAt          time.Time
+}

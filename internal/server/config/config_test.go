@@ -80,3 +80,32 @@ func TestLoadServerRejectsInvalidPublicURL(t *testing.T) {
 	}
 	_ = os.ErrNotExist
 }
+
+// 数据库恢复默认全部禁用；只有显式列出的 kind 才启用，未知 kind 必须报错。
+func TestDatabaseRestoreKindsGate(t *testing.T) {
+	t.Setenv("BMC_DATA_DIR", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("BMC_TLS_MODE", "none")
+	t.Setenv("BMC_DATABASE_RESTORE_KINDS", "")
+
+	c, err := LoadServer()
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if len(c.DatabaseRestoreKinds) != 0 {
+		t.Fatalf("database restore must be disabled by default, got %v", c.DatabaseRestoreKinds)
+	}
+
+	t.Setenv("BMC_DATABASE_RESTORE_KINDS", "postgresql, sqlite ,")
+	c, err = LoadServer()
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if len(c.DatabaseRestoreKinds) != 2 || c.DatabaseRestoreKinds[0] != "postgresql" || c.DatabaseRestoreKinds[1] != "sqlite" {
+		t.Fatalf("unexpected kinds parsed: %v", c.DatabaseRestoreKinds)
+	}
+
+	t.Setenv("BMC_DATABASE_RESTORE_KINDS", "oracle")
+	if _, err := LoadServer(); err == nil {
+		t.Fatal("expected an unknown kind to be rejected at startup")
+	}
+}

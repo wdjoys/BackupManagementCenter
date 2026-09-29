@@ -428,6 +428,50 @@ func (s *Server) jobsErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, "cache_generation_changed", "repository changed while browsing; retry")
 		return
 	}
+	if errors.Is(err, jobs.ErrRestoreBusy) {
+		writeErr(w, http.StatusConflict, model.ErrDatabaseRestoreBusy, "another database restore is in progress; wait for it to finish")
+		return
+	}
+	if errors.Is(err, jobs.ErrRestoreConflict) || errors.Is(err, store.ErrRestoreConflict) {
+		writeErr(w, http.StatusConflict, "restore_conflict", "restore request is not in a state that can be resolved")
+		return
+	}
+	if errors.Is(err, jobs.ErrCapabilitiesPending) {
+		writeErr(w, http.StatusConflict, model.ErrAgentCapabilitiesPending, "target agent connection has not reported its capabilities yet; retry shortly")
+		return
+	}
+	if errors.Is(err, jobs.ErrUnsafeDatabaseRestore) {
+		writeErr(w, http.StatusUnprocessableEntity, model.ErrAgentUpgradeRequired, "target agent does not support pre-restore backup and rollback; upgrade it first")
+		return
+	}
+	if errors.Is(err, jobs.ErrSnapshotRefreshRequired) {
+		writeErr(w, http.StatusConflict, model.ErrSnapshotListRefreshRequired, "a verified snapshot list or directory cache is required; refresh the snapshot list first")
+		return
+	}
+	if errors.Is(err, jobs.ErrSnapshotKindMismatch) {
+		writeErr(w, http.StatusUnprocessableEntity, "restore_snapshot_kind_mismatch", "the snapshot kind does not match the requested restore kind")
+		return
+	}
+	if errors.Is(err, jobs.ErrSnapshotRestoreProtected) {
+		writeErr(w, http.StatusConflict, model.ErrSnapshotRestoreProtected, "the snapshot backs an unresolved restore and cannot be deleted")
+		return
+	}
+	if errors.Is(err, jobs.ErrUnsupportedManifest) {
+		writeErr(w, http.StatusUnprocessableEntity, model.ErrUnsupportedRestoreManifest, "the snapshot is not a single-database artifact")
+		return
+	}
+	if errors.Is(err, jobs.ErrAgentOffline) {
+		writeErr(w, http.StatusConflict, model.ErrAgentUnavailable, "target agent is offline")
+		return
+	}
+	if errors.Is(err, jobs.ErrAgentRevoked) {
+		writeErr(w, http.StatusConflict, model.ErrAgentRevoked, "target agent is revoked")
+		return
+	}
+	if errors.Is(err, jobs.ErrRepositoryNotReady) {
+		writeErr(w, http.StatusConflict, model.ErrRepositoryMissing, "cross-agent restore requires a ready source repository")
+		return
+	}
 	if errors.As(err, &mt) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error": map[string]any{"code": "missing_tools", "message": "agent lacks required tools", "tools": mt.Tools},

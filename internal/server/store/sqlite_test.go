@@ -434,7 +434,7 @@ func TestAgentUpsertAndGet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ts.SaveAgentCapabilities(ctx, "agent-1", []model.ToolInfo{{Name: "restic", Version: "0.17.0"}}, nil, nil, now); err != nil {
+	if err := ts.SaveAgentCapabilities(ctx, "agent-1", []model.ToolInfo{{Name: "restic", Version: "0.17.0"}}, nil, nil, true, now); err != nil {
 		t.Fatal(err)
 	}
 

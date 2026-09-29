@@ -46,6 +46,8 @@ type RestoreTask struct {
 	Repository RepoAccess         `json:"repository"`
 	Filesystem *FilesystemRestore `json:"filesystem,omitempty"`
 	Database   *DatabaseRestore   `json:"database,omitempty"`
+	// RunID 用于预备份的保护标签（restore-protection:<runID>）与 staging 命名。
+	RunID string `json:"run_id,omitempty"`
 }
 
 // InitTask drives repository bootstrap via OPERATION_FORGET with

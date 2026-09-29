@@ -102,7 +102,8 @@ export const PlanScheduleSection: React.FC<PlanScheduleSectionProps> = ({
         <Input
           id="plan-timeout"
           type="number"
-          min={1}
+          min={60}
+          max={21600}
           step={60}
           value={timeoutSeconds}
           onChange={(e) => onUpdateModel({ timeout_seconds: Number(e.target.value) || 3600 })}

@@ -11,6 +11,7 @@ import type { Run, RunProgress, RunLog, Plan, Agent, RestoreRequestItem } from '
 import { AppErrorState } from '@/components/AppErrorState'
 import { StatusBadge } from '@/components/StatusBadge'
 import { Input } from '@/components/ui/input'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { RESTORE_PHASE_TONES, isRestorePhaseBlocking } from '@/views/snapshots/Types'
 import { PageLoadingState } from '@/components/PageLoadingState'
 import { toastSuccess, toastError } from '@/lib/toast'
@@ -641,26 +642,32 @@ export const RunDetailView: React.FC = () => {
         <CardContent className="p-0">
           <div
             ref={logsWrapRef}
-            className="h-96 overflow-y-auto p-4 font-mono text-xs text-foreground/90 space-y-1 scrollbar-thin"
+            className="run-log-console h-96 overflow-y-auto p-4 font-mono text-xs text-foreground/90 space-y-1"
           >
             {logs.length > 0 ? (
               logs.map((log) => {
                 const isError = log.level === 'error' || log.level === 'warn'
                 return (
-                  <div key={log.seq} className="flex gap-3 leading-relaxed hover:bg-muted/50 py-0.5 px-1 rounded">
-                    <span className="text-[11px] text-muted-foreground/60 select-none w-10 shrink-0 text-right">
+                  <div key={log.seq} className="log-row flex gap-3 leading-relaxed hover:bg-muted/50 py-0.5 px-1 rounded">
+                    <span className="log-seq text-[11px] text-muted-foreground/60 select-none shrink-0 text-right tabular-nums">
                       {log.seq}
                     </span>
-                    <span className="text-[11px] text-muted-foreground/80 select-none shrink-0">
-                      {new Date(log.timestamp).toLocaleTimeString()}
+                    <span className="log-time text-[11px] text-muted-foreground/80 select-none shrink-0 tabular-nums">
+                      {formatDateTime(log.timestamp)}
                     </span>
-                    <span
-                      className={`break-all ${
-                        isError ? 'text-rose-600 dark:text-rose-400 font-medium' : 'text-foreground'
-                      }`}
-                    >
-                      {log.message}
-                    </span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className={isError ? 'flex-1 min-w-0 break-all text-rose-600 dark:text-rose-400 font-medium' : 'flex-1 min-w-0 break-all text-foreground'}>
+                          {log.message}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="top"
+                        className="max-w-[32rem] max-h-64 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs"
+                      >
+                        {log.message}
+                      </TooltipContent>
+                    </Tooltip>
                   </div>
                 )
               })

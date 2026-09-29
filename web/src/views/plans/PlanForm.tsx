@@ -108,8 +108,11 @@ export const PlanForm: React.FC<PlanFormProps> = ({
     }
 
     if (!model.timezone) errs.timezone = t('plans.rules.timezoneRequired')
-    if (!model.timeout_seconds || model.timeout_seconds <= 0) {
+    const timeout = Number(model.timeout_seconds)
+    if (!timeout) {
       errs.timeout_seconds = t('plans.rules.timeoutRequired')
+    } else if (timeout < 60 || timeout > 21600) {
+      errs.timeout_seconds = t('plans.rules.timeoutRange')
     }
 
     // Source specific validation

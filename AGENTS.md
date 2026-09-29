@@ -188,7 +188,7 @@ BMC_SERVER_TLS=0 BMC_ENROLLMENT_TOKEN=<token> make dev-agent
 
 ## 完成功能后的自动交付规则
 
-- 功能实现并通过适用的验证后，必须自动创建 Git commit 并推送到当前远端分支。
+- 如用户明确要求提交 git commit，则执行下面的自动交付规则，否则不进行提交。
 - commit message 必须遵循 Conventional Commit，描述使用简体中文。
 - 推送完成后，必须通过 GitHub 网页端检查最新 GitHub Actions 执行结果，不使用命令行拉取 Actions 结果。
 - 若 Action 执行失败，必须根据网页端失败日志继续修复；修复后重新验证、提交、推送，并再次通过网页端检查最新 Action 结果。

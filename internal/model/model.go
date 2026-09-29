@@ -274,13 +274,24 @@ type Progress struct {
 	DetailJSON string `json:"detail_json,omitempty"`
 }
 
+// RunLog 的稳定标识是 Server 落库时分配的 ID（也是分页游标）；
+// SourceSeq 保留产生方的本地序号，仅用于幂等去重，不作为标识展示。
 type RunLog struct {
+	// Source 取值见 RunLogSourceAgent / RunLogSourceServer。
+	Source    string    `json:"source"`
+	SourceSeq uint64    `json:"source_seq"`
+	ID        int64     `json:"id"`
 	RunID     string    `json:"run_id"`
-	Seq       uint64    `json:"seq"`
 	Timestamp time.Time `json:"timestamp"`
 	Level     string    `json:"level"` // debug|info|warn|error
 	Message   string    `json:"message"`
 }
+
+// run 日志来源：Agent 执行过程上报，或 Server 自身的派发/诊断。
+const (
+	RunLogSourceAgent  = "agent"
+	RunLogSourceServer = "server"
+)
 
 // SystemLog 是Server和Agent进程日志的统一API/存储形状。
 // ID由Server落库时分配；SourceSeq保留Agent本地序号，便于定位断线与重连。

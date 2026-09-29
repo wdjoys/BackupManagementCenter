@@ -130,10 +130,6 @@ func (f *fakeStore) ResolveRestoreRequest(context.Context, string, string, strin
 	return nil
 }
 
-func (f *fakeStore) MaxRunLogSeq(_ context.Context, _ string) (uint64, error) {
-	return 0, nil
-}
-
 func (f *fakeStore) AppendRunLogs(_ context.Context, _ []model.RunLog) error {
 	return nil
 }

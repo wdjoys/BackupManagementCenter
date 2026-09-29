@@ -252,10 +252,9 @@ func (f *fakeStore) FailStaleRuns(_ context.Context, _ []string, _ string, _ tim
 	return nil, nil
 }
 func (f *fakeStore) AppendRunLogs(_ context.Context, _ []model.RunLog) error { return nil }
-func (f *fakeStore) ListRunLogs(_ context.Context, _ string, _ uint64, _ int) ([]model.RunLog, error) {
+func (f *fakeStore) ListRunLogs(_ context.Context, _ string, _ int64, _ int) ([]model.RunLog, error) {
 	return nil, nil
 }
-func (f *fakeStore) MaxRunLogSeq(_ context.Context, _ string) (uint64, error) { return 0, nil }
 func (f *fakeStore) CreateRestoreRequest(_ context.Context, _ *model.RestoreRequest) error {
 	return nil
 }

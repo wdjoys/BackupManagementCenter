@@ -114,8 +114,7 @@ type Store interface {
 
 	// Run logs
 	AppendRunLogs(ctx context.Context, logs []model.RunLog) error
-	ListRunLogs(ctx context.Context, runID string, beforeSeq uint64, limit int) ([]model.RunLog, error)
-	MaxRunLogSeq(ctx context.Context, runID string) (uint64, error)
+	ListRunLogs(ctx context.Context, runID string, beforeID int64, limit int) ([]model.RunLog, error)
 
 	// Restore requests
 	CreateRestoreRequest(ctx context.Context, rr *model.RestoreRequest) error

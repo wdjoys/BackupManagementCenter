@@ -1326,6 +1326,8 @@ func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, erro
 // Run logs
 // ---------------------------------------------------------------------------
 
+// AppendRunLogs 幂等写入：id 由 SQLite 自增分配，source+source_seq 相同的历史行被忽略。
+// 重复投递（Agent 重连重放、Server 重试）不会失败，也不会产生重复行。
 func (s *sqliteStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) error {
 	if len(logs) == 0 {
 		return nil
@@ -1338,7 +1340,9 @@ func (s *sqliteStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) er
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO run_logs (run_id, seq, timestamp, level, message) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO run_logs
+		 (run_id, source, source_seq, timestamp, level, message)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("append run logs prepare: %w", err)
@@ -1346,7 +1350,7 @@ func (s *sqliteStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) er
 	defer stmt.Close()
 
 	for _, l := range logs {
-		if _, err := stmt.ExecContext(ctx, l.RunID, l.Seq, l.Timestamp.Format(time.RFC3339), l.Level, l.Message); err != nil {
+		if _, err := stmt.ExecContext(ctx, l.RunID, l.Source, int64(l.SourceSeq), l.Timestamp.Format(time.RFC3339Nano), l.Level, l.Message); err != nil {
 			return fmt.Errorf("append run log: %w", err)
 		}
 	}
@@ -1354,7 +1358,8 @@ func (s *sqliteStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) er
 	return tx.Commit()
 }
 
-func (s *sqliteStore) ListRunLogs(ctx context.Context, runID string, beforeSeq uint64, limit int) ([]model.RunLog, error) {
+// ListRunLogs 按 id 倒序返回 run 日志；beforeID > 0 时只返回更早的行。
+func (s *sqliteStore) ListRunLogs(ctx context.Context, runID string, beforeID int64, limit int) ([]model.RunLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1363,18 +1368,18 @@ func (s *sqliteStore) ListRunLogs(ctx context.Context, runID string, beforeSeq u
 		rows *sql.Rows
 		err  error
 	)
-	if beforeSeq > 0 {
+	if beforeID > 0 {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT run_id, seq, timestamp, level, message
-			 FROM run_logs WHERE run_id = ? AND seq < ?
-			 ORDER BY seq DESC LIMIT ?`,
-			runID, beforeSeq, limit,
+			`SELECT id, run_id, source, source_seq, timestamp, level, message
+			 FROM run_logs WHERE run_id = ? AND id < ?
+			 ORDER BY id DESC LIMIT ?`,
+			runID, beforeID, limit,
 		)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT run_id, seq, timestamp, level, message
+			`SELECT id, run_id, source, source_seq, timestamp, level, message
 			 FROM run_logs WHERE run_id = ?
-			 ORDER BY seq DESC LIMIT ?`,
+			 ORDER BY id DESC LIMIT ?`,
 			runID, limit,
 		)
 	}
@@ -1392,20 +1397,6 @@ func (s *sqliteStore) ListRunLogs(ctx context.Context, runID string, beforeSeq u
 		out = append(out, *l)
 	}
 	return out, rows.Err()
-}
-
-func (s *sqliteStore) MaxRunLogSeq(ctx context.Context, runID string) (uint64, error) {
-	var seq sql.NullInt64
-	err := s.db.QueryRowContext(ctx,
-		"SELECT MAX(seq) FROM run_logs WHERE run_id = ?", runID,
-	).Scan(&seq)
-	if err != nil {
-		return 0, fmt.Errorf("max run log seq: %w", err)
-	}
-	if seq.Valid {
-		return uint64(seq.Int64), nil
-	}
-	return 0, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2348,14 +2339,16 @@ func scanRun(row interface{ Scan(dest ...any) error }) (*model.Run, error) {
 }
 
 func scanRunLog(row interface{ Scan(dest ...any) error }) (*model.RunLog, error) {
-	var runID, timestamp, level, message string
-	var seq int64
-	if err := row.Scan(&runID, &seq, &timestamp, &level, &message); err != nil {
+	var runID, source, timestamp, level, message string
+	var id, sourceSeq int64
+	if err := row.Scan(&id, &runID, &source, &sourceSeq, &timestamp, &level, &message); err != nil {
 		return nil, fmt.Errorf("scan run log: %w", err)
 	}
 	return &model.RunLog{
+		ID:        id,
 		RunID:     runID,
-		Seq:       uint64(seq),
+		Source:    source,
+		SourceSeq: uint64(sourceSeq),
 		Timestamp: parseTime(timestamp),
 		Level:     level,
 		Message:   message,

@@ -113,6 +113,8 @@ message LogEntry {
   int64 timestamp_unix_nanos = 2;
   LogLevel.Level level = 3;
   string message = 4;
+  // 日志产生方："agent" 或 "server"。未升级的Agent留空，服务端按 "agent" 归类。
+  string source = 5;
 }
 
 message RunLogBatch {

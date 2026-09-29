@@ -410,20 +410,15 @@ func (d *Dispatcher) appendDispatchLog(ctx context.Context, runID, level, messag
 	d.dispatchLogState[runID] = dispatchLogState{message: message, at: now}
 	d.dispatchLogMu.Unlock()
 
-	// Agent log sequences start at 1. Keep server-side diagnostics in a
-	// separate high range so they never collide with an agent's sequence.
-	const serverLogSeqBase = uint64(1 << 62)
-	seq, err := d.store.MaxRunLogSeq(ctx, runID)
-	if err != nil {
-		log.Printf("dispatcher: failed to allocate run log sequence for %s: %v", runID, err)
-		return
+	// 单条幂等写入：id 由 store 分配，source_seq 用当前纳秒保证同一 run 内不重复。
+	entry := model.RunLog{
+		RunID:     runID,
+		Source:    model.RunLogSourceServer,
+		SourceSeq: uint64(now.UnixNano()),
+		Timestamp: now,
+		Level:     level,
+		Message:   message,
 	}
-	if seq < serverLogSeqBase {
-		seq = serverLogSeqBase
-	} else {
-		seq++
-	}
-	entry := model.RunLog{RunID: runID, Seq: seq, Timestamp: now, Level: level, Message: message}
 	if err := d.store.AppendRunLogs(ctx, []model.RunLog{entry}); err != nil {
 		log.Printf("dispatcher: failed to persist run log for %s: %v", runID, err)
 	}

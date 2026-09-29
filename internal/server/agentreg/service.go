@@ -551,14 +551,15 @@ func (s *Service) handleRunLogBatch(ctx context.Context, agentID string, batch *
 
 		logEntry := model.RunLog{
 			RunID:     runID,
-			Seq:       entry.GetSeq(),
+			Source:    runLogSource(entry.GetSource()),
+			SourceSeq: entry.GetSeq(),
 			Timestamp: time.Unix(0, entry.GetTimestampUnixNanos()).UTC(),
 			Level:     logLevel,
 			Message:   entry.GetMessage(),
 		}
 		logs = append(logs, logEntry)
 
-		// Publish log event
+		// Publish log event (ID尚未分配，落库后由 store 回填给客户端)
 		s.bus.Publish(runID, events.Event{
 			Type:  events.Log,
 			Entry: &logEntry,
@@ -566,6 +567,14 @@ func (s *Service) handleRunLogBatch(ctx context.Context, agentID string, batch *
 	}
 
 	return s.store.AppendRunLogs(ctx, logs)
+}
+
+// runLogSource 归一化来源标记；未升级的Agent留空时按 agent 归类。
+func runLogSource(source string) string {
+	if source == model.RunLogSourceServer {
+		return model.RunLogSourceServer
+	}
+	return model.RunLogSourceAgent
 }
 func (s *Service) handleAgentLogBatch(ctx context.Context, agentID string, entries []*bmcv1.LogEntry) error {
 	logStore, ok := s.store.(store.LogStore)

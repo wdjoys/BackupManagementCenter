@@ -1143,6 +1143,119 @@ func newLegacyStore(t *testing.T) (Store, *sql.DB) {
 
 const runDedupMigration = "0013_run_dedup.sql"
 
+const runLogSourceMigration = "0014_run_logs_source.sql"
+const legacyServerLogSeqBase = 4611686018427387904 // 旧 dispatcher 的 1<<62 高位段基址
+
+// 升级冒烟：真实旧库经 0014 迁移后，历史 run 日志必须原样保留、
+// 来源按高位段正确回填、id 按原 seq 顺序分配，且重复启动不产生二次变更。
+func TestMigrateRunLogsSourceOnLegacyDB(t *testing.T) {
+	ctx := context.Background()
+	st, db := newLegacyStoreBefore(t, runLogSourceMigration)
+
+	nowStr := now.Format(time.RFC3339)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO runs (id, agent_id, operation, status, queued_at, progress_json, attempt)
+		 VALUES ('legacy-run', 'agent-1', 'backup', 'queued', ?, '{}', 0)`, nowStr); err != nil {
+		t.Fatalf("insert legacy run: %v", err)
+	}
+	// 旧 schema 的 seq：Agent 低位段 + Server 高位段，且没有 source 列。
+	ins := `INSERT INTO run_logs (run_id, seq, timestamp, level, message) VALUES (?,?,?,?,?)`
+	for _, row := range [][]any{
+		{"legacy-run", 1, nowStr, "info", "agent first"},
+		{"legacy-run", 2, nowStr, "warn", "agent second"},
+		{"legacy-run", legacyServerLogSeqBase, nowStr, "error", "server diag"},
+	} {
+		if _, err := db.ExecContext(ctx, ins, row...); err != nil {
+			t.Fatalf("seed legacy log: %v", err)
+		}
+	}
+
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate legacy db: %v", err)
+	}
+	// 重复启动必须幂等。
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate again: %v", err)
+	}
+
+	logs, err := st.ListRunLogs(ctx, "legacy-run", 0, 10)
+	if err != nil {
+		t.Fatalf("list after upgrade: %v", err)
+	}
+	if len(logs) != 3 {
+		t.Fatalf("expected 3 preserved logs, got %d: %+v", len(logs), logs)
+	}
+	if logs[0].Message != "server diag" || logs[0].Source != model.RunLogSourceServer {
+		t.Fatalf("高位段应回填为 server: %+v", logs[0])
+	}
+	if logs[2].Message != "agent first" || logs[2].Source != model.RunLogSourceAgent || logs[2].SourceSeq != 1 {
+		t.Fatalf("低位段应保留为 agent 并带原 seq: %+v", logs[2])
+	}
+	if !(logs[2].ID < logs[1].ID && logs[1].ID < logs[0].ID) {
+		t.Fatalf("id 未按原 seq 顺序分配: %d %d %d", logs[2].ID, logs[1].ID, logs[0].ID)
+	}
+
+	// 升级后写入：id 继续自增，且重放幂等。
+	entry := model.RunLog{
+		RunID: "legacy-run", Source: model.RunLogSourceAgent, SourceSeq: 3,
+		Timestamp: now, Level: "info", Message: "after upgrade",
+	}
+	for range 2 {
+		if err := st.AppendRunLogs(ctx, []model.RunLog{entry}); err != nil {
+			t.Fatalf("append after upgrade: %v", err)
+		}
+	}
+	after, err := st.ListRunLogs(ctx, "legacy-run", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 4 || after[0].Message != "after upgrade" || after[0].ID <= logs[0].ID {
+		t.Fatalf("升级后追加异常: %+v", after)
+	}
+}
+
+// newLegacyStoreBefore 建一个只应用到 before 之前（不含 before）的旧库，
+// 使后续 Migrate 走真实升级路径。
+func newLegacyStoreBefore(t *testing.T, before string) (Store, *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := New(filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	db := st.(*sqliteStore).db
+
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create schema_migrations: %v", err)
+	}
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") || e.Name() >= before {
+			continue
+		}
+		data, err := fs.ReadFile(migrationsFS, path.Join("migrations", e.Name()))
+		if err != nil {
+			t.Fatalf("read migration %s: %v", e.Name(), err)
+		}
+		if _, err := db.ExecContext(ctx, string(data)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", e.Name(), err)
+		}
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+			e.Name(), now.Format(time.RFC3339)); err != nil {
+			t.Fatalf("record legacy migration %s: %v", e.Name(), err)
+		}
+	}
+	return st, db
+}
+
 // 旧库升级：0013 之后新增列与部分唯一索引，历史行保持可用且不参与去重，
 // 并覆盖重复升级（第二次 Migrate 必须是 no-op）。
 func TestMigrateRunDedupOnLegacyDB(t *testing.T) {
@@ -1684,12 +1797,17 @@ func TestRunLogs(t *testing.T) {
 	})
 
 	logs := []model.RunLog{
-		{RunID: "run-1", Seq: 1, Timestamp: now, Level: "info", Message: "started"},
-		{RunID: "run-1", Seq: 2, Timestamp: now.Add(1 * time.Second), Level: "debug", Message: "progress"},
-		{RunID: "run-1", Seq: 3, Timestamp: now.Add(2 * time.Second), Level: "error", Message: "failed"},
+		{RunID: "run-1", Source: model.RunLogSourceAgent, SourceSeq: 1, Timestamp: now, Level: "info", Message: "started"},
+		{RunID: "run-1", Source: model.RunLogSourceAgent, SourceSeq: 2, Timestamp: now.Add(1 * time.Second), Level: "debug", Message: "progress"},
+		{RunID: "run-1", Source: model.RunLogSourceServer, SourceSeq: 900, Timestamp: now.Add(2 * time.Second), Level: "error", Message: "failed"},
 	}
 	if err := ts.AppendRunLogs(ctx, logs); err != nil {
 		t.Fatal(err)
+	}
+
+	// 重放同一批日志必须幂等：不报错、不产生重复行。
+	if err := ts.AppendRunLogs(ctx, logs); err != nil {
+		t.Fatalf("replay should be idempotent, got %v", err)
 	}
 
 	listed, _ := ts.ListRunLogs(ctx, "run-1", 0, 10)
@@ -1700,21 +1818,21 @@ func TestRunLogs(t *testing.T) {
 	if listed[0].Message != "failed" {
 		t.Fatal("first log should be newest")
 	}
-
-	seq, _ := ts.MaxRunLogSeq(ctx, "run-1")
-	if seq != 3 {
-		t.Fatalf("expected max seq 3, got %d", seq)
+	// 来源与本地序号被保留，id 由 store 分配且递增。
+	if listed[0].Source != model.RunLogSourceServer || listed[0].SourceSeq != 900 {
+		t.Fatalf("unexpected source mapping: %+v", listed[0])
+	}
+	if listed[0].ID <= listed[2].ID || listed[2].ID == 0 {
+		t.Fatalf("expected ascending ids, got %d..%d", listed[2].ID, listed[0].ID)
 	}
 
-	// Paginate with beforeSeq.
-	page, _ := ts.ListRunLogs(ctx, "run-1", 3, 10)
+	// Paginate with beforeID（游标是 id，不再是 seq）。
+	page, _ := ts.ListRunLogs(ctx, "run-1", listed[0].ID, 10)
 	if len(page) != 2 {
-		t.Fatalf("expected 2 logs before seq 3, got %d", len(page))
+		t.Fatalf("expected 2 logs before newest id, got %d", len(page))
 	}
-
-	_, err := ts.MaxRunLogSeq(ctx, "nonexistent")
-	if err != nil {
-		t.Fatal(err)
+	if page[0].Message != "progress" {
+		t.Fatalf("expected newest of the older page, got %q", page[0].Message)
 	}
 }
 

@@ -146,7 +146,9 @@ export interface Run {
 }
 
 export interface RunLog {
-  seq: number
+  id: number
+  source: string
+  source_seq: number
   timestamp: string
   level: string
   message: string
@@ -256,12 +258,6 @@ export interface TelegramSettings {
 export interface TelegramSettingsUpdate {
   bot_token: string
   chat_id: string
-}
-
-export interface PaginationParams {
-  limit?: number
-  offset?: number
-  before_seq?: number
 }
 
 export interface AgentQueryParams {

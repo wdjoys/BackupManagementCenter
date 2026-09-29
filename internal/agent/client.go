@@ -292,6 +292,7 @@ func agentProcessLogMessage(entry logging.Entry) *bmcv1.AgentMessage {
 					TimestampUnixNanos: entry.Timestamp.UnixNano(),
 					Level:              protoLevel(entry.Level),
 					Message:            entry.Message,
+					Source:             model.RunLogSourceAgent,
 				}},
 			},
 		},

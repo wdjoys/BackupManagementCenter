@@ -115,21 +115,13 @@
 
 /* 运行日志控制台：长消息必须在容器内换行，横向不得溢出。
    缺了 overflow-x:hidden 与 min-width:0，flex 子项会把整行撑宽并压到
-   seq/时间戳列上，表现为“数字叠在一起”。 */
+   时间戳/来源列上，表现为“列重叠”。 */
 @layer components {
   .run-log-console {
     overflow-x: hidden;
   }
   .run-log-console .log-row {
     min-width: 0;
-  }
-  .run-log-console .log-seq {
-    /* 自适应宽度：常见 1–4 位 Agent seq 不浪费空间，19 位服务端 seq 也能完整显示。
-       只在超过上限（约 19 位）时才省略。 */
-    flex: 0 1 auto;
-    max-width: 19ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .run-log-console .log-time {
     flex: 0 0 auto;

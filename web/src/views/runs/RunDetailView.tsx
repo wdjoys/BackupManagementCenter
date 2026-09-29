@@ -175,14 +175,14 @@ export const RunDetailView: React.FC = () => {
     if (!id || logs.length === 0 || loadingLogs) return
     setLoadingLogs(true)
     try {
-      const minSeq = Math.min(...logs.map((l) => l.seq))
-      const beforeSeq = minSeq - 1
-      if (beforeSeq <= 0) {
+      const minId = Math.min(...logs.map((l) => l.id))
+      const beforeId = minId - 1
+      if (beforeId <= 0) {
         setHasMoreLogs(false)
         return
       }
       const data = await apiGet<RunLog[]>(`/runs/${id}/logs`, {
-        before_seq: beforeSeq,
+        before_id: beforeId,
         limit: 500,
       })
       if (data.length < 500) {
@@ -190,11 +190,11 @@ export const RunDetailView: React.FC = () => {
       }
       setLogs((prev) => {
         const merged = [...data, ...prev]
-        const seqMap = new Map<number, RunLog>()
+        const idMap = new Map<number, RunLog>()
         for (const item of merged) {
-          seqMap.set(item.seq, item)
+          idMap.set(item.id, item)
         }
-        const unique = Array.from(seqMap.values()).sort((a, b) => a.seq - b.seq)
+        const unique = Array.from(idMap.values()).sort((a, b) => a.id - b.id)
         if (unique.length > MAX_LOG_ROWS) {
           unique.splice(0, unique.length - MAX_LOG_ROWS)
         }
@@ -262,7 +262,7 @@ export const RunDetailView: React.FC = () => {
               setRun((prev) => (prev ? { ...prev, progress: msg.progress } : prev))
             } else if (msg.type === 'log') {
               setLogs((prev) => {
-                const idx = prev.findIndex((l) => l.seq === msg.entry.seq)
+                const idx = prev.findIndex((l) => l.id === msg.entry.id)
                 if (idx >= 0) {
                   const updated = [...prev]
                   updated[idx] = msg.entry
@@ -647,27 +647,34 @@ export const RunDetailView: React.FC = () => {
             {logs.length > 0 ? (
               logs.map((log) => {
                 const isError = log.level === 'error' || log.level === 'warn'
+                const fromServer = log.source === 'server'
+                const sourceLabel = fromServer
+                  ? t('runDetail.logs.sourceServer')
+                  : t('runDetail.logs.sourceAgent')
                 return (
-                  <div key={log.seq} className="log-row flex gap-3 leading-relaxed hover:bg-muted/50 py-0.5 px-1 rounded">
-                    <span className="log-seq text-[11px] text-muted-foreground/60 select-none shrink-0 text-right tabular-nums">
-                      {log.seq}
-                    </span>
+                  <div key={log.id} className="log-row flex gap-3 leading-relaxed hover:bg-muted/50 py-0.5 px-1 rounded">
                     <span className="log-time text-[11px] text-muted-foreground/80 select-none shrink-0 tabular-nums">
-                      {formatDateTime(log.timestamp)}
+                      {formatDateTime(log.timestamp, { second: '2-digit' })}
+                      {`.${String(new Date(log.timestamp).getMilliseconds()).padStart(3, '0')}`}
                     </span>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className={isError ? 'flex-1 min-w-0 break-all text-rose-600 dark:text-rose-400 font-medium' : 'flex-1 min-w-0 break-all text-foreground'}>
-                          {log.message}
+                        <span className="select-none shrink-0">
+                          <StatusBadge tone={fromServer ? 'default' : 'secondary'}>
+                            {sourceLabel}
+                          </StatusBadge>
                         </span>
                       </TooltipTrigger>
-                      <TooltipContent
-                        side="top"
-                        className="max-w-[32rem] max-h-64 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs"
-                      >
-                        {log.message}
+                      <TooltipContent side="top" className="font-mono text-xs">
+                        {t('runDetail.logs.sourceTooltip', {
+                          source: sourceLabel,
+                          seq: log.source_seq,
+                        })}
                       </TooltipContent>
                     </Tooltip>
+                    <span className={isError ? 'flex-1 min-w-0 break-all text-rose-600 dark:text-rose-400 font-medium' : 'flex-1 min-w-0 break-all text-foreground'}>
+                      {log.message}
+                    </span>
                   </div>
                 )
               })

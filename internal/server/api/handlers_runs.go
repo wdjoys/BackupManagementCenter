@@ -50,17 +50,18 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, runView(run))
 }
 
-// GET /runs/{id}/logs?before_seq=&limit=
+// GET /runs/{id}/logs?before_id=&limit=
+// 旧版客户端的 before_seq 被接受但忽略（历史 seq 语义已被 id 取代），仍返回完整倒序首页。
 func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 	runID := pathParam(r, "id")
-	before := uint64(0)
-	if v := r.URL.Query().Get("before_seq"); v != "" {
-		for i := 0; i < len(v); i++ {
+	before := int64(0)
+	if v := r.URL.Query().Get("before_id"); v != "" {
+		for i := range len(v) {
 			if v[i] < '0' || v[i] > '9' {
-				writeErr(w, http.StatusBadRequest, "validation_failed", "before_seq must be uint")
+				writeErr(w, http.StatusBadRequest, "validation_failed", "before_id must be uint")
 				return
 			}
-			before = before*10 + uint64(v[i]-'0')
+			before = before*10 + int64(v[i]-'0')
 		}
 	}
 	limit := queryInt(r, "limit", 200)

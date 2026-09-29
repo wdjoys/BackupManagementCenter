@@ -148,6 +148,7 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 							TimestampUnixNanos: time.Now().UnixNano(),
 							Level:              protoLevel(level),
 							Message:            msg,
+							Source:             model.RunLogSourceAgent,
 						}},
 					},
 				},

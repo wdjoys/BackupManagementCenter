@@ -657,10 +657,9 @@ func (s *fakeStore) FailStaleRuns(ctx context.Context, statuses []string, code s
 	return nil, nil
 }
 func (s *fakeStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) error { return nil }
-func (s *fakeStore) ListRunLogs(ctx context.Context, runID string, beforeSeq uint64, limit int) ([]model.RunLog, error) {
+func (s *fakeStore) ListRunLogs(ctx context.Context, runID string, beforeID int64, limit int) ([]model.RunLog, error) {
 	return nil, nil
 }
-func (s *fakeStore) MaxRunLogSeq(ctx context.Context, runID string) (uint64, error) { return 0, nil }
 func (s *fakeStore) GetRestoreRequest(ctx context.Context, id string) (*model.RestoreRequest, error) {
 	return nil, store.ErrNotFound
 }

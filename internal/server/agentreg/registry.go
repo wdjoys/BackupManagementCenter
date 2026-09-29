@@ -2,6 +2,7 @@ package agentreg
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
@@ -24,6 +25,12 @@ type streamState struct {
 	sendCh  chan *bmcv1.ServerMessage
 	ctx     context.Context
 	cancel  context.CancelFunc
+
+	// capMu guards the per-connection capability record. It is written by the
+	// stream's own receive loop and read by dispatch/orchestrator callers.
+	capMu         sync.Mutex
+	capsReady     bool
+	safeDBRestore bool
 }
 
 // NewRegistry creates a new agent registry.
@@ -86,6 +93,71 @@ func (r *Registry) UnregisterIf(agentID string, streamCtx context.Context) bool 
 	delete(r.streams, agentID)
 	return true
 }
+
+// ConnectionCapabilities returns the capability record for the agent's current
+// stream. connected=false means the agent has no live stream. A stream that has
+// not completed a capability report is returned with ready=false.
+func (r *Registry) ConnectionCapabilities(agentID string) (ready bool, safeDBRestore bool, connected bool) {
+	r.mu.RLock()
+	st, ok := r.streams[agentID]
+	r.mu.RUnlock()
+	if !ok {
+		return false, false, false
+	}
+	st.capMu.Lock()
+	defer st.capMu.Unlock()
+	return st.capsReady, st.safeDBRestore, true
+}
+
+// ReportCapabilities records the capability report of the given stream. Reports
+// from a replaced stream are ignored so a late report cannot authorise the new
+// connection.
+func (r *Registry) ReportCapabilities(agentID string, streamCtx context.Context, safeDBRestore bool) bool {
+	r.mu.RLock()
+	st, ok := r.streams[agentID]
+	r.mu.RUnlock()
+	if !ok || st.ctx != streamCtx {
+		return false
+	}
+	st.capMu.Lock()
+	defer st.capMu.Unlock()
+	st.capsReady = true
+	st.safeDBRestore = safeDBRestore
+	return true
+}
+
+// SendWithCapability atomically checks the current stream's capability flag and
+// sends the message to that same stream. A check that succeeds against one
+// stream can therefore never deliver to a replacement stream.
+func (r *Registry) SendWithCapability(agentID string, msg *bmcv1.ServerMessage, requireSafeDBRestore bool) error {
+	r.mu.RLock()
+	st, ok := r.streams[agentID]
+	r.mu.RUnlock()
+	if !ok {
+		return ErrAgentNotConnected
+	}
+	st.capMu.Lock()
+	ready, safe := st.capsReady, st.safeDBRestore
+	st.capMu.Unlock()
+	if !ready {
+		return ErrCapabilitiesPending
+	}
+	if requireSafeDBRestore && !safe {
+		return ErrUnsafeDatabaseRestore
+	}
+	select {
+	case st.sendCh <- msg:
+		return nil
+	case <-st.ctx.Done():
+		return st.ctx.Err()
+	}
+}
+
+// ErrCapabilitiesPending 表示连接尚未完成能力上报。
+var ErrCapabilitiesPending = errors.New("agent capabilities pending")
+
+// ErrUnsafeDatabaseRestore 表示连接明确不支持受保护的数据库恢复。
+var ErrUnsafeDatabaseRestore = errors.New("agent does not support safe database restore")
 
 // Send sends a message to the agent's stream.
 // Returns error if agent is not connected or context is cancelled.

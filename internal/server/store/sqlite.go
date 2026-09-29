@@ -418,12 +418,13 @@ func (s *sqliteStore) SetAgentStatus(ctx context.Context, agentID string, st mod
 	return nil
 }
 
-func (s *sqliteStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, sourceMappings []model.PathMapping, restoreMappings []model.PathMapping, at time.Time) error {
+func (s *sqliteStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, sourceMappings []model.PathMapping, restoreMappings []model.PathMapping, safeDatabaseRestore bool, at time.Time) error {
 	data, err := json.Marshal(struct {
 		Tools               []model.ToolInfo    `json:"tools"`
 		SourcePathMappings  []model.PathMapping `json:"source_path_mappings"`
 		RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
-	}{Tools: tools, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings})
+		SafeDatabaseRestore bool                `json:"safe_database_restore"`
+	}{Tools: tools, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings, SafeDatabaseRestore: safeDatabaseRestore})
 	if err != nil {
 		return fmt.Errorf("marshal capabilities: %w", err)
 	}
@@ -1045,9 +1046,6 @@ func (s *sqliteStore) ListEnabledPlans(ctx context.Context) ([]model.Plan, error
 // ---------------------------------------------------------------------------
 
 func (s *sqliteStore) CreateRun(ctx context.Context, r *model.Run) error {
-	planID := nullString(r.PlanID)
-	repoID := nullString(r.RepositoryID)
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1055,35 +1053,8 @@ func (s *sqliteStore) CreateRun(ctx context.Context, r *model.Run) error {
 		return fmt.Errorf("create run begin tx: %w", err)
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO runs (id, plan_id, agent_id, operation, status,
-		   queued_at, started_at, finished_at, progress_json, snapshot_id,
-		   error_code, error_message, repository_id, scheduled_at, attempt, lease_expires_at,
-		   dedup_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, planID, r.AgentID, r.Operation, r.Status,
-		r.QueuedAt.Format(time.RFC3339),
-		nullTime(r.StartedAt),
-		nullTime(r.FinishedAt),
-		r.ProgressJSON, r.SnapshotID,
-		r.ErrorCode, r.ErrorMessage,
-		repoID,
-		nullTime(r.ScheduledAt),
-		r.Attempt,
-		nullTime(r.LeaseExpiresAt),
-		nullString(r.DedupKey),
-	)
-	if err != nil {
-		if isUniqueConstraint(err) {
-			return ErrDuplicateRun
-		}
-		return fmt.Errorf("create run: %w", err)
-	}
-	if r.RepositoryID != "" && invalidatesSnapshotCache(r.Operation) {
-		clearTrees := r.Operation == model.OpForget
-		if err := invalidateSnapshotCacheTx(ctx, tx, r.RepositoryID, clearTrees); err != nil {
-			return err
-		}
+	if err := insertRunTx(ctx, tx, r); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("create run commit: %w", err)
@@ -1677,10 +1648,404 @@ func (s *sqliteStore) ListRestoreRequests(ctx context.Context, limit int) ([]mod
 	return out, rows.Err()
 }
 
+// UpdateRestorePhase 只在恢复仍未进入终态时更新 phase：终态阶段（含人工解除）
+// 不能被迟到的进度或结果改写。
 func (s *sqliteStore) UpdateRestorePhase(ctx context.Context, runID, phase string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE restore_requests SET phase=? WHERE run_id=?`, phase, runID)
+	blocked := append(model.RestoreSafePhases(),
+		model.RestorePhaseRollbackFailed, model.RestorePhaseManualRecoveryNeeded, model.RestorePhaseManualRecoveryDone)
+	args := []any{phase, runID}
+	for _, p := range blocked {
+		args = append(args, p)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE restore_requests SET phase = ? WHERE run_id = ? AND phase NOT IN (`+restorePlaceholders(len(blocked))+`)`,
+		args...)
 	if err != nil {
 		return fmt.Errorf("update restore phase: %w", err)
+	}
+	return nil
+}
+
+// restoreSafePhaseArgs 返回 "NOT IN" 安全终态列表的查询参数。
+func restoreSafePhaseArgs() []any {
+	safe := model.RestoreSafePhases()
+	args := make([]any, len(safe))
+	for i, p := range safe {
+		args[i] = p
+	}
+	return args
+}
+
+func restorePlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// databaseRestoreKindArgs 返回数据库恢复 kind 的查询参数（filesystem 不占用互斥）。
+func databaseRestoreKindArgs() []any {
+	return []any{model.KindPostgreSQL, model.KindMySQL, model.KindMongoDB, model.KindSQLite}
+}
+
+// CreateDatabaseRestoreRun 在单写事务内校验数据库恢复的全局占用并创建 run+request。
+func (s *sqliteStore) CreateDatabaseRestoreRun(ctx context.Context, run *model.Run, rr *model.RestoreRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create database restore run begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	kinds := databaseRestoreKindArgs()
+	safe := restoreSafePhaseArgs()
+	query := "SELECT rr.run_id, COALESCE(r.dedup_key, '') FROM restore_requests rr " +
+		"JOIN runs r ON r.id = rr.run_id WHERE rr.restore_kind IN (" + restorePlaceholders(len(kinds)) + ") " +
+		"AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ") ORDER BY rr.created_at LIMIT 1"
+	args := append(append([]any{}, kinds...), safe...)
+	var activeRunID, activeDedupKey string
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&activeRunID, &activeDedupKey)
+	switch {
+	case err == nil:
+		if activeDedupKey != "" && activeDedupKey == run.DedupKey {
+			// 等价任务：复用已有 run，由调用方 join。
+			return ErrDuplicateRun
+		}
+		return ErrDatabaseRestoreBusy
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("check database restore occupancy: %w", err)
+	}
+
+	if err := insertRunTx(ctx, tx, run); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO restore_requests (id, run_id, snapshot_id, restore_kind,
+		       target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		       rollback_snapshot_id, phase, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rr.ID, rr.RunID, rr.SnapshotID, rr.RestoreKind,
+		rr.TargetJSON, boolInt(rr.Overwrite), rr.ConfirmationHash, rr.PreRestoreRunID,
+		rr.RollbackSnapshotID, rr.Phase, rr.CreatedAt.Format(time.RFC3339),
+	); err != nil {
+		return fmt.Errorf("create restore request: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create database restore run commit: %w", err)
+	}
+	return nil
+}
+
+// insertRunTx 插入 runs 行并处理快照缓存失效，供 CreateRun 与恢复专用创建共用。
+func insertRunTx(ctx context.Context, tx *sql.Tx, r *model.Run) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO runs (id, plan_id, agent_id, operation, status,
+		   queued_at, started_at, finished_at, progress_json, snapshot_id,
+		   error_code, error_message, repository_id, scheduled_at, attempt, lease_expires_at,
+		   dedup_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, nullString(r.PlanID), r.AgentID, r.Operation, r.Status,
+		r.QueuedAt.Format(time.RFC3339),
+		nullTime(r.StartedAt),
+		nullTime(r.FinishedAt),
+		r.ProgressJSON, r.SnapshotID,
+		r.ErrorCode, r.ErrorMessage,
+		nullString(r.RepositoryID),
+		nullTime(r.ScheduledAt),
+		r.Attempt,
+		nullTime(r.LeaseExpiresAt),
+		nullString(r.DedupKey),
+	)
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return ErrDuplicateRun
+		}
+		return fmt.Errorf("create run: %w", err)
+	}
+	if r.RepositoryID != "" && invalidatesSnapshotCache(r.Operation) {
+		clearTrees := r.Operation == model.OpForget
+		if err := invalidateSnapshotCacheTx(ctx, tx, r.RepositoryID, clearTrees); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ActiveDatabaseRestoreRunID 返回当前占用数据库恢复全局互斥的 run ID。
+func (s *sqliteStore) ActiveDatabaseRestoreRunID(ctx context.Context) (string, error) {
+	kinds := databaseRestoreKindArgs()
+	safe := restoreSafePhaseArgs()
+	query := "SELECT rr.run_id FROM restore_requests rr " +
+		"WHERE rr.restore_kind IN (" + restorePlaceholders(len(kinds)) + ") " +
+		"AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ") ORDER BY rr.created_at LIMIT 1"
+	args := append(append([]any{}, kinds...), safe...)
+	var runID string
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("active database restore: %w", err)
+	}
+	return runID, nil
+}
+
+// RepositoryRestoreBlocked 报告仓库是否被未安全终结的恢复阻塞。
+func (s *sqliteStore) RepositoryRestoreBlocked(ctx context.Context, repositoryID, exceptRunID string) (bool, error) {
+	safe := restoreSafePhaseArgs()
+	query := "SELECT 1 FROM restore_requests rr JOIN runs r ON r.id = rr.run_id " +
+		"WHERE r.repository_id = ? AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ")"
+	args := append([]any{repositoryID}, safe...)
+	if exceptRunID != "" {
+		query += " AND rr.run_id <> ?"
+		args = append(args, exceptRunID)
+	}
+	query += " LIMIT 1"
+	var one int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("repository restore block: %w", err)
+	}
+	return true, nil
+}
+
+// RequestRestoreStop 请求停止已下发的恢复：写 cancelling 阶段并记录取消宽限截止。
+// 已存在的截止不会被改写，避免重复 tick 重置期限。
+func (s *sqliteStore) RequestRestoreStop(ctx context.Context, runID string, deadline time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("request restore stop begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	blocked := append(model.RestoreSafePhases(),
+		model.RestorePhaseRollbackFailed, model.RestorePhaseManualRecoveryNeeded, model.RestorePhaseManualRecoveryDone)
+	args := []any{model.RestorePhaseCancelling, runID}
+	for _, p := range blocked {
+		args = append(args, p)
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE restore_requests SET phase = ? WHERE run_id = ? AND phase NOT IN (`+restorePlaceholders(len(blocked))+`)`,
+		args...)
+	if err != nil {
+		return fmt.Errorf("request restore stop phase: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("request restore stop rows affected: %w", err)
+	} else if n == 0 {
+		// 已请求停止或已进入终态：不重置宽限期限。
+		return nil
+	}
+	// 仅在首次请求停止时写入宽限截止，重复 tick 不会延长期限。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE runs SET lease_expires_at = ? WHERE id = ?`,
+		deadline.UTC().Format(time.RFC3339), runID); err != nil {
+		return fmt.Errorf("request restore stop: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("request restore stop commit: %w", err)
+	}
+	return nil
+}
+
+// ProtectedRestoreSnapshotIDs 返回该仓库中未安全终结的恢复所引用的保护快照 ID。
+func (s *sqliteStore) ProtectedRestoreSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error) {
+	safe := restoreSafePhaseArgs()
+	query := "SELECT rr.rollback_snapshot_id FROM restore_requests rr JOIN runs r ON r.id = rr.run_id " +
+		"WHERE r.repository_id = ? AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ") " +
+		"AND rr.rollback_snapshot_id IS NOT NULL AND rr.rollback_snapshot_id <> ''"
+	args := append([]any{repositoryID}, safe...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("protected restore snapshots: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan protected restore snapshot: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+// UpdateRestoreRollbackSnapshot 同步保护快照 ID，不覆盖已记录的非空值。
+func (s *sqliteStore) UpdateRestoreRollbackSnapshot(ctx context.Context, runID, snapshotID string) error {
+	if snapshotID == "" {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE restore_requests SET rollback_snapshot_id = ?
+		 WHERE run_id = ? AND (rollback_snapshot_id IS NULL OR rollback_snapshot_id = '')`,
+		snapshotID, runID); err != nil {
+		return fmt.Errorf("update restore rollback snapshot: %w", err)
+	}
+	return nil
+}
+
+// FinishRestoreRun 在单事务内终结恢复 run 并同步 request 的 phase/rollback_snapshot_id。
+func (s *sqliteStore) FinishRestoreRun(ctx context.Context, in FinishRestoreRunInput) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("finish restore begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	run, err := getRunTx(ctx, tx, in.RunID)
+	if err != nil {
+		return err
+	}
+	alreadyTerminal := run.Status == model.RunSucceeded || run.Status == model.RunFailed || run.Status == model.RunCancelled
+	if alreadyTerminal && run.Status != in.ToStatus {
+		// 已确认的终态不被迟到/冲突结果覆盖；仅允许补全保护快照 ID。
+		if err := updateRestoreRequestTx(ctx, tx, in); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("finish restore commit: %w", err)
+		}
+		return nil
+	}
+	if !alreadyTerminal {
+		froms := in.FromStatuses
+		if len(froms) == 0 {
+			froms = []string{model.RunQueued, model.RunDispatched, model.RunRunning}
+		}
+		query := "UPDATE runs SET status = ?, finished_at = ?, error_code = ?, error_message = ?, " +
+			"snapshot_id = CASE WHEN ? = '' THEN snapshot_id ELSE ? END, " +
+			"progress_json = CASE WHEN ? = '' THEN progress_json ELSE ? END, lease_expires_at = NULL " +
+			"WHERE id = ? AND status IN (" + restorePlaceholders(len(froms)) + ")"
+		args := []any{in.ToStatus, in.FinishedAt.UTC().Format(time.RFC3339), in.ErrorCode, in.ErrorMessage,
+			in.SnapshotID, in.SnapshotID, in.ResultJSON, in.ResultJSON, in.RunID}
+		for _, f := range froms {
+			args = append(args, f)
+		}
+		res, err := tx.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("finish restore run: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return fmt.Errorf("finish restore rows affected: %w", err)
+		} else if n == 0 {
+			return ErrInvalidTransition
+		}
+	}
+	if err := updateRestoreRequestTx(ctx, tx, in); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("finish restore commit: %w", err)
+	}
+	return nil
+}
+
+// updateRestoreRequestTx 写入恢复 phase 与保护快照 ID。
+// 人工解除结论不可覆盖；已确认的安全终态不被不同结果改写。
+func updateRestoreRequestTx(ctx context.Context, tx *sql.Tx, in FinishRestoreRunInput) error {
+	var currentPhase, currentSnapshot sql.NullString
+	err := tx.QueryRowContext(ctx,
+		"SELECT phase, rollback_snapshot_id FROM restore_requests WHERE run_id = ?", in.RunID,
+	).Scan(&currentPhase, &currentSnapshot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read restore request: %w", err)
+	}
+
+	snapshot := in.RollbackSnapshotID
+	if snapshot == "" {
+		snapshot = currentSnapshot.String
+	}
+	phase := in.Phase
+	switch {
+	case phase == "":
+		phase = currentPhase.String
+	case currentPhase.String == model.RestorePhaseManualRecoveryDone:
+		// 人工结论优先，迟到结果只补证据。
+		phase = currentPhase.String
+	case model.RestorePhaseReleasesOccupancy(currentPhase.String) && currentPhase.String != phase:
+		// 已确认的安全终态保持原值。
+		phase = currentPhase.String
+	}
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE restore_requests SET phase = ?, rollback_snapshot_id = ? WHERE run_id = ?",
+		phase, snapshot, in.RunID); err != nil {
+		return fmt.Errorf("update restore request: %w", err)
+	}
+	return nil
+}
+
+// getRunTx 在事务内按 ID 读取 run。
+func getRunTx(ctx context.Context, tx *sql.Tx, id string) (*model.Run, error) {
+	row := tx.QueryRowContext(ctx,
+		`SELECT id, plan_id, agent_id, operation, status,
+		        queued_at, started_at, finished_at, progress_json, snapshot_id,
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at, dedup_key
+		 FROM runs WHERE id = ?`, id)
+	return scanRun(row)
+}
+
+// ResolveRestoreRequest 人工解除阻塞：写入 manual_recovery_resolved 并终结 run。
+func (s *sqliteStore) ResolveRestoreRequest(ctx context.Context, requestID, runID, actorID, note string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("resolve restore begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var currentPhase, currentRunID string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT phase, run_id FROM restore_requests WHERE id = ?", requestID,
+	).Scan(&currentPhase, &currentRunID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("read restore request: %w", err)
+	}
+	if runID != "" && currentRunID != runID {
+		return ErrRestoreConflict
+	}
+	if currentPhase != model.RestorePhaseManualRecoveryNeeded && currentPhase != model.RestorePhaseRollbackFailed {
+		return ErrRestoreConflict
+	}
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE restore_requests SET phase = ? WHERE id = ?",
+		model.RestorePhaseManualRecoveryDone, requestID); err != nil {
+		return fmt.Errorf("resolve restore request: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE runs SET status = ?, finished_at = ?, error_code = ?, error_message = ?, lease_expires_at = NULL
+		 WHERE id = ? AND status NOT IN (?, ?, ?)`,
+		model.RunFailed, at.UTC().Format(time.RFC3339), currentPhase,
+		"operator resolved blocked restore: "+note, currentRunID,
+		model.RunSucceeded, model.RunFailed, model.RunCancelled,
+	); err != nil {
+		return fmt.Errorf("resolve restore run: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO audit_events (id, occurred_at, actor_type, actor_id, action, resource_type, resource_id, detail_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		model.NewUUIDv7(), at.UTC().Format(time.RFC3339), "admin", actorID,
+		"restore.resolve", "restore_request", requestID,
+		fmt.Sprintf(`{"run_id":%q,"phase":%q,"note":%q}`, currentRunID, currentPhase, note),
+	); err != nil {
+		return fmt.Errorf("resolve restore audit: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("resolve restore commit: %w", err)
 	}
 	return nil
 }
@@ -1800,6 +2165,7 @@ func scanAgent(row interface{ Scan(dest ...any) error }) (*model.Agent, error) {
 	var tools []model.ToolInfo
 	var mappings []model.PathMapping
 	var restoreMappings []model.PathMapping
+	safeDatabaseRestore := false
 	if capsJSON != "" && capsJSON != "[]" {
 		if strings.HasPrefix(strings.TrimSpace(capsJSON), "[") {
 			_ = json.Unmarshal([]byte(capsJSON), &tools)
@@ -1808,9 +2174,11 @@ func scanAgent(row interface{ Scan(dest ...any) error }) (*model.Agent, error) {
 				Tools               []model.ToolInfo    `json:"tools"`
 				SourcePathMappings  []model.PathMapping `json:"source_path_mappings"`
 				RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
+				SafeDatabaseRestore bool                `json:"safe_database_restore"`
 			}
 			_ = json.Unmarshal([]byte(capsJSON), &caps)
 			tools, mappings, restoreMappings = caps.Tools, caps.SourcePathMappings, caps.RestorePathMappings
+			safeDatabaseRestore = caps.SafeDatabaseRestore
 		}
 	}
 	if tools == nil {
@@ -1833,10 +2201,11 @@ func scanAgent(row interface{ Scan(dest ...any) error }) (*model.Agent, error) {
 		Status:       model.AgentStatus(status),
 		LastSeenAt:   parseTimePtr(lastSeenNull),
 		Capabilities: tools, SourcePathMappings: mappings, RestorePathMappings: restoreMappings,
-		CapabilitiesJSON: capsJSON,
-		EnrolledAt:       parseTime(enrolledAt),
-		TokenHash:        tokenHash,
-		Revoked:          revoked != 0,
+		SafeDatabaseRestore: safeDatabaseRestore,
+		CapabilitiesJSON:    capsJSON,
+		EnrolledAt:          parseTime(enrolledAt),
+		TokenHash:           tokenHash,
+		Revoked:             revoked != 0,
 	}, nil
 }
 

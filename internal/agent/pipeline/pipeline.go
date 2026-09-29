@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
@@ -27,6 +28,9 @@ type PipelineError struct {
 	Message  string
 	Cause    error
 	ExitCode int // restic exit code when available
+	// ResultJSON 是无秘密的失败载荷（例如恢复的 phase 与保护快照 ID）。
+	// Runner 会把它带进 FAILED 结果的 result_json，确保取消/断线不会吞掉它。
+	ResultJSON []byte
 }
 
 func (e *PipelineError) Error() string {
@@ -280,7 +284,30 @@ func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task
 	return &Result{}, nil
 }
 
+// databaseRestoreMu 串行化本 Agent 上的数据库恢复：存在性检查、预备份、导入、
+// 验证、回滚与清理必须在同一临界区内，避免两个恢复同时改写同一实际目标。
+// ponytail: 进程内全局串行；需要并行时按目标地址/实例做资源锁。
+var databaseRestoreMu sync.Mutex
+
+// databaseRestoreLock 获取数据库恢复的进程内互斥。
+func databaseRestoreLock(ctx context.Context) (func(), error) {
+	if !databaseRestoreMu.TryLock() {
+		// 语义明确地等待：另一个恢复正在执行，本次排队。
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		databaseRestoreMu.Lock()
+	}
+	return databaseRestoreMu.Unlock, nil
+}
+
 // runDatabaseRestore handles database restore/dry-run.
+//
+// The order is deliberate: the snapshot is downloaded and its manifest scope is
+// validated before the local restore mutex is taken, and no destructive step
+// runs before the pre-restore protection snapshot is safely uploaded.
 func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task model.RestoreTask, tempDir string, secrets backup.SecretBundle, dryRun bool) (*Result, error) {
 	db := task.Database
 	if db == nil {
@@ -301,39 +328,38 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	if !ok {
 		return nil, &PipelineError{Code: "invalid_plan", Message: "unknown kind: " + task.Kind}
 	}
+	engine, ok := adapter.(backup.DatabaseRestorer)
+	if !ok {
+		return nil, &PipelineError{Code: "invalid_plan", Message: "adapter does not support database restore: " + task.Kind}
+	}
 
 	stagingDir := filepath.Join(tempDir, "restore_staging")
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
 		return nil, &PipelineError{Code: "internal", Message: "mkdir staging", Cause: err}
 	}
-
 	if err := restic.Restore(ctx, d.Exec, opts, execDB.SnapshotID, stagingDir, nil); err != nil {
 		return nil, &PipelineError{Code: "restore_failed", Message: "restic restore snapshot failed", Cause: err}
 	}
 
 	manifestPath, artifactRoot, err := findRestoredManifest(stagingDir)
 	if err != nil {
-		return nil, &PipelineError{Code: "restore_verification_failed", Message: "locate manifest failed", Cause: err}
+		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "locate manifest failed", Cause: err}
 	}
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return nil, &PipelineError{Code: "restore_verification_failed", Message: "read manifest failed", Cause: err}
+		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "read manifest failed", Cause: err}
 	}
 	var manifest backup.Manifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, &PipelineError{Code: "restore_verification_failed", Message: "unmarshal manifest", Cause: err}
+		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "unmarshal manifest", Cause: err}
 	}
 	if manifest.Adapter != task.Kind {
-		return nil, &PipelineError{Code: "restore_verification_failed", Message: "manifest adapter mismatch: " + manifest.Adapter}
+		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "manifest adapter mismatch: " + manifest.Adapter}
 	}
-	for _, dbe := range manifest.Databases {
-		if dbe.File == "" || dbe.File == ".." || filepath.IsAbs(dbe.File) || filepath.Clean(dbe.File) != dbe.File || strings.HasPrefix(dbe.File, ".."+string(filepath.Separator)) {
-			return nil, &PipelineError{Code: "restore_verification_failed", Message: "manifest contains an unsafe artifact path"}
-		}
-		artifactPath := filepath.Join(artifactRoot, dbe.File)
-		if info, statErr := os.Stat(artifactPath); statErr != nil || !info.Mode().IsRegular() {
-			return nil, &PipelineError{Code: "restore_verification_failed", Message: "manifest artifact is missing or not a regular file"}
-		}
+	// 单库范围：多库、globals 与 all 快照在这里被拒绝，目标尚未被触碰。
+	artifact, err := singleDatabaseArtifact(&manifest, artifactRoot)
+	if err != nil {
+		return nil, &PipelineError{Code: model.ErrUnsupportedRestoreManifest, Message: err.Error(), Cause: err}
 	}
 
 	if dryRun {
@@ -344,24 +370,270 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 		return &Result{ResultJSON: resultJSON}, nil
 	}
 
-	restoreSpec := &backup.RestoreSpec{
-		SnapshotID: execDB.SnapshotID,
-		Kind:       task.Kind,
-		StagingDir: artifactRoot,
-		Database:   &execDB,
-		Secrets:    secrets,
-		Tools:      d.Tools,
-		Logf:       d.Logf,
-		Progress:   d.Progress,
-		Exec:       d.Exec,
+	if task.RunID == "" {
+		return nil, &PipelineError{Code: "invalid_params", Message: "restore task is missing its run id"}
 	}
-	if err := adapter.Restore(ctx, restoreSpec); err != nil {
-		return nil, &PipelineError{Code: "restore_verification_failed", Message: "adapter restore failed", Cause: err}
+
+	unlock, err := databaseRestoreLock(ctx)
+	if err != nil {
+		return nil, &PipelineError{Code: model.ErrCancelled, Message: "database restore cancelled while waiting for the local mutex", Cause: err}
+	}
+	defer unlock()
+
+	spec := &backup.RestoreSpec{
+		SnapshotID:       execDB.SnapshotID,
+		Kind:             task.Kind,
+		StagingDir:       artifactRoot,
+		Database:         &execDB,
+		Secrets:          secrets,
+		Tools:            d.Tools,
+		Logf:             d.Logf,
+		Progress:         d.Progress,
+		Exec:             d.Exec,
+		RunID:            task.RunID,
+		ArtifactFile:     artifact.file,
+		ArtifactDatabase: artifact.database,
+		ArtifactFormat:   artifact.format,
+	}
+
+	// 存在性判断：权限/连接错误必须失败，不能被当作“目标不存在”。
+	exists, err := engine.TargetExists(ctx, spec)
+	if err != nil {
+		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "cannot determine whether the target exists", Cause: err}
+	}
+	if exists && !execDB.ReplaceExisting {
+		return nil, &PipelineError{Code: model.ErrRestoreTargetNotEmpty, Message: "target already exists and overwrite is not enabled"}
+	}
+	spec.TargetIsNew = !exists
+
+	// 覆盖旧目标前先做可定位的保护备份；在它写入并返回快照 ID 之前绝不修改目标。
+	protectionSnapshotID := ""
+	if exists {
+		d.Progress(model.Progress{Phase: model.RestorePhasePreBackup})
+		snapID, backupErr := uploadProtectionBackup(ctx, d, opts, tempDir, task, &execDB, secrets)
+		if backupErr != nil {
+			return nil, &PipelineError{
+				Code:    model.ErrPreRestoreBackupFailed,
+				Message: "pre-restore protection backup failed; target was not modified",
+				Cause:   backupErr,
+				ResultJSON: restoreResultJSON(model.RestorePhasePreBackupFailed, ""),
+			}
+		}
+		protectionSnapshotID = snapID
+		// 提前把保护快照 ID 上报给服务端，供展示与防删定位（不承担唯一依据）。
+		d.Progress(model.Progress{
+			Phase:      model.RestorePhasePreBackup,
+			DetailJSON: string(restoreResultJSON(model.RestorePhasePreBackup, snapID)),
+		})
+	}
+
+	d.Progress(model.Progress{Phase: model.RestorePhaseRestoring})
+	if importErr := engine.Import(ctx, spec); importErr != nil {
+		phase, rollbackErr := rollbackDatabaseRestore(d, opts, tempDir, engine, spec, protectionSnapshotID)
+		message := "database import failed: " + importErr.Error()
+		if rollbackErr != nil {
+			message += "; rollback also failed: " + rollbackErr.Error()
+		}
+		return nil, &PipelineError{
+			Code:       rollbackFailureCode(phase),
+			Message:    message,
+			Cause:      importErr,
+			ResultJSON: restoreResultJSON(phase, protectionSnapshotID),
+		}
+	}
+	if verifyErr := engine.VerifyRestored(ctx, spec); verifyErr != nil {
+		phase, rollbackErr := rollbackDatabaseRestore(d, opts, tempDir, engine, spec, protectionSnapshotID)
+		message := "database restore verification failed: " + verifyErr.Error()
+		if rollbackErr != nil {
+			message += "; rollback also failed: " + rollbackErr.Error()
+		}
+		return nil, &PipelineError{
+			Code:       rollbackFailureCode(phase),
+			Message:    message,
+			Cause:      verifyErr,
+			ResultJSON: restoreResultJSON(phase, protectionSnapshotID),
+		}
 	}
 
 	os.RemoveAll(stagingDir)
-	return &Result{}, nil
+	return &Result{
+		ResultJSON: restoreResultJSON(model.RestorePhaseSucceeded, protectionSnapshotID),
+	}, nil
 }
+
+// rollbackFailureCode 根据回滚结果选择稳定错误码：回滚成功说明目标已回到
+// 修改前状态（验证失败），回滚失败则必须以 rollback_failed 暴露。
+func rollbackFailureCode(phase string) string {
+	switch phase {
+	case model.RestorePhaseRolledBack, model.RestorePhaseNewTargetCleaned:
+		return model.ErrRestoreVerification
+	default:
+		return model.ErrRollbackFailed
+	}
+}
+
+// restoreResultJSON 构造安全恢复结果的非秘密载荷。
+func restoreResultJSON(phase, rollbackSnapshotID string) []byte {
+	payload := map[string]string{"phase": phase}
+	if rollbackSnapshotID != "" {
+		payload["rollback_snapshot_id"] = rollbackSnapshotID
+	}
+	data, _ := json.Marshal(payload)
+	return data
+}
+
+// manifestArtifact 是本 run 唯一需要导入的产物。
+type manifestArtifact struct {
+	file     string
+	database string
+	format   string
+}
+
+// singleDatabaseArtifact 校验快照只包含一个可导入的库，并返回产物路径。
+// 多库、globals 与 "all" 快照一律拒绝：整实例还原不开放。
+func singleDatabaseArtifact(manifest *backup.Manifest, artifactRoot string) (manifestArtifact, error) {
+	if len(manifest.Databases) == 0 {
+		return manifestArtifact{}, errors.New("snapshot contains no database export")
+	}
+	if len(manifest.Databases) > 1 {
+		return manifestArtifact{}, fmt.Errorf("snapshot contains %d database exports; only single-database restores are supported", len(manifest.Databases))
+	}
+	exp := manifest.Databases[0]
+	if exp.Database == "globals" || exp.Database == "all" {
+		return manifestArtifact{}, fmt.Errorf("snapshot scope %q is not supported", exp.Database)
+	}
+	if exp.File == "" || exp.File == ".." || filepath.IsAbs(exp.File) || filepath.Clean(exp.File) != exp.File || strings.HasPrefix(exp.File, ".."+string(filepath.Separator)) {
+		return manifestArtifact{}, errors.New("manifest contains an unsafe artifact path")
+	}
+	path := filepath.Join(artifactRoot, exp.File)
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		return manifestArtifact{}, errors.New("manifest artifact is missing or not a regular file")
+	}
+	return manifestArtifact{file: path, database: exp.Database, format: exp.Format}, nil
+}
+
+// uploadProtectionBackup 把目标现状导出并上传到来源仓库，返回保护快照 ID。
+// 只打 restore-protection:<runID> 与 kind:<kind> 标签，不加 plan:/run:，
+// 以免被保留策略或孤儿扫描认领。
+func uploadProtectionBackup(ctx context.Context, d Deps, opts restic.Options, tempDir string, task model.RestoreTask, target *model.DatabaseRestore, secrets backup.SecretBundle) (string, error) {
+	adapter, ok := backup.For(task.Kind)
+	if !ok {
+		return "", fmt.Errorf("unknown kind: %s", task.Kind)
+	}
+	backupDir := filepath.Join(tempDir, "protection_backup")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		return "", fmt.Errorf("mkdir protection backup: %w", err)
+	}
+	source, err := protectionSource(task.Kind, target)
+	if err != nil {
+		return "", err
+	}
+	rc := &backup.RunContext{
+		RunID:    task.RunID,
+		Task:     model.BackupTask{PlanID: task.RunID, Kind: task.Kind, Repository: task.Repository, Source: source},
+		Secrets:  secrets,
+		TempDir:  backupDir,
+		Exec:     d.Exec,
+		Logf:     d.Logf,
+		Progress: d.Progress,
+	}
+	artifact, err := adapter.Backup(ctx, rc)
+	if err != nil {
+		return "", fmt.Errorf("export target for protection backup: %w", err)
+	}
+	paths := artifact.LivePaths
+	if artifact.StagingDir != "" {
+		paths = []string{artifact.StagingDir}
+	}
+	if len(paths) == 0 {
+		return "", errors.New("protection backup produced no paths")
+	}
+	d.Progress(model.Progress{Phase: model.RestorePhasePreBackup})
+	snapshotID, _, err := restic.Backup(ctx, d.Exec, opts, paths, artifact.ExcludeFile,
+		[]string{restoreProtectionTagPrefix + task.RunID, "kind:" + task.Kind}, artifact.OneFileSystem, nil)
+	if err != nil {
+		return "", fmt.Errorf("upload protection backup: %w", err)
+	}
+	if snapshotID == "" {
+		return "", errors.New("protection backup returned no snapshot id")
+	}
+	return snapshotID, nil
+}
+
+// restoreProtectionTagPrefix 与 server 端保护标签保持一致。
+const restoreProtectionTagPrefix = "restore-protection:"
+
+// protectionSource 由恢复目标构造备份源：保护备份导出的必须是目标现状。
+func protectionSource(kind string, target *model.DatabaseRestore) (model.PlanSource, error) {
+	switch kind {
+	case model.KindSQLite:
+		if target.TargetDatabase == "" {
+			return model.PlanSource{}, errors.New("sqlite protection backup needs the target path")
+		}
+		return model.PlanSource{Path: target.TargetDatabase}, nil
+	case model.KindPostgreSQL, model.KindMySQL, model.KindMongoDB:
+		if target.TargetDatabase == "" || target.TargetDatabase == "all" {
+			return model.PlanSource{}, errors.New("protection backup requires a single target database")
+		}
+		return model.PlanSource{
+			Host:       target.TargetHost,
+			Port:       target.TargetPort,
+			Username:   target.TargetUsername,
+			Database:   target.TargetDatabase,
+			AuthSource: target.TargetAuthSource,
+		}, nil
+	default:
+		return model.PlanSource{}, fmt.Errorf("kind %s has no protection backup source", kind)
+	}
+}
+
+// rollbackDatabaseRestore 尽力把目标恢复到修改前状态，返回最终 phase。
+// 使用独立的有界 context：调用方的取消不能打断回滚。
+func rollbackDatabaseRestore(d Deps, opts restic.Options, tempDir string, engine backup.DatabaseRestorer, spec *backup.RestoreSpec, protectionSnapshotID string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), rollbackBudget)
+	defer cancel()
+	d.Progress(model.Progress{Phase: model.RestorePhaseRollingBack})
+
+	if spec.TargetIsNew {
+		if err := engine.RemoveTarget(ctx, spec); err != nil {
+			d.Logf("error", "removing the newly created target failed: %v", err)
+			return model.RestorePhaseRollbackFailed, err
+		}
+		spec.TargetIsNew = false
+		return model.RestorePhaseNewTargetCleaned, nil
+	}
+	if protectionSnapshotID == "" {
+		// 没有保护快照就没有可信的回滚来源。
+		return model.RestorePhaseRollbackFailed, errors.New("no protection snapshot available for rollback")
+	}
+	rollbackDir := filepath.Join(tempDir, "rollback_staging")
+	if err := os.RemoveAll(rollbackDir); err != nil {
+		return model.RestorePhaseRollbackFailed, err
+	}
+	if err := os.MkdirAll(rollbackDir, 0o700); err != nil {
+		return model.RestorePhaseRollbackFailed, err
+	}
+	if err := restic.Restore(ctx, d.Exec, opts, protectionSnapshotID, rollbackDir, nil); err != nil {
+		return model.RestorePhaseRollbackFailed, fmt.Errorf("restore protection snapshot: %w", err)
+	}
+	_, artifactRoot, err := findRestoredManifest(rollbackDir)
+	if err != nil {
+		return model.RestorePhaseRollbackFailed, fmt.Errorf("locate protection manifest: %w", err)
+	}
+	restoreSpec := *spec
+	restoreSpec.StagingDir = artifactRoot
+	restoreSpec.TargetIsNew = false
+	if err := engine.Import(ctx, &restoreSpec); err != nil {
+		return model.RestorePhaseRollbackFailed, fmt.Errorf("re-import protection data: %w", err)
+	}
+	if err := engine.VerifyRestored(ctx, &restoreSpec); err != nil {
+		return model.RestorePhaseRollbackFailed, fmt.Errorf("verify rollback: %w", err)
+	}
+	return model.RestorePhaseRolledBack, nil
+}
+
+// rollbackBudget 是回滚的独立预算；超时不等于安全回滚，必须上报失败。
+const rollbackBudget = 2 * time.Minute
 
 func findRestoredManifest(root string) (manifestPath, artifactRoot string, err error) {
 	var found string

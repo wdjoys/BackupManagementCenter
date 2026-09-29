@@ -22,12 +22,22 @@ import (
 // processJob / checkTimeouts are implemented; anything else panics loudly.
 type fakeStore struct {
 	store.Store
-	mu              sync.Mutex
-	runs            map[string]*model.Run
-	transitionError error
+	mu               sync.Mutex
+	runs             map[string]*model.Run
+	restoreRequests  map[string]*model.RestoreRequest // by run id
+	stopDeadlines    map[string]time.Time
+	finishedRestores []store.FinishRestoreRunInput
+	repoBlocked      bool
+	transitionError  error
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{runs: make(map[string]*model.Run)} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		runs:            make(map[string]*model.Run),
+		restoreRequests: make(map[string]*model.RestoreRequest),
+		stopDeadlines:   make(map[string]time.Time),
+	}
+}
 
 func (f *fakeStore) addRun(r model.Run) {
 	f.mu.Lock()
@@ -55,6 +65,69 @@ func (f *fakeStore) GetRun(_ context.Context, id string) (*model.Run, error) {
 
 func (f *fakeStore) GetPlan(_ context.Context, _ string) (*model.Plan, error) {
 	return nil, store.ErrNotFound
+}
+
+func (f *fakeStore) GetRestoreRequestByRunID(_ context.Context, runID string) (*model.RestoreRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if rr, ok := f.restoreRequests[runID]; ok {
+		cp := *rr
+		return &cp, nil
+	}
+	return nil, store.ErrNotFound
+}
+
+func (f *fakeStore) RepositoryRestoreBlocked(_ context.Context, _, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.repoBlocked, nil
+}
+
+func (f *fakeStore) RequestRestoreStop(_ context.Context, runID string, deadline time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopDeadlines[runID] = deadline
+	return nil
+}
+
+func (f *fakeStore) FinishRestoreRun(_ context.Context, in store.FinishRestoreRunInput) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.runs[in.RunID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if r.Status == model.RunSucceeded || r.Status == model.RunFailed || r.Status == model.RunCancelled {
+		return nil
+	}
+	r.Status = in.ToStatus
+	finished := in.FinishedAt
+	r.FinishedAt = &finished
+	r.ErrorCode = in.ErrorCode
+	r.ErrorMessage = in.ErrorMessage
+	if rr, ok := f.restoreRequests[in.RunID]; ok && in.Phase != "" {
+		rr.Phase = in.Phase
+	}
+	f.finishedRestores = append(f.finishedRestores, in)
+	return nil
+}
+
+func (f *fakeStore) DeleteRunSecrets(context.Context, string) error { return nil }
+
+func (f *fakeStore) ProtectedRestoreSnapshotIDs(context.Context, string) (map[string]struct{}, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) ActiveDatabaseRestoreRunID(context.Context) (string, error) { return "", nil }
+
+func (f *fakeStore) CreateDatabaseRestoreRun(context.Context, *model.Run, *model.RestoreRequest) error {
+	return nil
+}
+
+func (f *fakeStore) UpdateRestoreRollbackSnapshot(context.Context, string, string) error { return nil }
+
+func (f *fakeStore) ResolveRestoreRequest(context.Context, string, string, string, string, time.Time) error {
+	return nil
 }
 
 func (f *fakeStore) MaxRunLogSeq(_ context.Context, _ string) (uint64, error) {

@@ -32,6 +32,10 @@ type Server struct {
 	PublicURL string
 	// Reg is the agent connection registry; revoke kicks live streams.
 	Reg *agentreg.Registry
+	// DatabaseRestoreKinds lists the database kinds whose restore path has been
+	// verified on this deployment. Anything else is refused with 503: database
+	// restores overwrite data and stay opt-in.
+	DatabaseRestoreKinds map[string]bool
 	// Ready reports overall server readiness for /health/ready.
 	Ready  func() bool
 	rateMu sync.Mutex
@@ -144,6 +148,7 @@ func New(s *Server) http.Handler {
 			r.Post("/restores/dry-run", s.handleDryRunRestore)
 			r.Post("/restores", s.handleStartRestore)
 			r.Get("/restores", s.handleListRestores)
+			r.Post("/restores/{id}/resolve", s.handleResolveRestore)
 			r.Get("/settings/telegram", s.handleGetTelegramSettings)
 			r.Put("/settings/telegram", s.handlePutTelegramSettings)
 		})

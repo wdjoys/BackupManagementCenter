@@ -177,7 +177,7 @@ func Snapshots(ctx context.Context, exec backup.Executor, opts Options) ([]Snaps
 		func(line string) { stdout.WriteString(line); stdout.WriteByte('\n') },
 		func(line string) { stderrTail.WriteString(line + "\n") })
 	if exitCode != 0 {
-		return nil, enriched(mapResticError(exitCode, err), stderrTail.String())
+		return nil, resticRunError(exitCode, err, stderrTail.String())
 	}
 	raw := strings.TrimSpace(stdout.String())
 	if raw == "" {
@@ -622,6 +622,33 @@ func mapResticError(exitCode int, err error) error {
 		return &ResticError{ExitCode: exitCode, Code: "restic_failed", Err: err}
 	}
 	return &ResticError{ExitCode: exitCode, Code: "restic_failed", Err: fmt.Errorf("exit %d", exitCode)}
+}
+
+// missingRepositoryMarkers 是 restic 在仓库不存在时打印的稳定文本。
+// 本地后端返回 exit 10，但 rclone/sftp 等后端只返回 exit 1，因此必须按文本
+// 兜底分类，否则 EnsureRepository 永远走不到 init 分支。
+var missingRepositoryMarkers = []string{
+	"unable to open config file",
+	"does not exist\nIs there a repository",
+	"Is there a repository at the following location",
+}
+
+// resticRunError 把退出码与输出一起分类：先按退出码映射，再对 rclone 等
+// 非本地后端用输出文本识别“仓库不存在”。
+func resticRunError(exitCode int, cause error, output string) error {
+	classified := mapResticError(exitCode, cause)
+	if exitCode != 0 {
+		var re *ResticError
+		if errors.As(classified, &re) && re.Code == "restic_failed" {
+			for _, marker := range missingRepositoryMarkers {
+				if strings.Contains(output, marker) {
+					re.Code = model.ErrRepositoryMissing
+					break
+				}
+			}
+		}
+	}
+	return enriched(classified, output)
 }
 
 // ResticError carries exit code and mapped error code.

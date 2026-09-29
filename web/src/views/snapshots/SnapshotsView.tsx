@@ -7,6 +7,7 @@ import type {
   Agent,
   Plan,
   Repository,
+  RestoreResponse,
   Snapshot,
   SnapshotDeletionResponse,
   TreeEntry,
@@ -20,9 +21,9 @@ import {
   ALL_PLANS_FILTER,
   DELETED_PLANS_FILTER,
   UNASSIGNED_PLAN_FILTER,
+  hashConfirmation,
   type BreadcrumbPart,
   type DryRunResult,
-  type RestoreResponse,
   type SnapshotView,
 } from './Types'
 import {
@@ -40,7 +41,13 @@ import {
 import { SnapshotFilters } from './SnapshotFilters'
 import { SnapshotList } from './SnapshotList'
 import { SnapshotDetailSheet } from './SnapshotDetailSheet'
-import { SnapshotRestoreDialogs } from './SnapshotRestoreDialogs'
+import {
+  SnapshotRestoreDialogs,
+  type DatabaseRestoreFormState,
+} from './SnapshotRestoreDialogs'
+
+type RestoreKind = 'filesystem' | 'postgresql' | 'mysql' | 'mongodb' | 'sqlite'
+const RESTORE_KINDS: readonly RestoreKind[] = ['filesystem', 'postgresql', 'mysql', 'mongodb', 'sqlite']
 
 export const SnapshotsView: React.FC = () => {
   const { t } = useTranslation()
@@ -84,6 +91,18 @@ export const SnapshotsView: React.FC = () => {
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null)
   const [restoreLoading, setRestoreLoading] = useState(false)
 
+  // 目标 Agent（跨 Agent 恢复）与数据库恢复表单
+  const [targetAgentId, setTargetAgentId] = useState('')
+  const [databaseForm, setDatabaseForm] = useState<DatabaseRestoreFormState>({
+    host: '',
+    port: '',
+    username: '',
+    database: '',
+    authSource: '',
+    password: '',
+    overwrite: false,
+  })
+
   // Restore Confirmation Prompt Dialog
   const [confirmPromptOpen, setConfirmPromptOpen] = useState(false)
   const [confirmationInput, setConfirmationInput] = useState('')
@@ -122,23 +141,6 @@ export const SnapshotsView: React.FC = () => {
     () => hostPathRoots(restorePathMappings),
     [restorePathMappings]
   )
-
-  const restoreTargetValidationMessage = useMemo(() => {
-    const trimmed = restoreTargetPath.trim()
-    if (!trimmed) return null
-    if (!isAbsolutePath(trimmed)) {
-      return t('snapshots.validation.absolutePathRequired')
-    }
-    if (!isWithinMappedRoot(trimmed, restorePathMappings)) {
-      return t('snapshots.validation.pathOutsideAllowedRoots')
-    }
-    return null
-  }, [restoreTargetPath, restoreHostRoots, t])
-
-  const restoreTargetValid = useMemo(() => {
-    const trimmed = restoreTargetPath.trim()
-    return Boolean(trimmed && !restoreTargetValidationMessage)
-  }, [restoreTargetPath, restoreTargetValidationMessage])
 
   const repositoryPlans = useMemo(() => {
     if (!selectedRepo) return []
@@ -210,30 +212,93 @@ export const SnapshotsView: React.FC = () => {
     return selectedSnapshot ? snapshotView(selectedSnapshot) : null
   }, [selectedSnapshot, plans, selectedAgent, t])
 
+  const selectedRestoreKind = useMemo<RestoreKind>(() => {
+    const kind = selectedSnapshotView?.kind
+    return (RESTORE_KINDS as readonly string[]).includes(kind ?? '') ? (kind as RestoreKind) : 'filesystem'
+  }, [selectedSnapshotView])
+
+  // 只列出在线且未撤销的 Agent：目标 Agent 必须在线才能执行恢复。
+  const targetAgents = useMemo(
+    () => agents.filter((a) => a.status === 'online' && !a.revoked),
+    [agents]
+  )
+
+  // 目标 Agent 的路径映射决定文件/SQLite 目标路径的合法根。
+  const targetAgent = useMemo(
+    () => agents.find((a) => a.id === targetAgentId),
+    [agents, targetAgentId]
+  )
+  const targetRestorePathMappings = useMemo(
+    () => (targetAgent ? targetAgent.restore_path_mappings : restorePathMappings),
+    [targetAgent, restorePathMappings]
+  )
+  const targetRestoreHostRoots = useMemo(
+    () => hostPathRoots(targetRestorePathMappings),
+    [targetRestorePathMappings]
+  )
+
+  // 目标 Agent 的映射优先；未选择目标时回落到来源 Agent 的映射。
+  const restoreTargetValidationMessage = useMemo(() => {
+    const trimmed = restoreTargetPath.trim()
+    if (!trimmed) return null
+    if (!isAbsolutePath(trimmed)) {
+      return t('snapshots.restoreDialog.absolutePathRequired')
+    }
+    if (!isWithinMappedRoot(trimmed, targetRestorePathMappings)) {
+      return t('snapshots.restoreDialog.pathOutsideAllowedRoots')
+    }
+    return null
+  }, [restoreTargetPath, targetRestorePathMappings, t])
+
+  const restoreTargetValid = useMemo(() => {
+    const trimmed = restoreTargetPath.trim()
+    return Boolean(trimmed && !restoreTargetValidationMessage)
+  }, [restoreTargetPath, restoreTargetValidationMessage])
+
+  const databaseFormError = useMemo(() => {
+    if (selectedRestoreKind === 'filesystem') return null
+    const database = databaseForm.database.trim()
+    if (!database) return t('snapshots.restoreDialog.databaseRequired')
+    if (database.toLowerCase() === 'all') return t('snapshots.restoreDialog.allNotAllowed')
+    if (selectedRestoreKind === 'sqlite') {
+      if (!isAbsolutePath(database)) return t('snapshots.restoreDialog.absolutePathRequired')
+      if (!isWithinMappedRoot(database, targetRestorePathMappings)) {
+        return t('snapshots.restoreDialog.pathOutsideAllowedRoots')
+      }
+      return null
+    }
+    if (!databaseForm.host.trim() || !databaseForm.username.trim()) {
+      return t('snapshots.restoreDialog.databaseRequired')
+    }
+    const port = Number(databaseForm.port)
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      return t('snapshots.restoreDialog.portInvalid')
+    }
+    return null
+  }, [selectedRestoreKind, databaseForm, targetRestorePathMappings, t])
+
   const canDelete = Boolean(
     serverConfirmedHit && !snapshotsLoading && !snapshotsVerifying
   )
 
+  // 恢复入口只依赖服务端已验证的列表（不是浏览器内存缓存）；文件恢复还需要
+  // 已验证的目录树。来源 Agent 离线但有有效列表时同样可开启（跨 Agent 恢复）。
   const canRestore = useMemo(() => {
-    return Boolean(
-      selectedSnapshotView?.kind === 'filesystem' &&
-      selectedSnapshot &&
-      selectedRepo?.agent_id &&
-      serverConfirmedHit &&
-      treeServerConfirmedHit &&
-      !snapshotsLoading &&
-      !snapshotsVerifying &&
-      !treeLoading &&
-      !treeVerifying
-    )
+    const kind = selectedSnapshotView?.kind
+    if (!kind || !selectedSnapshot || !selectedRepo) return false
+    if (!serverConfirmedHit || snapshotsLoading || snapshotsVerifying) return false
+    if (kind === 'filesystem') {
+      return Boolean(treeServerConfirmedHit && !treeLoading && !treeVerifying)
+    }
+    return RESTORE_KINDS.includes(kind as RestoreKind)
   }, [
     selectedSnapshotView,
     selectedSnapshot,
     selectedRepo,
     serverConfirmedHit,
-    treeServerConfirmedHit,
     snapshotsLoading,
     snapshotsVerifying,
+    treeServerConfirmedHit,
     treeLoading,
     treeVerifying,
   ])
@@ -729,11 +794,51 @@ export const SnapshotsView: React.FC = () => {
   // Restore Wizard
   const openRestoreWizard = () => {
     if (!selectedSnapshot || !canRestore) return
+    // 来源在线时默认来源 Agent；离线时默认第一个可用目标；没有在线目标则禁用。
+    const preferred =
+      selectedRepo?.agent_id && targetAgents.some((a) => a.id === selectedRepo.agent_id)
+        ? selectedRepo.agent_id
+        : (targetAgents[0]?.id ?? '')
+    setTargetAgentId(preferred)
     setRestoreTargetPath('')
     setOverwriteMode('never')
     setSelectedIncludePaths([...treeSelectedPaths])
     setDryRunResult(null)
+    setConfirmationInput('')
+    setDatabaseForm({
+      host: '',
+      port: '',
+      username: '',
+      database: '',
+      authSource: '',
+      password: '',
+      overwrite: false,
+    })
     setRestoreDialogOpen(true)
+  }
+
+  // 切换目标/路径/覆盖模式/快照时清除旧的试运行与确认数据，避免复用过期结论。
+  const handleTargetAgentChange = (id: string) => {
+    setTargetAgentId(id)
+    setDryRunResult(null)
+    setConfirmationInput('')
+  }
+
+  const handleRestoreTargetPathChange = (value: string) => {
+    setRestoreTargetPath(value)
+    setDryRunResult(null)
+    setConfirmationInput('')
+  }
+
+  const handleOverwriteModeChange = (mode: 'never' | 'if-changed' | 'always') => {
+    setOverwriteMode(mode)
+    setDryRunResult(null)
+    setConfirmationInput('')
+  }
+
+  const handleDatabaseFormChange = (patch: Partial<DatabaseRestoreFormState>) => {
+    setDatabaseForm((prev) => ({ ...prev, ...patch }))
+    setConfirmationInput('')
   }
 
   const handleDryRun = async () => {
@@ -747,6 +852,7 @@ export const SnapshotsView: React.FC = () => {
         include_paths: selectedIncludePaths,
         target_path: restoreTargetPath.trim(),
         overwrite_mode: overwriteMode,
+        target_agent_id: targetAgentId || undefined,
       })
       setDryRunResult(res)
       toastSuccess(t('snapshots.messages.dryRunCompleted'))
@@ -758,36 +864,89 @@ export const SnapshotsView: React.FC = () => {
   }
 
   const openConfirmPrompt = () => {
+    if (!selectedSnapshot || !selectedRepoId) return
+    if (selectedRestoreKind === 'filesystem') {
+      if (!dryRunResult || !restoreTargetValid) {
+        toastWarning(t('snapshots.messages.dryRunRequired'))
+        return
+      }
+    } else if (databaseFormError) {
+      toastWarning(databaseFormError)
+      return
+    }
     setConfirmationInput('')
     setConfirmPromptOpen(true)
   }
 
   const handleExecuteRestore = async () => {
-    if (!selectedSnapshot || !selectedRepoId || !dryRunResult || !restoreTargetValid) return
-    if (!confirmationInput.trim()) {
+    if (!selectedSnapshot || !selectedRepoId) return
+    const typed = confirmationInput.trim()
+    if (!typed) {
       toastWarning(t('snapshots.prompt.inputRequired'))
       return
     }
 
     setRestoreLoading(true)
     try {
+      let body: Record<string, unknown>
+      if (selectedRestoreKind === 'filesystem') {
+        if (!dryRunResult || !restoreTargetValid) return
+        body = {
+          repository_id: selectedRepoId,
+          snapshot_id: selectedSnapshot.id,
+          restore_kind: 'filesystem',
+          target: {
+            target_path: restoreTargetPath.trim(),
+            include_paths: selectedIncludePaths,
+            overwrite_mode: overwriteMode,
+          },
+          overwrite: overwriteMode !== 'never',
+          confirmation: typed,
+        }
+      } else {
+        if (databaseFormError) {
+          toastWarning(databaseFormError)
+          return
+        }
+        const database =
+          selectedRestoreKind === 'sqlite' ? databaseForm.database.trim() : databaseForm.database.trim()
+        // 覆盖与新建都需要显式确认：确认值必须等于目标名称/完整路径，
+        // 服务端用 HashToken 重新校验，这里发送等价 SHA-256。
+        const expected = database
+        if (typed !== expected) {
+          toastWarning(t('snapshots.prompt.confirmationMismatch', { expected }))
+          return
+        }
+        const confirmation = await hashConfirmation(expected)
+        body = {
+          repository_id: selectedRepoId,
+          snapshot_id: selectedSnapshot.id,
+          restore_kind: selectedRestoreKind,
+          target: {
+            ...(selectedRestoreKind === 'sqlite'
+              ? { database }
+              : {
+                  host: databaseForm.host.trim(),
+                  port: Number(databaseForm.port),
+                  username: databaseForm.username.trim(),
+                  database,
+                  ...(databaseForm.authSource.trim() ? { auth_source: databaseForm.authSource.trim() } : {}),
+                }),
+          },
+          overwrite: databaseForm.overwrite,
+          confirmation,
+          ...(databaseForm.password ? { target_password: databaseForm.password } : {}),
+        }
+      }
       const res = await apiPost<RestoreResponse>('/restores', {
-        repository_id: selectedRepoId,
-        snapshot_id: selectedSnapshot.id,
-        restore_kind: 'filesystem',
-        target: {
-          target_path: restoreTargetPath.trim(),
-          include_paths: selectedIncludePaths,
-          overwrite_mode: overwriteMode,
-        },
-        overwrite: overwriteMode !== 'never',
-        confirmation: confirmationInput.trim(),
+        ...body,
+        ...(targetAgentId ? { target_agent_id: targetAgentId } : {}),
       })
       toastSuccess(t('snapshots.messages.restoreInitiated'))
       setConfirmPromptOpen(false)
       setRestoreDialogOpen(false)
       setDetailDrawerOpen(false)
-      navigate(`/runs/${res.run_id}`)
+      navigate(`/runs/${res.run.id}`)
     } catch (err: unknown) {
       toastError(isApiClientError(err) ? err.message : t('snapshots.messages.restoreFailed'))
     } finally {
@@ -875,14 +1034,11 @@ export const SnapshotsView: React.FC = () => {
         restoreDialogOpen={restoreDialogOpen}
         onRestoreDialogOpenChange={setRestoreDialogOpen}
         restoreTargetPath={restoreTargetPath}
-        onRestoreTargetPathChange={(val) => {
-          setRestoreTargetPath(val)
-          setDryRunResult(null)
-        }}
+        onRestoreTargetPathChange={handleRestoreTargetPathChange}
         restoreTargetValidationMessage={restoreTargetValidationMessage}
-        restoreHostRoots={restoreHostRoots}
+        restoreHostRoots={targetRestoreHostRoots.length > 0 ? targetRestoreHostRoots : restoreHostRoots}
         overwriteMode={overwriteMode}
-        onOverwriteModeChange={setOverwriteMode}
+        onOverwriteModeChange={handleOverwriteModeChange}
         selectedIncludePaths={selectedIncludePaths}
         dryRunResult={dryRunResult}
         dryRunLoading={dryRunLoading}
@@ -890,6 +1046,16 @@ export const SnapshotsView: React.FC = () => {
         restoreLoading={restoreLoading}
         onDryRun={handleDryRun}
         onOpenConfirmPrompt={openConfirmPrompt}
+        restoreKind={selectedRestoreKind}
+        targetAgents={targetAgents}
+        targetAgentId={targetAgentId}
+        onTargetAgentIdChange={handleTargetAgentChange}
+        sourceAgentId={selectedRepo?.agent_id ?? ''}
+        sourceAgentOnline={Boolean(selectedAgent && selectedAgent.status === 'online' && !selectedAgent.revoked)}
+        databaseForm={databaseForm}
+        onDatabaseFormChange={handleDatabaseFormChange}
+        databaseFormError={databaseFormError}
+        canDryRun={restoreTargetValid}
         confirmPromptOpen={confirmPromptOpen}
         onConfirmPromptOpenChange={setConfirmPromptOpen}
         selectedSnapshot={selectedSnapshot}

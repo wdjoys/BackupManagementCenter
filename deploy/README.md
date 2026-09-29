@@ -92,7 +92,27 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - **Agent 撤销与恢复**：Web「Agent」页面的「撤销」会立即断开该 Agent 的连接并拒绝其后续重连，但保留其身份与已有仓库、计划、运行记录引用。误操作时可在同页点击「恢复」（等价于 `POST /api/v1/agents/{id}/restore`），恢复后重启 Agent 进程即可用原身份重连，不会产生新的 Agent ID，也不需要重新注册。
 - **数据保留**：日常维护使用 `docker compose down` 停止容器，数据卷不会丢失；**严禁使用 `down -v`**，否则会永久销毁数据库及生成的本地主密钥。
 
-## 6. 管理员密码重置
+## 6. 跨 Agent 恢复与数据库恢复安全边界
+
+「快照与恢复」页面支持把来源 Agent 仓库中的快照恢复到**另一个在线 Agent**（目标 Agent），文件与单库数据库均适用。
+
+- **API 契约**：`POST /api/v1/restores` 与 `POST /api/v1/restores/dry-run` 新增可选 `target_agent_id`。缺省或空值沿用来源仓库所属 Agent（既有调用方行为不变），非空则把恢复 run 绑定到该 Agent。跨 Agent 恢复要求来源仓库 `status=ready`、目标 Agent 存在且在线未撤销。
+- **凭据边界**：仓库路径、rclone 配置与 restic 密码始终来自来源仓库（不重绑、不改仓库路径中的来源 ID），但会**传递给目标 Agent**执行；恢复向导会明确提示这一点。
+- **快照授权**：只能从服务端持久化的**已验证**快照列表/目录缓存中选取（来源 Agent 离线时同样适用），并核对快照指纹、存在性、未隐藏与 `kind:` 标签。缓存缺失、损坏、生成号变化或元数据查询失败一律返回 HTTP 409 `snapshot_list_refresh_required`，要求先刷新列表。
+- **能力授权**：目标 Agent 必须在其**当前连接**上报 `safe_database_restore=true`。连接尚未上报能力返回 409 `agent_capabilities_pending`；明确不支持返回 422 `agent_upgrade_required`，请先升级 Agent。持久化的能力仅用于展示，不作为执行授权。
+- **数据库范围**：整实例还原（`database=all`）同步返回 422 `unsupported_restore_manifest`；来源快照若包含多库或 globals（下载后才能判断），已返回 202 的请求会以 run 错误码 `unsupported_restore_manifest`、`phase=failed` 结束，且目标未被修改。
+- **每种数据库 kind 默认禁用**：数据库恢复会覆盖数据，必须先在**真实隔离实例**上验证预备份与回滚，再通过 `BMC_DATABASE_RESTORE_KINDS=postgresql,mysql,mongodb,sqlite` 逐项启用；未启用的 kind 返回 503 `database_restore_disabled`。`sqlite`（Go 实现）不需要数据库客户端。
+- **全局串行**：同一时间只允许一个数据库恢复（占用从 queued 持续到明确的安全终态）。其他数据库恢复返回 409 `database_restore_busy`；相同参数提交会复用已有任务。`rollback_failed`/`manual_recovery_required` 不释放占用，Server 重启后从持久化状态恢复占用并阻塞对应来源仓库的后续命令。
+- **保护快照**：覆盖已有目标前，先把目标现状导出并上传到**来源仓库**，仅打 `restore-protection:<runID>` 与 `kind:<kind>` 标签（不含 `plan:`/`run:`）。该快照不会被删除请求移除（即使尚无 ID 引用），也不被保留策略与孤儿扫描认领，用于人工定位回滚点。
+- **维护要求（运维前提）**：
+  - 网络数据库：恢复期间必须**隔离外部写入**；导入失败会自动回滚，进程/主机突然中断则记录 `manual_recovery_required`，不承诺跨重启自动回滚。
+  - SQLite：必须**关闭目标数据库的全部连接**并使应用的 WAL 完成 checkpoint；无法建立独占维护窗口时在执行前拒绝。
+  - PostgreSQL：覆盖时完整重建目标库（DROP/CREATE），需要当前角色是 owner 或 superuser，否则在破坏性步骤前拒绝；不修改集群全局角色或其他数据库。
+- **取消与超时**：已下发的恢复在收到取消/超时后先请求 Agent 停止，保持非终态并记录 `cancelling`，等待 Agent 完成回滚/清理并回报结果；超过宽限或失去执行连接后记录 `manual_recovery_required`，绝不自动重试破坏性恢复。
+- **人工解除**：`POST /api/v1/restores/{id}/resolve` 接受 `manual_recovery_required`/`rollback_failed` 的请求，需要 `run_id`、处理说明，以及 `execution_stopped` 与 `target_verified` 两项确认；同一事务写入 `manual_recovery_resolved` 与审计记录。该接口是人工确认，不是自动探测或自动回滚，且不能通过改数据库或重启服务隐式解锁。
+- **升级顺序**：协议仅新增可选 capability 字段与 JSON 字段，Server 必须先升级；旧 Agent 仍可连接并执行原有备份与文件恢复，只是不能作为数据库恢复的目标。
+
+## 7. 管理员密码重置
 
 如果忘记 Server 管理员登录密码，可通过 `backup-center-server reset-admin` 命令清除管理员账号及活跃会话，重新触发 Web 引导初始化流程（此操作不会删除存储目标、备份计划、仓库及运行记录）：
 

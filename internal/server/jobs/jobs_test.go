@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +33,12 @@ type fakeStore struct {
 	restoreRequests map[string]*model.RestoreRequest
 	auditEvents     []model.AuditEvent
 
+	// snapshot cache + hidden state used by restore authorization
+	snapshotCache map[string]*store.SnapshotListCache
+	treeCache     map[string]*store.SnapshotTreeCache
+	hidden        map[string]map[string]struct{}
+	runSecrets    map[string]string
+
 	// simulate duplicate (plan_id, scheduled_at) slot
 	seenSlots map[string]bool // "planID:scheduledAt"
 }
@@ -45,6 +53,10 @@ func newFakeStore() *fakeStore {
 		runs:            make(map[string]*model.Run),
 		restoreRequests: make(map[string]*model.RestoreRequest),
 		seenSlots:       make(map[string]bool),
+		snapshotCache:   make(map[string]*store.SnapshotListCache),
+		treeCache:       make(map[string]*store.SnapshotTreeCache),
+		hidden:          make(map[string]map[string]struct{}),
+		runSecrets:      make(map[string]string),
 	}
 }
 
@@ -226,6 +238,292 @@ func (s *fakeStore) GetRestoreRequestByRunID(ctx context.Context, runID string) 
 	return nil, store.ErrNotFound
 }
 
+func (s *fakeStore) UpdateRestorePhase(ctx context.Context, runID, phase string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rr := range s.restoreRequests {
+		if rr.RunID == runID && !model.RestorePhaseIsTerminal(rr.Phase) {
+			rr.Phase = phase
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) UpdateRestoreRollbackSnapshot(ctx context.Context, runID, snapshotID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rr := range s.restoreRequests {
+		if rr.RunID == runID && rr.RollbackSnapshotID == "" {
+			rr.RollbackSnapshotID = snapshotID
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) CreateDatabaseRestoreRun(ctx context.Context, run *model.Run, rr *model.RestoreRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kinds := map[string]bool{
+		model.KindPostgreSQL: true, model.KindMySQL: true, model.KindMongoDB: true, model.KindSQLite: true,
+	}
+	for _, other := range s.restoreRequests {
+		if !kinds[other.RestoreKind] || model.RestorePhaseReleasesOccupancy(other.Phase) {
+			continue
+		}
+		if existing, ok := s.runs[other.RunID]; ok && existing.DedupKey == run.DedupKey {
+			return store.ErrDuplicateRun
+		}
+		return store.ErrDatabaseRestoreBusy
+	}
+	for _, existing := range s.runs {
+		if existing.DedupKey != "" && existing.DedupKey == run.DedupKey {
+			if existing.Status == model.RunQueued || existing.Status == model.RunDispatched || existing.Status == model.RunRunning {
+				return store.ErrDuplicateRun
+			}
+		}
+	}
+	s.runs[run.ID] = run
+	rr.RunID = run.ID
+	s.restoreRequests[rr.ID] = rr
+	return nil
+}
+
+func (s *fakeStore) ActiveDatabaseRestoreRunID(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kinds := map[string]bool{
+		model.KindPostgreSQL: true, model.KindMySQL: true, model.KindMongoDB: true, model.KindSQLite: true,
+	}
+	for _, rr := range s.restoreRequests {
+		if kinds[rr.RestoreKind] && !model.RestorePhaseReleasesOccupancy(rr.Phase) {
+			return rr.RunID, nil
+		}
+	}
+	return "", nil
+}
+
+func (s *fakeStore) RepositoryRestoreBlocked(ctx context.Context, repositoryID, exceptRunID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rr := range s.restoreRequests {
+		if rr.RunID == exceptRunID || model.RestorePhaseReleasesOccupancy(rr.Phase) {
+			continue
+		}
+		if run, ok := s.runs[rr.RunID]; ok && run.RepositoryID == repositoryID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *fakeStore) ProtectedRestoreSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]struct{}{}
+	for _, rr := range s.restoreRequests {
+		if model.RestorePhaseReleasesOccupancy(rr.Phase) || rr.RollbackSnapshotID == "" {
+			continue
+		}
+		if run, ok := s.runs[rr.RunID]; ok && run.RepositoryID == repositoryID {
+			out[rr.RollbackSnapshotID] = struct{}{}
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) RequestRestoreStop(ctx context.Context, runID string, deadline time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rr := range s.restoreRequests {
+		if rr.RunID == runID && !model.RestorePhaseIsTerminal(rr.Phase) {
+			rr.Phase = model.RestorePhaseCancelling
+		}
+	}
+	if run, ok := s.runs[runID]; ok {
+		d := deadline
+		run.LeaseExpiresAt = &d
+	}
+	return nil
+}
+
+func (s *fakeStore) FinishRestoreRun(ctx context.Context, in store.FinishRestoreRunInput) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[in.RunID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	terminal := run.Status == model.RunSucceeded || run.Status == model.RunFailed || run.Status == model.RunCancelled
+	if !terminal {
+		run.Status = in.ToStatus
+		finished := in.FinishedAt
+		run.FinishedAt = &finished
+		run.ErrorCode = in.ErrorCode
+		run.ErrorMessage = in.ErrorMessage
+		if in.ResultJSON != "" {
+			run.ProgressJSON = in.ResultJSON
+		}
+	}
+	for _, rr := range s.restoreRequests {
+		if rr.RunID != in.RunID {
+			continue
+		}
+		if rr.RollbackSnapshotID == "" {
+			rr.RollbackSnapshotID = in.RollbackSnapshotID
+		}
+		switch {
+		case in.Phase == "":
+		case rr.Phase == model.RestorePhaseManualRecoveryDone:
+		case model.RestorePhaseReleasesOccupancy(rr.Phase) && rr.Phase != in.Phase:
+		default:
+			rr.Phase = in.Phase
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) ResolveRestoreRequest(ctx context.Context, requestID, runID, actorID, note string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rr, ok := s.restoreRequests[requestID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if runID != "" && rr.RunID != runID {
+		return store.ErrRestoreConflict
+	}
+	if rr.Phase != model.RestorePhaseManualRecoveryNeeded && rr.Phase != model.RestorePhaseRollbackFailed {
+		return store.ErrRestoreConflict
+	}
+	rr.Phase = model.RestorePhaseManualRecoveryDone
+	if run, ok := s.runs[rr.RunID]; ok && !model.RestorePhaseIsTerminal(run.Status) {
+		run.Status = model.RunFailed
+		finished := at
+		run.FinishedAt = &finished
+		run.ErrorCode = model.ErrRollbackFailed
+	}
+	return nil
+}
+
+func (s *fakeStore) GetSnapshotListCache(ctx context.Context, repositoryID string) (*store.SnapshotListCache, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.snapshotCache[repositoryID]; ok {
+		return c, nil
+	}
+	return nil, store.ErrNotFound
+}
+
+func (s *fakeStore) GetSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string) (*store.SnapshotTreeCache, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := repositoryID + "/" + snapshotID + "/" + store.NormalizeSnapshotPath(cachePath)
+	if c, ok := s.treeCache[key]; ok {
+		return c, nil
+	}
+	return nil, store.ErrNotFound
+}
+
+func (s *fakeStore) HiddenSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]struct{}, len(s.hidden[repositoryID]))
+	for id := range s.hidden[repositoryID] {
+		out[id] = struct{}{}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) SaveRunTargetPassword(ctx context.Context, runID, password string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runSecrets[runID] = password
+	return nil
+}
+
+func (s *fakeStore) GetRunTargetPassword(ctx context.Context, runID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pw, ok := s.runSecrets[runID]
+	if !ok {
+		return "", store.ErrNotFound
+	}
+	return pw, nil
+}
+
+func (s *fakeStore) DeleteRunSecrets(ctx context.Context, runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.runSecrets, runID)
+	return nil
+}
+
+// seedVerifiedSnapshotCache 写入一份“已验证”的快照列表缓存，供恢复授权测试使用。
+func (s *fakeStore) seedVerifiedSnapshotCache(repositoryID string, snaps []model.Snapshot) {
+	raw, _ := json.Marshal(snaps)
+	s.snapshotCache[repositoryID] = &store.SnapshotListCache{
+		RepositoryID:  repositoryID,
+		Generation:    1,
+		SnapshotsJSON: string(raw),
+		Fingerprint:   store.SnapshotFingerprint(snaps),
+		VerifiedAt:    time.Now().UTC(),
+	}
+}
+
+// seedVerifiedTreeCache 写入一份已验证的目录缓存。
+func (s *fakeStore) seedVerifiedTreeCache(repositoryID, snapshotID, path string, entries []TreeEntry) {
+	raw, _ := json.Marshal(TreeResult{Entries: entries, Path: path})
+	s.treeCache[repositoryID+"/"+snapshotID+"/"+store.NormalizeSnapshotPath(path)] = &store.SnapshotTreeCache{
+		RepositoryID: repositoryID,
+		SnapshotID:   snapshotID,
+		Path:         store.NormalizeSnapshotPath(path),
+		Generation:   1,
+		TreeJSON:     string(raw),
+		VerifiedAt:   time.Now().UTC(),
+	}
+}
+
+func (s *fakeStore) ListDueSnapshotDeletions(ctx context.Context, now time.Time, limit int) ([]model.SnapshotDeletion, error) {
+	return nil, nil
+}
+func (s *fakeStore) ListRunningSnapshotDeletions(ctx context.Context) ([]model.SnapshotDeletion, error) {
+	return nil, nil
+}
+func (s *fakeStore) ClaimSnapshotDeletionRun(ctx context.Context, deletionID string, run *model.Run, leaseUntil time.Time) error {
+	return nil
+}
+func (s *fakeStore) CompleteSnapshotDeletion(ctx context.Context, deletionID string, now time.Time) error {
+	return nil
+}
+func (s *fakeStore) RetrySnapshotDeletion(ctx context.Context, deletionID, errorCode, errorMessage string, nextAttemptAt time.Time) error {
+	return nil
+}
+func (s *fakeStore) GetSnapshotCleanupState(ctx context.Context, repositoryID string) (*model.SnapshotCleanupState, error) {
+	return nil, store.ErrNotFound
+}
+func (s *fakeStore) StartSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, startedAt time.Time) error {
+	return nil
+}
+func (s *fakeStore) FinishSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, snapshots []model.Snapshot, completedAt time.Time) error {
+	return nil
+}
+func (s *fakeStore) ClearSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, nextAttemptAt time.Time) error {
+	return nil
+}
+
+func (s *fakeStore) QueueManualSnapshotDeletion(ctx context.Context, repositoryID, agentID, snapshotID, actorID string, now time.Time) (*model.SnapshotDeletion, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hidden[repositoryID] == nil {
+		s.hidden[repositoryID] = map[string]struct{}{}
+	}
+	s.hidden[repositoryID][snapshotID] = struct{}{}
+	return &model.SnapshotDeletion{
+		ID: "del-" + snapshotID, RepositoryID: repositoryID, AgentID: agentID, SnapshotID: snapshotID,
+		Source: model.SnapshotDeletionManual, State: model.SnapshotDeletionPending, CreatedAt: now, UpdatedAt: now,
+	}, true, nil
+}
+
 func (s *fakeStore) AppendAuditEvent(ctx context.Context, e *model.AuditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -271,7 +569,7 @@ func (s *fakeStore) UpsertAgentOnConnect(ctx context.Context, a *model.Agent) er
 func (s *fakeStore) SetAgentStatus(ctx context.Context, agentID string, st model.AgentStatus, at time.Time) error {
 	return nil
 }
-func (s *fakeStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, sourceMappings []model.PathMapping, restoreMappings []model.PathMapping, at time.Time) error {
+func (s *fakeStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, sourceMappings []model.PathMapping, restoreMappings []model.PathMapping, safeDatabaseRestore bool, at time.Time) error {
 	return nil
 }
 func (s *fakeStore) GetAgentBySecretHash(ctx context.Context, h string) (*model.Agent, error) {
@@ -432,6 +730,42 @@ func fakeKey() []byte {
 	return k
 }
 
+// staticCaps 是固定的连接能力来源，供恢复前置校验测试使用。
+type staticCaps struct {
+	ready     bool
+	safe      bool
+	connected bool
+}
+
+func (c staticCaps) ConnectionCapabilities(string) (bool, bool, bool) {
+	return c.ready, c.safe, c.connected
+}
+
+// allowRestore 让测试 store/dispatcher/orchestrator 满足恢复前置条件。
+func allowRestore(st *fakeStore, disp *fakeDispatcher, o *Orchestrator, repo *model.Repository, snaps ...model.Snapshot) {
+	disp.mu.Lock()
+	disp.connected[repo.AgentID] = true
+	disp.mu.Unlock()
+	o.AgentCaps = staticCaps{ready: true, safe: true, connected: true}
+	st.seedVerifiedSnapshotCache(repo.ID, snaps)
+}
+
+// restoreTestPath 返回当前平台的绝对路径（Windows 开发机上 /tmp 不是绝对路径）。
+func restoreTestPath() string {
+	if filepath.IsAbs("/tmp/bmc-restore-out") {
+		return "/tmp/bmc-restore-out"
+	}
+	return filepath.Join(os.TempDir(), "bmc-restore-out")
+}
+
+func restoreSnapshotList(id, kind string) []model.Snapshot {
+	return []model.Snapshot{restoreSnapshot(id, kind)}
+}
+
+func restoreSnapshot(id, kind string) model.Snapshot {
+	return model.Snapshot{ID: id, Time: time.Now().UTC().Format(time.RFC3339), Tags: []string{"kind:" + kind, "plan:plan-1", "run:run-1"}}
+}
+
 func testAgent() *model.Agent {
 	return &model.Agent{
 		ID:         "agent-1",
@@ -445,6 +779,7 @@ func testAgent() *model.Agent {
 		Capabilities: []model.ToolInfo{
 			{Name: "restic", Path: "/usr/bin/restic"},
 			{Name: "pg_dump", Path: "/usr/bin/pg_dump"},
+			{Name: "pg_restore", Path: "/usr/bin/pg_restore"},
 			{Name: "psql", Path: "/usr/bin/psql"},
 			{Name: "mysqldump", Path: "/usr/bin/mysqldump"},
 			{Name: "mysql", Path: "/usr/bin/mysql"},
@@ -1065,6 +1400,7 @@ func TestStartRestoreReusesQueuedRun(t *testing.T) {
 	target := testTarget(seal)
 	_ = st.CreateStorageTarget(context.Background(), target)
 	repo := testRepo(seal, st, target)
+	allowRestore(st, disp, o, repo, restoreSnapshot("snap-1", model.KindPostgreSQL))
 
 	ctx := context.Background()
 	dbName := "mydb"
@@ -1098,43 +1434,20 @@ func TestStartRestoreReusesQueuedRun(t *testing.T) {
 		t.Fatalf("expected single enqueue of %s, got %v", firstRun.ID, enq)
 	}
 
-	// 目标口令是任务参数：换口令必须是另一个任务，不能复用已有 run
-	// （否则会用错误凭据执行）；相同口令重复提交仍复用同一 run。
+	// 数据库恢复采用全局单任务占用：不同口令、不同目标都不能并行。
 	withPassword := in
 	withPassword.TargetPassword = "secret-1"
-	pwRR, pwRun, err := o.StartRestore(ctx, "admin-1", withPassword)
-	if err != nil {
-		t.Fatalf("StartRestore with credential: %v", err)
+	if _, _, err := o.StartRestore(ctx, "admin-1", withPassword); !errors.Is(err, ErrRestoreBusy) {
+		t.Fatalf("expected ErrRestoreBusy while a database restore is in flight, got %v", err)
 	}
-	if pwRun.ID == firstRun.ID || pwRR.ID == firstRR.ID {
-		t.Fatal("different credential must not reuse the queued run")
-	}
-	if _, again, err := o.StartRestore(ctx, "admin-1", withPassword); err != nil || again.ID != pwRun.ID {
-		t.Fatalf("expected reuse with identical credential, got run=%v err=%v", again, err)
-	}
-
-	otherPassword := withPassword
-	otherPassword.TargetPassword = "secret-2"
-	if _, run, err := o.StartRestore(ctx, "admin-1", otherPassword); err != nil || run.ID == pwRun.ID {
-		t.Fatalf("different password must not reuse the queued run, got run=%v err=%v", run, err)
-	}
-
-	// 不同目标参数可以并存。
-	other := in
-	other.Target.Database = "otherdb"
-	other.Confirmation = secrets.HashToken("otherdb")
-	_, otherRun, err := o.StartRestore(ctx, "admin-1", other)
-	if err != nil {
-		t.Fatalf("StartRestore with other target: %v", err)
-	}
-	if otherRun.ID == firstRun.ID {
-		t.Fatal("different target must not reuse the queued run")
-	}
-
-	// 终态后同样的恢复重新入队。
-	if err := st.TransitionRun(ctx, firstRun.ID, model.RunQueued, model.RunSucceeded, nil); err != nil {
+	if err := st.FinishRestoreRun(ctx, store.FinishRestoreRunInput{
+		RunID: firstRun.ID, ToStatus: model.RunSucceeded, Phase: model.RestorePhaseSucceeded,
+		FinishedAt: time.Now().UTC(),
+	}); err != nil {
 		t.Fatal(err)
 	}
+
+	// 终态（安全）后占用释放：同参数恢复重新入队而非复用旧 run。
 	retryRR, retryRun, err := o.StartRestore(ctx, "admin-1", in)
 	if err != nil {
 		t.Fatalf("StartRestore after success: %v", err)
@@ -1142,12 +1455,29 @@ func TestStartRestoreReusesQueuedRun(t *testing.T) {
 	if retryRun.ID == firstRun.ID || retryRR.ID == firstRR.ID {
 		t.Fatal("succeeded restore must not be reused")
 	}
-	// first(in) + pwRun + otherPassword + other + retry；口令相同的重复提交不重复入队。
-	if enq := disp.Enqueued(); len(enq) != 5 {
-		t.Fatalf("expected 5 enqueues, got %v", enq)
+	// 释放占用后再提交口令变体：口令是任务参数，更换口令必须视为另一任务。
+	if err := st.FinishRestoreRun(ctx, store.FinishRestoreRunInput{
+		RunID: retryRun.ID, ToStatus: model.RunSucceeded, Phase: model.RestorePhaseSucceeded,
+		FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if len(st.runs) != 5 {
-		t.Fatalf("expected 5 runs, got %d", len(st.runs))
+	pwRR, pwRun, err := o.StartRestore(ctx, "admin-1", withPassword)
+	if err != nil {
+		t.Fatalf("StartRestore with credential: %v", err)
+	}
+	if pwRun.ID == retryRun.ID || pwRR.ID == retryRR.ID {
+		t.Fatal("different credential must not reuse a queued run")
+	}
+	if _, again, err := o.StartRestore(ctx, "admin-1", withPassword); err != nil || again.ID != pwRun.ID {
+		t.Fatalf("expected reuse with identical credential, got run=%v err=%v", again, err)
+	}
+	// first + retry + withPassword；相同口令的重复提交不重复入队。
+	if enq := disp.Enqueued(); len(enq) != 3 {
+		t.Fatalf("expected 3 enqueues, got %v", enq)
+	}
+	if len(st.runs) != 3 {
+		t.Fatalf("expected 3 runs, got %d", len(st.runs))
 	}
 }
 
@@ -1163,6 +1493,7 @@ func TestStartRestoreConfirmationHash(t *testing.T) {
 	target := testTarget(seal)
 	st.CreateStorageTarget(context.Background(), target)
 	repo := testRepo(seal, st, target)
+	allowRestore(st, disp, o, repo, restoreSnapshot("snap-1", model.KindPostgreSQL))
 
 	ctx := context.Background()
 	dbName := "mydb"
@@ -1213,6 +1544,7 @@ func TestStartRestoreFilesystemValidation(t *testing.T) {
 	target := testTarget(seal)
 	st.CreateStorageTarget(context.Background(), target)
 	repo := testRepo(seal, st, target)
+	allowRestore(st, disp, o, repo, restoreSnapshot("snap-1", model.KindFilesystem))
 
 	ctx := context.Background()
 

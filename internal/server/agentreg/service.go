@@ -326,7 +326,7 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 				return nil
 			}
 
-			if err := s.handleAgentMessage(stream, agentID, r.msg); err != nil {
+			if err := s.handleAgentMessage(stream, streamCtx, agentID, r.msg); err != nil {
 				log.Printf("error handling agent message from %s: %v", agentID, err)
 			}
 		}
@@ -352,12 +352,14 @@ func (s *Service) sendLoop(ctx context.Context, stream bmcv1.AgentControl_Connec
 }
 
 // handleAgentMessage dispatches an incoming AgentMessage to the appropriate handler.
-func (s *Service) handleAgentMessage(stream bmcv1.AgentControl_ConnectServer, agentID string, msg *bmcv1.AgentMessage) error {
+// streamCtx identifies the connection that produced the message so capability
+// reports and results can be bound to that exact stream.
+func (s *Service) handleAgentMessage(stream bmcv1.AgentControl_ConnectServer, streamCtx context.Context, agentID string, msg *bmcv1.AgentMessage) error {
 	switch p := msg.GetPayload().(type) {
 	case *bmcv1.AgentMessage_Heartbeat:
 		return s.handleHeartbeat(stream.Context(), agentID, p.Heartbeat)
 	case *bmcv1.AgentMessage_CapabilitiesReport:
-		return s.handleCapabilities(stream.Context(), agentID, p.CapabilitiesReport)
+		return s.handleCapabilities(stream.Context(), streamCtx, agentID, p.CapabilitiesReport)
 	case *bmcv1.AgentMessage_CommandAccepted:
 		return s.handleCommandAccepted(stream.Context(), agentID, p.CommandAccepted)
 	case *bmcv1.AgentMessage_RunProgress:
@@ -391,7 +393,10 @@ func (s *Service) handleHeartbeat(ctx context.Context, agentID string, hb *bmcv1
 	return s.store.SetAgentStatus(ctx, agentID, model.AgentOnline, now)
 }
 
-func (s *Service) handleCapabilities(ctx context.Context, agentID string, report *bmcv1.CapabilitiesReport) error {
+func (s *Service) handleCapabilities(ctx context.Context, streamCtx context.Context, agentID string, report *bmcv1.CapabilitiesReport) error {
+	// 只有当前连接上报的报告才构成执行授权；被替换连接的迟到报告会被忽略。
+	s.reg.ReportCapabilities(agentID, streamCtx, report.GetSafeDatabaseRestore())
+
 	tools := make([]model.ToolInfo, 0, len(report.GetTools()))
 	for _, t := range report.GetTools() {
 		tools = append(tools, model.ToolInfo{Name: t.GetName(), Path: t.GetPath(), Version: t.GetVersion()})
@@ -403,7 +408,7 @@ func (s *Service) handleCapabilities(ctx context.Context, agentID string, report
 		}
 		return out
 	}
-	return s.store.SaveAgentCapabilities(ctx, agentID, tools, toMappings(report.GetSourcePathMappings()), toMappings(report.GetRestorePathMappings()), time.Now().UTC())
+	return s.store.SaveAgentCapabilities(ctx, agentID, tools, toMappings(report.GetSourcePathMappings()), toMappings(report.GetRestorePathMappings()), report.GetSafeDatabaseRestore(), time.Now().UTC())
 }
 
 func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca *bmcv1.CommandAccepted) error {
@@ -472,6 +477,34 @@ func (s *Service) handleRunProgress(ctx context.Context, agentID string, rp *bmc
 	}); ok {
 		if err := ps.UpdateRunProgress(ctx, runID, run.ProgressJSON); err != nil {
 			return err
+		}
+	}
+
+	// 恢复进度可能携带预备份快照 ID 与阶段；两者都只用于提前展示与防删定位，
+	// 不能作为可恢复性的唯一依据。
+	if run.Operation == model.OpRestore {
+		if detail := rp.GetDetailJson(); detail != "" {
+			var d struct {
+				RollbackSnapshotID string `json:"rollback_snapshot_id"`
+			}
+			if json.Unmarshal([]byte(detail), &d) == nil && d.RollbackSnapshotID != "" {
+				if rs, ok := s.store.(interface {
+					UpdateRestoreRollbackSnapshot(context.Context, string, string) error
+				}); ok {
+					if err := rs.UpdateRestoreRollbackSnapshot(ctx, runID, d.RollbackSnapshotID); err != nil {
+						log.Printf("failed to record rollback snapshot for run %s: %v", runID, err)
+					}
+				}
+			}
+		}
+		if phase := rp.GetPhase(); phase != "" {
+			if rs, ok := s.store.(interface {
+				UpdateRestorePhase(context.Context, string, string) error
+			}); ok {
+				if err := rs.UpdateRestorePhase(ctx, runID, phase); err != nil {
+					log.Printf("failed to update restore phase for run %s: %v", runID, err)
+				}
+			}
 		}
 	}
 
@@ -610,22 +643,34 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 		initRepositoryID = run.RepositoryID
 	}
 
-	err = s.store.TransitionRun(ctx, runID, model.RunRunning, toStatus, func(r *model.Run) {
-		r.FinishedAt = &now
-		r.ErrorCode = result.GetErrorCode()
-		r.ErrorMessage = result.GetErrorMessage()
-		r.SnapshotID = snapshotID
-		r.LeaseExpiresAt = nil
-		if len(resultJSON) > 0 {
-			r.ProgressJSON = string(resultJSON)
+	if run.Operation == model.OpRestore {
+		phase, rollbackID, errCode := restoreResultOutcome(result, toStatus)
+		status := toStatus
+		if phase == model.RestorePhaseRollbackFailed {
+			// 回滚失败必须暴露为 FAILED，不能伪装成普通取消。
+			status = model.RunFailed
+			errCode = model.ErrRollbackFailed
 		}
-	})
-
-	if errors.Is(err, store.ErrInvalidTransition) {
-		// Fast-finished runs may still be 'dispatched'.
-		err = s.store.TransitionRun(ctx, runID, model.RunDispatched, toStatus, func(r *model.Run) {
-			now := time.Now().UTC()
-			r.StartedAt = &now
+		finErr := s.store.FinishRestoreRun(ctx, store.FinishRestoreRunInput{
+			RunID:              runID,
+			ToStatus:           status,
+			ErrorCode:          errCode,
+			ErrorMessage:       result.GetErrorMessage(),
+			SnapshotID:         snapshotID,
+			ResultJSON:         resultJSON,
+			Phase:              phase,
+			RollbackSnapshotID: rollbackID,
+			FinishedAt:         now,
+		})
+		if finErr != nil {
+			if errors.Is(finErr, store.ErrInvalidTransition) {
+				return nil
+			}
+			return finErr
+		}
+		toStatus = status
+	} else {
+		err = s.store.TransitionRun(ctx, runID, model.RunRunning, toStatus, func(r *model.Run) {
 			r.FinishedAt = &now
 			r.ErrorCode = result.GetErrorCode()
 			r.ErrorMessage = result.GetErrorMessage()
@@ -635,14 +680,30 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 				r.ProgressJSON = string(resultJSON)
 			}
 		})
-	}
 
-	if err == store.ErrInvalidTransition {
-		// Already terminal — idempotent.
-		return nil
-	}
-	if err != nil {
-		return err
+		if errors.Is(err, store.ErrInvalidTransition) {
+			// Fast-finished runs may still be 'dispatched'.
+			err = s.store.TransitionRun(ctx, runID, model.RunDispatched, toStatus, func(r *model.Run) {
+				now := time.Now().UTC()
+				r.StartedAt = &now
+				r.FinishedAt = &now
+				r.ErrorCode = result.GetErrorCode()
+				r.ErrorMessage = result.GetErrorMessage()
+				r.SnapshotID = snapshotID
+				r.LeaseExpiresAt = nil
+				if len(resultJSON) > 0 {
+					r.ProgressJSON = string(resultJSON)
+				}
+			})
+		}
+
+		if err == store.ErrInvalidTransition {
+			// Already terminal — idempotent.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
 	if isTerminal(toStatus) {
 		// Binding waits synchronously for restic init, but the HTTP request can
@@ -656,17 +717,6 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 			}
 			if err := s.store.UpdateRepositoryStatus(ctx, initRepositoryID, repositoryStatus); err != nil {
 				log.Printf("failed to update repository %s status after init: %v", initRepositoryID, err)
-			}
-		}
-		if run.Operation == model.OpRestore {
-			phase := "failed"
-			if toStatus == model.RunSucceeded {
-				phase = "succeeded"
-			}
-			if rs, ok := s.store.(interface {
-				UpdateRestorePhase(context.Context, string, string) error
-			}); ok {
-				_ = rs.UpdateRestorePhase(ctx, runID, phase)
 			}
 		}
 		if rs, ok := s.store.(interface {
@@ -735,6 +785,38 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	return nil
 }
 
+// restoreResultOutcome 从 Agent 结果里提取安全的恢复结论：phase、保护快照 ID 与
+// 稳定错误码。Agent 未上报 phase 时按最保守的不确定状态处理，避免服务器替 Agent
+// 声称目标已还原。
+func restoreResultOutcome(result *bmcv1.RunResult, toStatus string) (phase, rollbackSnapshotID, errorCode string) {
+	errorCode = result.GetErrorCode()
+	reported := ""
+	if raw := result.GetResultJson(); raw != "" {
+		var payload struct {
+			Phase              string `json:"phase"`
+			RollbackSnapshotID string `json:"rollback_snapshot_id"`
+		}
+		if json.Unmarshal([]byte(raw), &payload) == nil {
+			reported = payload.Phase
+			rollbackSnapshotID = payload.RollbackSnapshotID
+		}
+	}
+	switch reported {
+	case model.RestorePhaseSucceeded, model.RestorePhaseFailed, model.RestorePhasePreBackupFailed,
+		model.RestorePhaseRolledBack, model.RestorePhaseNewTargetCleaned, model.RestorePhaseRollbackFailed,
+		model.RestorePhaseManualRecoveryNeeded:
+		return reported, rollbackSnapshotID, errorCode
+	}
+	// 已知安全终态之外的取消/失败无法证明目标未被修改。
+	if toStatus == model.RunFailed || toStatus == model.RunCancelled {
+		if errorCode == "" {
+			errorCode = model.ErrRollbackFailed
+		}
+		return model.RestorePhaseManualRecoveryNeeded, rollbackSnapshotID, errorCode
+	}
+	return model.RestorePhaseSucceeded, rollbackSnapshotID, errorCode
+}
+
 // isRepositoryInitRun distinguishes the repository bootstrap form of the
 // legacy FORGET operation from normal retention/forget runs.
 func isRepositoryInitRun(run *model.Run) bool {
@@ -774,6 +856,19 @@ func (s *Service) handleDisconnect(agentID string) {
 	if err == nil {
 		for _, run := range runs {
 			if run.AgentID == agentID {
+				if run.Operation == model.OpRestore {
+					// 断线不证明执行已经停止：保留非终态并记录人工恢复要求，
+					// 不自动重放破坏性恢复；占用与仓库阻塞由未安全终结的
+					// restore_request 维持，等待可信结果或人工解除。
+					if rs, ok := s.store.(interface {
+						UpdateRestorePhase(context.Context, string, string) error
+					}); ok {
+						if err := rs.UpdateRestorePhase(ctx, run.ID, model.RestorePhaseManualRecoveryNeeded); err != nil {
+							log.Printf("failed to mark restore run %s manual recovery: %v", run.ID, err)
+						}
+					}
+					continue
+				}
 				if retryableOperation(run.Operation) {
 					_ = s.store.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
 						r.StartedAt = nil

@@ -156,6 +156,8 @@ func main() {
 	disp := dispatchgrpc.NewDispatcher(st, reg, dispatchgrpc.DefaultConfig(), notifier)
 	disp.Src = orch
 	orch.Disp = disp // break constructor cycle: dispatcher needs orchestrator as CommandSource
+	// 恢复的前置授权读取 Agent 当前连接的能力（不是持久化的展示快照）。
+	orch.AgentCaps = reg
 	disp.StartWatchdog()
 	svc := agentreg.NewService(st, reg, bus, agentreg.Config{
 		HeartbeatIntervalSeconds: 30,
@@ -240,6 +242,7 @@ func main() {
 		PublicURL: cfg.PublicURL,
 		Reg:       reg,
 		Ready:     ready.Load,
+		DatabaseRestoreKinds: kindSet(cfg.DatabaseRestoreKinds),
 	})
 
 	httpSrv := &http.Server{
@@ -433,4 +436,13 @@ func runResetAdmin() {
 
 	fmt.Println("[SUCCESS] Admin user and sessions have been cleared successfully.")
 	fmt.Println("Please restart the server (if running) and visit the Web UI to complete initial setup.")
+}
+
+// kindSet 把配置中的 kind 列表转换为查表结构。
+func kindSet(kinds []string) map[string]bool {
+	out := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		out[k] = true
+	}
+	return out
 }

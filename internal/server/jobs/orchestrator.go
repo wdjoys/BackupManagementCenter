@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	posixpath "path"
 	"strings"
 	"sync"
 	"time"
@@ -48,7 +49,32 @@ var (
 	ErrRepoMissing       = errors.New("repository_missing")
 	ErrStorageRemote     = errors.New("storage_remote_unreachable")
 	ErrStorageTargetName = errors.New("storage target name required")
+
+	// ErrRestoreBusy 表示已有未安全终结的数据库恢复占用全局互斥。
+	ErrRestoreBusy = errors.New(model.ErrDatabaseRestoreBusy)
+	// ErrCapabilitiesPending 表示目标 Agent 当前连接尚未完成能力上报。
+	ErrCapabilitiesPending = errors.New(model.ErrAgentCapabilitiesPending)
+	// ErrUnsafeDatabaseRestore 表示目标 Agent 明确不支持受保护的数据库恢复。
+	ErrUnsafeDatabaseRestore = errors.New(model.ErrAgentUpgradeRequired)
+	// ErrSnapshotRefreshRequired 表示缺少可用的已验证快照列表/目录缓存。
+	ErrSnapshotRefreshRequired = errors.New(model.ErrSnapshotListRefreshRequired)
+	// ErrSnapshotKindMismatch 表示快照标签与请求的恢复类型不一致。
+	ErrSnapshotKindMismatch = errors.New("restore_snapshot_kind_mismatch")
+	// ErrUnsupportedManifest 表示请求或来源快照超出单库恢复范围。
+	ErrUnsupportedManifest = errors.New(model.ErrUnsupportedRestoreManifest)
+	// ErrSnapshotRestoreProtected 表示快照被未终结恢复的保护标记引用。
+	ErrSnapshotRestoreProtected = errors.New(model.ErrSnapshotRestoreProtected)
+	// ErrRepositoryNotReady 表示跨 Agent 恢复要求来源仓库处于 ready。
+	ErrRepositoryNotReady = errors.New("source repository is not ready")
+	// ErrRestoreConflict 表示人工解除的目标状态不匹配（run ID 不符或阶段不可解除）。
+	ErrRestoreConflict = errors.New("restore_conflict")
 )
+
+// AgentCapabilitySource 暴露 Agent 当前连接的能力，供恢复前置校验使用。
+type AgentCapabilitySource interface {
+	// ConnectionCapabilities 返回当前连接能力；connected=false 表示无连接。
+	ConnectionCapabilities(agentID string) (ready bool, safeDBRestore bool, connected bool)
+}
 
 // MissingToolsError carries the list of missing tool names.
 type MissingToolsError struct {
@@ -68,6 +94,8 @@ type RestoreInput struct {
 	Overwrite      bool
 	Confirmation   string
 	TargetPassword string // database-only; populated by UI
+	// TargetAgentID 为空时使用来源仓库所属 Agent；非空时把恢复执行绑定到该 Agent。
+	TargetAgentID string
 }
 
 // VerifyResult is the parsed payload of a VERIFY_STORAGE_REMOTE run.
@@ -136,6 +164,9 @@ type Orchestrator struct {
 	Disp       dispatch.Dispatcher
 	Bus        events.Bus
 	InstanceID string
+	// AgentCaps 报告 Agent 当前连接的能力，用于恢复前置授权。nil 表示无来源，
+	// 数据库恢复将按未就绪处理。
+	AgentCaps AgentCapabilitySource
 
 	mu          sync.RWMutex
 	confStash   map[string]stashEntry
@@ -363,11 +394,12 @@ func systemRunDedupKey(agentID, repositoryID, operation, paramsJSON, confFingerp
 	return key
 }
 
-// restoreRunDedupKey 是“同一仓库、同一快照、同一目标、同一覆盖模式、同一目标凭据”
-// 的等价恢复参数键。凭据只以 master key 作密钥的 HMAC 指纹参与（见
-// secrets.Sealer.Fingerprint）：既落不下明文，也无法在只拿到数据库时离线穷举。
-func restoreRunDedupKey(repoID, snapshotID, kind, targetJSON string, overwrite bool, credentialFingerprint string) string {
-	key := "restore\x00" + repoID + "\x00" + snapshotID + "\x00" + kind + "\x00" + targetJSON
+// restoreRunDedupKey 是“同一仓库、同一快照、同一目标 Agent、同一目标、同一覆盖
+// 模式、同一目标凭据”的等价恢复参数键。凭据只以 master key 作密钥的 HMAC 指纹
+// 参与（见 secrets.Sealer.Fingerprint）：既落不下明文，也无法在只拿到数据库时
+// 离线穷举。
+func restoreRunDedupKey(repoID, targetAgentID, snapshotID, kind, targetJSON string, overwrite bool, credentialFingerprint string) string {
+	key := "restore\x00" + repoID + "\x00" + targetAgentID + "\x00" + snapshotID + "\x00" + kind + "\x00" + targetJSON
 	if overwrite {
 		key += "\x001"
 	} else {
@@ -1196,9 +1228,34 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		return nil, nil, err
 	}
 
-	var task model.RestoreTask
-	task.Kind = in.RestoreKind
-	task.Repository = model.RepoAccess{RepositoryPath: repo.RepositoryPath}
+	// 目标 Agent：缺省沿用来源仓库所属 Agent；显式值必须存在、未撤销且在线。
+	targetAgentID := strings.TrimSpace(in.TargetAgentID)
+	if targetAgentID == "" {
+		targetAgentID = repo.AgentID
+	}
+	targetAgent, err := o.Store.GetAgent(ctx, targetAgentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil, fmt.Errorf("%w: target agent not found", ErrNotFound)
+		}
+		return nil, nil, err
+	}
+	if targetAgent.Revoked {
+		return nil, nil, ErrAgentRevoked
+	}
+	if !o.Disp.IsConnected(targetAgentID) {
+		return nil, nil, ErrAgentOffline
+	}
+	// 缺少能力来源时无法区分“未上报”和“不支持”，按未就绪处理而不是离线。
+	if o.AgentCaps != nil {
+		if _, _, connected := o.AgentCaps.ConnectionCapabilities(targetAgentID); !connected {
+			return nil, nil, ErrAgentOffline
+		}
+	}
+	crossAgent := targetAgentID != repo.AgentID
+	if crossAgent && repo.Status != "ready" {
+		return nil, nil, fmt.Errorf("%w: cross-agent restore requires a ready source repository", ErrRepositoryNotReady)
+	}
 
 	switch in.RestoreKind {
 	case model.KindFilesystem:
@@ -1209,15 +1266,17 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		if om != "never" && om != "if-changed" && om != "always" {
 			return nil, nil, fmt.Errorf("%w: invalid overwrite_mode", ErrPathInvalid)
 		}
-		task.Filesystem = &model.FilesystemRestore{
-			SnapshotID:    in.SnapshotID,
-			IncludePaths:  in.Target.IncludePaths,
-			TargetPath:    in.Target.TargetPath,
-			OverwriteMode: om,
-			DryRun:        false,
+		if err := o.authorizeRestoreIncludePaths(ctx, repo.ID, in.SnapshotID, in.Target.IncludePaths); err != nil {
+			return nil, nil, err
 		}
 	default:
-		// database
+		if !isDatabaseKind(in.RestoreKind) {
+			return nil, nil, fmt.Errorf("%w: unknown restore kind %q", ErrPathInvalid, in.RestoreKind)
+		}
+		// 整实例还原不开放：同步拒绝，避免把来源快照的全部库写入目标实例。
+		if strings.EqualFold(strings.TrimSpace(in.Target.Database), "all") {
+			return nil, nil, fmt.Errorf("%w: restoring every database in the snapshot is not supported", ErrUnsupportedManifest)
+		}
 		// Check the destructive confirmation before validating connection
 		// details.  A caller with a stale/incorrect confirmation must receive
 		// the same forbidden response regardless of which target fields are
@@ -1239,14 +1298,22 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		if in.RestoreKind == model.KindSQLite && !filepath.IsAbs(in.Target.Database) {
 			return nil, nil, fmt.Errorf("%w: sqlite target path must be absolute", ErrPathInvalid)
 		}
-		task.Database = &model.DatabaseRestore{
-			SnapshotID:      in.SnapshotID,
-			Kind:            in.RestoreKind,
-			TargetHost:      in.Target.Host,
-			TargetPort:      in.Target.Port,
-			TargetUsername:  in.Target.Username,
-			TargetDatabase:  in.Target.Database,
-			ReplaceExisting: in.Overwrite,
+	}
+
+	// 快照授权：只能从服务端已验证的缓存列表选取（来源 Agent 离线同样适用），
+	// 并核对 kind 标签与隐藏状态。
+	snapshot, err := o.authorizeRestoreSnapshot(ctx, repo.ID, in.SnapshotID, in.RestoreKind)
+	if err != nil {
+		return nil, nil, err
+	}
+	_ = snapshot
+
+	if err := o.checkRestoreTools(targetAgent, in.RestoreKind); err != nil {
+		return nil, nil, err
+	}
+	if isDatabaseKind(in.RestoreKind) {
+		if err := o.requireSafeDatabaseRestore(targetAgentID); err != nil {
+			return nil, nil, err
 		}
 	}
 
@@ -1265,13 +1332,13 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		TargetJSON:       string(targetJSON),
 		Overwrite:        in.Overwrite,
 		ConfirmationHash: confirmationHash,
-		Phase:            "queued",
+		Phase:            model.RestorePhaseQueued,
 		CreatedAt:        time.Now().UTC(),
 	}
 
 	// 目标口令属于任务参数：不同口令必须视为不同任务，否则同参数会误复用别人的
 	// run（用错误的凭据执行）。这里只参与 master key 作密钥的 HMAC 指纹
-	// （secrets.Sealer.Fingerprint），既不落明文，也不落可离线穷举的裸哈希。
+	// （secrets.Sealer.Fingerprint），既不落明文，也不落可寻举的裸哈希。
 	// 注意：轮换 master key 会让旧指纹失配，仅影响未终结 run 的去重窗口。
 	credentialFingerprint := ""
 	if in.TargetPassword != "" {
@@ -1279,43 +1346,62 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 	}
 
 	// Create the restore run first so we have a runID for the request.
-	// 同一仓库/快照/目标/覆盖模式/凭据的恢复在队列或执行中只保留一个 run：重复
-	// 提交复用已有 run 与其 request 行，不再新建 request、不再重复入队。
+	// 同一来源仓库/快照/目标 Agent/目标/覆盖模式/凭据的恢复在队列或执行中只保留
+	// 一个 run：重复提交复用已有 run 与其 request 行。
 	now := time.Now().UTC()
 	run := &model.Run{
 		ID:           model.NewUUIDv7(),
-		AgentID:      repo.AgentID,
+		AgentID:      targetAgentID,
 		Operation:    model.OpRestore,
 		Status:       model.RunQueued,
 		QueuedAt:     now,
 		RepositoryID: repo.ID,
 		ProgressJSON: "{}",
-		DedupKey:     restoreRunDedupKey(repo.ID, in.SnapshotID, in.RestoreKind, string(targetJSON), in.Overwrite, credentialFingerprint),
+		DedupKey:     restoreRunDedupKey(repo.ID, targetAgentID, in.SnapshotID, in.RestoreKind, string(targetJSON), in.Overwrite, credentialFingerprint),
 	}
-	if err := o.Store.CreateRun(ctx, run); err != nil {
-		existing, ok := o.joinDuplicateRun(ctx, err, run.DedupKey)
-		if !ok {
-			return nil, nil, err
+	runPersisted := false
+	if isDatabaseKind(in.RestoreKind) {
+		// 数据库恢复在单事务内校验全局占用并落库，返回 409 而不是静默并行。
+		err = o.Store.CreateDatabaseRestoreRun(ctx, run, rr)
+		runPersisted = err == nil
+	} else {
+		err = o.Store.CreateRun(ctx, run)
+		if err == nil {
+			runPersisted = true
+			rr.RunID = run.ID
+			err = o.Store.CreateRestoreRequest(ctx, rr)
 		}
-		// 复用者必须拿到原 request 行（phase/pre_restore 状态属于它）。并发提交下
-		// request 行可能尚未落库，此时保留原始冲突错误，由调用方重试。
-		existingRR, err := o.Store.GetRestoreRequestByRunID(ctx, existing.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		return existingRR, existing, nil
 	}
-
-	rr.RunID = run.ID
-	if err := o.Store.CreateRestoreRequest(ctx, rr); err != nil {
-		now := time.Now().UTC()
-		_ = o.Store.TransitionRun(ctx, run.ID, model.RunQueued, model.RunFailed, func(r *model.Run) {
-			r.FinishedAt = &now
-			r.ErrorCode = model.ErrInvalidPlan
-			r.ErrorMessage = "failed to persist restore request"
-		})
+	if err != nil {
+		if errors.Is(err, store.ErrDuplicateRun) {
+			existing, ok := o.joinDuplicateRun(ctx, err, run.DedupKey)
+			if !ok {
+				return nil, nil, err
+			}
+			// 复用者必须拿到原 request 行（phase/保护状态属于它）。并发提交下
+			// request 行可能尚未落库，此时保留原始冲突错误，由调用方重试。
+			existingRR, rrErr := o.Store.GetRestoreRequestByRunID(ctx, existing.ID)
+			if rrErr != nil {
+				return nil, nil, rrErr
+			}
+			return existingRR, existing, nil
+		}
+		if errors.Is(err, store.ErrDatabaseRestoreBusy) {
+			return nil, nil, ErrRestoreBusy
+		}
+		if runPersisted && rr.RunID == run.ID {
+			// request 行写入失败：终给刚创建的 run，避免留下无 request 的任务。
+			finish := time.Now().UTC()
+			_ = o.Store.TransitionRun(ctx, run.ID, model.RunQueued, model.RunFailed, func(r *model.Run) {
+				r.FinishedAt = &finish
+				r.ErrorCode = model.ErrInvalidPlan
+				r.ErrorMessage = "failed to persist restore request"
+			})
+		}
 		return nil, nil, err
 	}
+	rr.RunID = run.ID
+
 	if in.TargetPassword != "" {
 		if rs, ok := o.Store.(interface {
 			SaveRunTargetPassword(context.Context, string, string) error
@@ -1332,24 +1418,261 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		}
 	}
 
-	o.Disp.Enqueue(ctx, run.ID, run.AgentID, repo.ID)
+	o.Disp.Enqueue(ctx, run.ID, targetAgentID, repo.ID)
 
 	o.Audit(ctx, "admin", actorID, "restore.start", "restore_request", rr.ID,
 		map[string]string{
-			"run_id":       run.ID,
-			"snapshot_id":  in.SnapshotID,
-			"restore_kind": in.RestoreKind,
-			"overwrite":    fmt.Sprintf("%v", in.Overwrite),
-			"confirmation": confirmationHash,
+			"run_id":          run.ID,
+			"snapshot_id":     in.SnapshotID,
+			"restore_kind":    in.RestoreKind,
+			"overwrite":       fmt.Sprintf("%v", in.Overwrite),
+			"confirmation":    confirmationHash,
+			"target_agent_id": targetAgentID,
+			"source_agent_id": repo.AgentID,
 		})
 
 	return rr, run, nil
 }
 
-// DryRunRestore runs a filesystem restore dry-run.
-func (o *Orchestrator) DryRunRestore(ctx context.Context, repoID, snapshotID string, includePaths []string, targetPath, overwriteMode string) (*DryRunStats, *model.Run, error) {
+// isDatabaseKind reports whether the restore kind targets a database.
+func isDatabaseKind(kind string) bool {
+	switch kind {
+	case model.KindPostgreSQL, model.KindMySQL, model.KindMongoDB, model.KindSQLite:
+		return true
+	default:
+		return false
+	}
+}
+
+// requireSafeDatabaseRestore 校验目标 Agent 当前连接已上报安全的数据库恢复能力。
+func (o *Orchestrator) requireSafeDatabaseRestore(agentID string) error {
+	if o.AgentCaps == nil {
+		return ErrCapabilitiesPending
+	}
+	caps := o.AgentCaps
+	ready, safe, connected := caps.ConnectionCapabilities(agentID)
+	if !connected || !ready {
+		return ErrCapabilitiesPending
+	}
+	if !safe {
+		return ErrUnsafeDatabaseRestore
+	}
+	return nil
+}
+
+// authorizeRestoreSnapshot 使用服务端已验证的快照缓存授权一次恢复。
+// 缓存缺失、摘要失配、快照不存在、被隐藏或 kind 标签不符都拒绝授权，
+// 来源 Agent 离线时不会被调用。
+func (o *Orchestrator) authorizeRestoreSnapshot(ctx context.Context, repoID, snapshotID, kind string) (*model.Snapshot, error) {
+	snaps, err := o.verifiedSnapshotList(ctx, repoID)
+	if err != nil {
+		return nil, err
+	}
+	var found *model.Snapshot
+	for i := range snaps {
+		if snaps[i].ID == snapshotID {
+			found = &snaps[i]
+			break
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("%w: snapshot is not part of the verified list", ErrSnapshotRefreshRequired)
+	}
+	if !snapshotKindMatches(*found, kind) {
+		return nil, fmt.Errorf("%w: snapshot kind does not match %s", ErrSnapshotKindMismatch, kind)
+	}
+	hidden, err := o.hiddenSnapshotIDsStrict(ctx, repoID)
+	if err != nil {
+		return nil, err
+	}
+	if _, h := hidden[snapshotID]; h {
+		return nil, fmt.Errorf("%w: snapshot is pending deletion", ErrSnapshotRefreshRequired)
+	}
+	return found, nil
+}
+
+// verifiedSnapshotList 读取并校验持久化快照列表缓存（generation/list_verified_at
+// 已由存储层校验，这里再核对 fingerprint 完整性）。
+func (o *Orchestrator) verifiedSnapshotList(ctx context.Context, repoID string) ([]model.Snapshot, error) {
+	scs, ok := o.Store.(snapshotCacheReader)
+	if !ok {
+		return nil, ErrSnapshotRefreshRequired
+	}
+	cache, err := scs.GetSnapshotListCache(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: verified snapshot list unavailable", ErrSnapshotRefreshRequired)
+	}
+	var snaps []model.Snapshot
+	if err := json.Unmarshal([]byte(cache.SnapshotsJSON), &snaps); err != nil {
+		return nil, fmt.Errorf("%w: snapshot list cache is corrupt", ErrSnapshotRefreshRequired)
+	}
+	if store.SnapshotFingerprint(snaps) != cache.Fingerprint {
+		return nil, fmt.Errorf("%w: snapshot list fingerprint mismatch", ErrSnapshotRefreshRequired)
+	}
+	return snaps, nil
+}
+
+// hiddenSnapshotReader 提供仓库的隐藏快照集合。恢复授权要求 fail-closed 读取，
+// 因此单独声明而不是复用可选的 SnapshotDeletionStore 全接口。
+type hiddenSnapshotReader interface {
+	HiddenSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error)
+}
+
+// snapshotCacheReader 是恢复授权所需的只读快照缓存。
+type snapshotCacheReader interface {
+	GetSnapshotListCache(ctx context.Context, repositoryID string) (*store.SnapshotListCache, error)
+	GetSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string) (*store.SnapshotTreeCache, error)
+}
+
+// hiddenSnapshotIDsStrict 读取隐藏快照集合；查询失败或存储不支持时拒绝授权
+// （不能复用浏览路径的 fail-open 行为）。
+func (o *Orchestrator) hiddenSnapshotIDsStrict(ctx context.Context, repoID string) (map[string]struct{}, error) {
+	hs, ok := o.Store.(hiddenSnapshotReader)
+	if !ok {
+		return nil, fmt.Errorf("%w: hidden snapshot state unavailable", ErrSnapshotRefreshRequired)
+	}
+	hidden, err := hs.HiddenSnapshotIDs(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: hidden snapshot state unavailable", ErrSnapshotRefreshRequired)
+	}
+	if hidden == nil {
+		hidden = map[string]struct{}{}
+	}
+	return hidden, nil
+}
+
+// snapshotKindMatches 核对快照的 kind:<kind> 标签。
+func snapshotKindMatches(snap model.Snapshot, kind string) bool {
+	want := "kind:" + kind
+	for _, tag := range snap.Tags {
+		if tag == want {
+			return true
+		}
+	}
+	return false
+}
+
+// restoreProtectionTag 是预备份快照携带的保护标签前缀。
+const restoreProtectionTag = "restore-protection:"
+
+// snapshotHasRestoreProtection 报告快照是否携带预备份保护标签。
+func snapshotHasRestoreProtection(snap model.Snapshot) bool {
+	for _, tag := range snap.Tags {
+		if strings.HasPrefix(tag, restoreProtectionTag) {
+			return true
+		}
+	}
+	return false
+}
+
+// authorizeRestoreIncludePaths 用已验证目录缓存校验文件恢复的包含路径层级。
+func (o *Orchestrator) authorizeRestoreIncludePaths(ctx context.Context, repoID, snapshotID string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	scs, ok := o.Store.(snapshotCacheReader)
+	if !ok {
+		return ErrSnapshotRefreshRequired
+	}
+	for _, raw := range paths {
+		cleaned := store.NormalizeSnapshotPath(raw)
+		if cleaned == "/" {
+			continue
+		}
+		parent := posixpath.Dir(cleaned)
+		base := posixpath.Base(cleaned)
+		cache, err := scs.GetSnapshotTreeCache(ctx, repoID, snapshotID, parent)
+		if err != nil {
+			return fmt.Errorf("%w: verified directory cache for %s is unavailable", ErrSnapshotRefreshRequired, parent)
+		}
+		var tree TreeResult
+		if err := json.Unmarshal([]byte(cache.TreeJSON), &tree); err != nil {
+			return fmt.Errorf("%w: directory cache is corrupt", ErrSnapshotRefreshRequired)
+		}
+		matched := false
+		for _, entry := range tree.Entries {
+			if entry.Name == base {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("%w: %s is not a verified entry of %s", ErrSnapshotRefreshRequired, base, parent)
+		}
+	}
+	return nil
+}
+
+// ResolveRestore 人工确认解除一个被阻塞的恢复请求：只接受
+// manual_recovery_required / rollback_failed，写审计并在同一事务内终结 run。
+// 这是人工确认，不是自动探测或自动回滚。
+func (o *Orchestrator) ResolveRestore(ctx context.Context, actorID, requestID, runID, note string) error {
+	rr, err := o.Store.GetRestoreRequest(ctx, requestID)
+	if err != nil {
+		return err
+	}
+	if rr.RunID == "" {
+		return fmt.Errorf("%w: restore request has no run", ErrRestoreConflict)
+	}
+	if runID != rr.RunID {
+		return fmt.Errorf("%w: run_id does not match the restore request", ErrRestoreConflict)
+	}
+	switch rr.Phase {
+	case model.RestorePhaseManualRecoveryNeeded, model.RestorePhaseRollbackFailed:
+	default:
+		return fmt.Errorf("%w: restore request is not blocked (phase=%s)", ErrRestoreConflict, rr.Phase)
+	}
+	now := time.Now().UTC()
+	if err := o.Store.ResolveRestoreRequest(ctx, requestID, runID, actorID, note, now); err != nil {
+		return err
+	}
+	if rs, ok := o.Store.(interface {
+		DeleteRunSecrets(context.Context, string) error
+	}); ok {
+		if err := rs.DeleteRunSecrets(ctx, runID); err != nil {
+			return fmt.Errorf("delete restore secrets: %w", err)
+		}
+	}
+	if r, err := o.Store.GetRun(ctx, runID); err == nil {
+		o.Bus.Publish(runID, events.Event{Type: events.State, Run: r})
+	}
+	return nil
+}
+
+// DryRunRestore runs a filesystem restore dry-run against targetAgentID (empty
+// means the source repository's own agent). It reuses the same snapshot and
+// target validation as a real restore.
+func (o *Orchestrator) DryRunRestore(ctx context.Context, repoID, snapshotID string, includePaths []string, targetPath, overwriteMode, targetAgentID string) (*DryRunStats, *model.Run, error) {
 	repo, err := o.Store.GetRepository(ctx, repoID)
 	if err != nil {
+		return nil, nil, err
+	}
+	if targetAgentID == "" {
+		targetAgentID = repo.AgentID
+	}
+	targetAgent, err := o.Store.GetAgent(ctx, targetAgentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil, fmt.Errorf("%w: target agent not found", ErrNotFound)
+		}
+		return nil, nil, err
+	}
+	if targetAgent.Revoked {
+		return nil, nil, ErrAgentRevoked
+	}
+	if !o.Disp.IsConnected(targetAgentID) {
+		return nil, nil, ErrAgentOffline
+	}
+	if targetAgentID != repo.AgentID && repo.Status != "ready" {
+		return nil, nil, fmt.Errorf("%w: cross-agent restore requires a ready source repository", ErrRepositoryNotReady)
+	}
+	if _, err := o.authorizeRestoreSnapshot(ctx, repoID, snapshotID, model.KindFilesystem); err != nil {
+		return nil, nil, err
+	}
+	if err := o.authorizeRestoreIncludePaths(ctx, repoID, snapshotID, includePaths); err != nil {
+		return nil, nil, err
+	}
+	if err := o.checkRestoreTools(targetAgent, model.KindFilesystem); err != nil {
 		return nil, nil, err
 	}
 
@@ -1364,7 +1687,7 @@ func (o *Orchestrator) DryRunRestore(ctx context.Context, repoID, snapshotID str
 			DryRun:        true,
 		},
 	}
-	run, err := o.SystemRun(ctx, repo.AgentID, repoID, model.OpRestoreDryRun, params, 0)
+	run, err := o.SystemRun(ctx, targetAgentID, repoID, model.OpRestoreDryRun, params, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1447,10 +1770,15 @@ func (o *Orchestrator) BuildCommand(ctx context.Context, runID string) (string, 
 			}
 		}
 		if run.Operation == model.OpRestore {
-			if rs, ok := o.Store.(interface {
+			pwStore, ok := o.Store.(interface {
 				GetRunTargetPassword(context.Context, string) (string, error)
-			}); ok {
-				dbPassword, _ = rs.GetRunTargetPassword(ctx, run.ID)
+			})
+			if !ok {
+				return "", nil, fmt.Errorf("restore credential store unavailable for run %s", run.ID)
+			}
+			dbPassword, err = pwStore.GetRunTargetPassword(ctx, run.ID)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				return "", nil, fmt.Errorf("read restore credential for run %s: %w", run.ID, err)
 			}
 		}
 
@@ -1590,21 +1918,9 @@ func (o *Orchestrator) buildBackupParams(ctx context.Context, run *model.Run) ([
 }
 
 func (o *Orchestrator) buildRestoreParams(ctx context.Context, run *model.Run) ([]byte, error) {
-	// Look up the restore request by run ID.
-	// Since Store has no GetRestoreRequestByRunID, we scan the last few.
-	rrs, err := o.Store.ListRestoreRequests(ctx, 100)
+	rr, err := o.Store.GetRestoreRequestByRunID(ctx, run.ID)
 	if err != nil {
-		return nil, err
-	}
-	var rr *model.RestoreRequest
-	for i := range rrs {
-		if rrs[i].RunID == run.ID {
-			rr = &rrs[i]
-			break
-		}
-	}
-	if rr == nil {
-		return nil, fmt.Errorf("restore request not found for run %s", run.ID)
+		return nil, fmt.Errorf("restore request for run %s: %w", run.ID, err)
 	}
 
 	repo, err := o.Store.GetRepository(ctx, run.RepositoryID)
@@ -1615,6 +1931,7 @@ func (o *Orchestrator) buildRestoreParams(ctx context.Context, run *model.Run) (
 	task := model.RestoreTask{
 		Kind:       rr.RestoreKind,
 		Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath},
+		RunID:      run.ID,
 	}
 	switch rr.RestoreKind {
 	case model.KindFilesystem:
@@ -1696,6 +2013,42 @@ func requiredTools(kind string) []string {
 	default:
 		return nil
 	}
+}
+
+// restoreRequiredTools 返回恢复（含跨 Agent）所需的工具：仓库访问依赖
+// restic/rclone，数据库恢复还需要对应的客户端工具。
+func restoreRequiredTools(kind string) []string {
+	base := []string{"restic", "rclone"}
+	switch kind {
+	case model.KindPostgreSQL:
+		return append(base, "pg_dump", "pg_restore", "psql")
+	case model.KindMySQL:
+		return append(base, "mysqldump", "mysql")
+	case model.KindMongoDB:
+		return append(base, "mongodump", "mongorestore")
+	default:
+		// filesystem 与 sqlite（Go 实现，无 CLI 依赖）
+		return base
+	}
+}
+
+// checkRestoreTools 校验目标 Agent 已上报恢复所需的工具路径。
+func (o *Orchestrator) checkRestoreTools(agent *model.Agent, kind string) error {
+	required := restoreRequiredTools(kind)
+	have := make(map[string]bool, len(agent.Capabilities))
+	for _, t := range agent.Capabilities {
+		have[t.Name] = t.Path != ""
+	}
+	missing := make([]string, 0, len(required))
+	for _, name := range required {
+		if !have[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return &MissingToolsError{Tools: missing}
+	}
+	return nil
 }
 
 // buildRepoPath produces <remote_name>:<remote_path>/<instanceID>/<agentID>
@@ -1800,6 +2153,9 @@ func (o *Orchestrator) QueueSnapshotDeletion(ctx context.Context, actorID, repoI
 	if !ok {
 		return nil, false, fmt.Errorf("snapshot deletion store unavailable")
 	}
+	if err := o.assertSnapshotNotRestoreProtected(ctx, repoID, snapshotID); err != nil {
+		return nil, false, err
+	}
 	repo, err := o.Store.GetRepository(ctx, repoID)
 	if err != nil {
 		return nil, false, err
@@ -1811,6 +2167,41 @@ func (o *Orchestrator) QueueSnapshotDeletion(ctx context.Context, actorID, repoI
 	o.Audit(ctx, "admin", actorID, "snapshot.delete.requested", "snapshot", snapshotID,
 		map[string]string{"repository_id": repoID, "deletion_id": del.ID, "source": string(del.Source)})
 	return del, created, nil
+}
+
+// assertSnapshotNotRestoreProtected 拒绝删除承载未终结恢复保护信息的快照。
+// 引用（rollback_snapshot_id）与标签（restore-protection:<runID>）任一命中即拒绝；
+// 缺少可靠的已验证元数据同样拒绝并要求刷新。
+func (o *Orchestrator) assertSnapshotNotRestoreProtected(ctx context.Context, repoID, snapshotID string) error {
+	protected, err := o.Store.ProtectedRestoreSnapshotIDs(ctx, repoID)
+	if err != nil {
+		return fmt.Errorf("%w: restore protection state unavailable", ErrSnapshotRefreshRequired)
+	}
+	if _, ok := protected[snapshotID]; ok {
+		return fmt.Errorf("%w: snapshot is referenced by an unresolved restore", ErrSnapshotRestoreProtected)
+	}
+	snap, err := o.verifiedSnapshot(ctx, repoID, snapshotID)
+	if err != nil {
+		return err
+	}
+	if snapshotHasRestoreProtection(*snap) {
+		return fmt.Errorf("%w: snapshot carries a restore protection tag", ErrSnapshotRestoreProtected)
+	}
+	return nil
+}
+
+// verifiedSnapshot 从已验证快照列表中定位单个快照。
+func (o *Orchestrator) verifiedSnapshot(ctx context.Context, repoID, snapshotID string) (*model.Snapshot, error) {
+	snaps, err := o.verifiedSnapshotList(ctx, repoID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range snaps {
+		if snaps[i].ID == snapshotID {
+			return &snaps[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: snapshot is not part of the verified list", ErrSnapshotRefreshRequired)
 }
 
 // TickSnapshotCleanup 是 scheduler 每 tick 调用的删除状态机与孤儿扫描入口。
@@ -1953,6 +2344,11 @@ func (o *Orchestrator) claimPendingDeletion(ctx context.Context, sds SnapshotDel
 			continue // 每 tick 每仓库最多一个删除 run（FIFO 串行化）
 		}
 		if del.NextAttemptAt != nil && now.Before(*del.NextAttemptAt) {
+			continue
+		}
+		// 下发 forget 前重新检查保护状态：入队后状态可能已变化，
+		// 保护快照绝不能被删除（保留 pending，等待保护解除）。
+		if err := o.assertSnapshotNotRestoreProtected(ctx, repo.ID, del.SnapshotID); err != nil {
 			continue
 		}
 		run := &model.Run{

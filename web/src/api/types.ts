@@ -24,6 +24,7 @@ export interface Agent {
   capabilities: ToolCapability[]
   source_path_mappings: PathMapping[]
   restore_path_mappings: PathMapping[]
+  safe_database_restore: boolean
 }
 
 export interface ToolCapability {
@@ -185,10 +186,24 @@ export interface RestoreDryRun {
 
 export interface RestoreResponse {
   restore_request_id: string
-  run_id: string
+  // 服务端返回完整的 run 对象（与运行详情页共用结构），用 run.id 跳转。
+  run: Run
   pre_restore_run_id?: string
   rollback_snapshot_id?: string
   phase?: string
+}
+
+export interface RestoreRequestItem {
+  id: string
+  run_id: string
+  snapshot_id: string
+  restore_kind: 'filesystem' | 'postgresql' | 'mysql' | 'mongodb' | 'sqlite'
+  target: RestoreTarget
+  overwrite: boolean
+  pre_restore_run_id?: string
+  rollback_snapshot_id?: string
+  phase?: string
+  created_at: string
 }
 
 export interface Dashboard {

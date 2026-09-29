@@ -4,6 +4,7 @@ import (
 	"backupmanagementcenter/internal/dispatch"
 	"backupmanagementcenter/internal/model"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -49,6 +50,15 @@ type job struct {
 }
 
 const dispatchLease = 2 * time.Minute
+
+const (
+	// restoreExecutionDeadline 是单次恢复的执行兜底期限。恢复包含整仓下载、
+	// 预备份上传、目标大小数据的导入与验证，远高于系统任务 300 秒的硬失败阈值。
+	// ponytail: 固定上限而非按 dump 体积估算，超大库需要更长时间时再引入按体积的期限。
+	restoreExecutionDeadline = 12 * time.Hour
+	// restoreCancelGrace 是发出停止请求后等待 Agent 完成回滚/清理并回报结果的宽限。
+	restoreCancelGrace = 30 * time.Minute
+)
 
 func retryableOperation(op string) bool {
 	switch op {
@@ -196,6 +206,33 @@ func (d *Dispatcher) repoWorker(repositoryID string, rq *repoQueue) {
 func (d *Dispatcher) processJob(j *job) {
 	ctx := context.Background()
 
+	// 恢复任务的范围决定能否下发破坏性命令，也决定处置策略。
+	run, runErr := d.store.GetRun(ctx, j.runID)
+	if runErr != nil {
+		d.removeEnqueued(j.runID)
+		return
+	}
+	isRestore := run.Operation == model.OpRestore
+	dbRestore := false
+	if isRestore {
+		rr, rrErr := d.store.GetRestoreRequestByRunID(ctx, j.runID)
+		if rrErr != nil {
+			// 无法确认恢复范围时绝不下发破坏性命令。
+			d.failRestoreBeforeSend(ctx, j.runID, model.ErrInvalidPlan, "restore request is unavailable")
+			d.removeEnqueued(j.runID)
+			return
+		}
+		dbRestore = isDatabaseRestoreKind(rr.RestoreKind)
+	}
+
+	// 未安全终结的恢复阻塞同一来源仓库的后续命令，避免与仍在执行的
+	// 保护上传/回滚交叉；该 run 自身除外。
+	if blocked, bErr := d.store.RepositoryRestoreBlocked(ctx, j.repositoryID, j.runID); bErr == nil && blocked {
+		d.appendDispatchLog(ctx, j.runID, "warn", "该仓库存在未安全终结的恢复，暂缓下发后续任务")
+		d.requeueJob(j)
+		return
+	}
+
 	// Check if agent is connected
 	if !d.reg.IsConnected(j.agentID) {
 		log.Printf("dispatcher: agent %s not connected; requeue run %s", j.agentID, j.runID)
@@ -207,7 +244,12 @@ func (d *Dispatcher) processJob(j *job) {
 	// Claim the run before building or sending the command. This is the
 	// durable queued -> dispatched edge that makes the delivery protocol
 	// observable to the agent and safe across concurrent workers.
-	leaseUntil := time.Now().UTC().Add(dispatchLease)
+	leaseDuration := dispatchLease
+	if isRestore {
+		// 恢复使用专用期限；租约同时充当执行/取消宽限的持久化截止。
+		leaseDuration = restoreExecutionDeadline
+	}
+	leaseUntil := time.Now().UTC().Add(leaseDuration)
 	attempt := 0
 	claim := func() error {
 		return d.store.TransitionRun(ctx, j.runID, model.RunQueued, model.RunDispatched, func(r *model.Run) {
@@ -236,8 +278,6 @@ func (d *Dispatcher) processJob(j *job) {
 
 	// CommandSource resolves repository/target/plan from the run itself.
 
-	// CommandSource resolves repository/target/plan from the run itself.
-
 	// Build ExecuteCommand via the CommandSource (params + decrypted secrets).
 	_, cmd, err := d.Src.BuildCommand(ctx, j.runID)
 	if err != nil {
@@ -262,13 +302,32 @@ func (d *Dispatcher) processJob(j *job) {
 		return
 	}
 
-	// Send command to agent
+	// Send command to agent. Database restores require the current connection to
+	// have reported safe-restore capability, checked atomically with the send.
 	msg := &bmcv1.ServerMessage{
 		Payload: &bmcv1.ServerMessage_ExecuteCommand{ExecuteCommand: cmd},
 	}
-	if err := d.reg.Send(j.agentID, msg); err != nil {
-		log.Printf("dispatcher: failed to send command to agent %s: %v", j.agentID, err)
-		d.appendDispatchLog(ctx, j.runID, "warn", "发送到 Agent 失败，任务将自动重试: "+err.Error())
+	var sendErr error
+	if dbRestore {
+		sendErr = d.reg.SendWithCapability(j.agentID, msg, true)
+		if errors.Is(sendErr, agentreg.ErrCapabilitiesPending) || errors.Is(sendErr, agentreg.ErrUnsafeDatabaseRestore) {
+			code := model.ErrAgentCapabilitiesPending
+			reason := "目标 Agent 连接尚未完成能力上报，数据库恢复未下发"
+			if errors.Is(sendErr, agentreg.ErrUnsafeDatabaseRestore) {
+				code = model.ErrAgentUpgradeRequired
+				reason = "目标 Agent 不支持受保护的数据库恢复，请升级 Agent"
+			}
+			d.appendDispatchLog(ctx, j.runID, "error", reason)
+			d.failRestoreBeforeSend(ctx, j.runID, code, reason)
+			d.removeEnqueued(j.runID)
+			return
+		}
+	} else {
+		sendErr = d.reg.Send(j.agentID, msg)
+	}
+	if sendErr != nil {
+		log.Printf("dispatcher: failed to send command to agent %s: %v", j.agentID, sendErr)
+		d.appendDispatchLog(ctx, j.runID, "warn", "发送到 Agent 失败，任务将自动重试: "+sendErr.Error())
 		// Revert to queued. If the database is still locked, leave the run in
 		// dispatched state and let the lease watchdog handle it; retrying the
 		// command while the durable state is dispatched could duplicate work.
@@ -467,6 +526,138 @@ func (d *Dispatcher) deleteRunSecrets(ctx context.Context, runID string) {
 	}
 }
 
+// isDatabaseRestoreKind reports whether a restore kind targets a database and
+// therefore needs the safe-restore capability and the global occupancy.
+func isDatabaseRestoreKind(kind string) bool {
+	switch kind {
+	case model.KindPostgreSQL, model.KindMySQL, model.KindMongoDB, model.KindSQLite:
+		return true
+	default:
+		return false
+	}
+}
+
+// failRestoreBeforeSend terminates a restore run that could not be dispatched.
+// The target is untouched at this point, so the request records the safe
+// "failed" phase and releases the occupancy.
+func (d *Dispatcher) failRestoreBeforeSend(ctx context.Context, runID, code, message string) {
+	now := time.Now().UTC()
+	err := d.store.FinishRestoreRun(ctx, store.FinishRestoreRunInput{
+		RunID:        runID,
+		FromStatuses: []string{model.RunQueued, model.RunDispatched},
+		ToStatus:     model.RunFailed,
+		ErrorCode:    code,
+		ErrorMessage: message,
+		Phase:        model.RestorePhaseFailed,
+		FinishedAt:   now,
+	})
+	if err != nil && !errors.Is(err, store.ErrInvalidTransition) {
+		log.Printf("dispatcher: failed to terminate restore run %s before send: %v", runID, err)
+		return
+	}
+	d.deleteRunSecrets(ctx, runID)
+	if nerr := d.notifier.NotifyPlanFailure(ctx, runID); nerr != nil {
+		notification.LogFailure(runID, nerr)
+	}
+}
+
+// sendCancel asks the agent to stop a run.
+func (d *Dispatcher) sendCancel(ctx context.Context, runID, agentID string) {
+	if !d.reg.IsConnected(agentID) {
+		return
+	}
+	cancelMsg := &bmcv1.ServerMessage{
+		Payload: &bmcv1.ServerMessage_CancelCommand{
+			CancelCommand: &bmcv1.CancelCommand{RunId: runID},
+		},
+	}
+	if err := d.reg.Send(agentID, cancelMsg); err != nil {
+		log.Printf("dispatcher: failed to send cancel to agent %s: %v", agentID, err)
+	}
+}
+
+// cancelRestore handles an operator cancellation of a restore run. A queued run
+// ends immediately; a dispatched/running run keeps its non-terminal state until
+// the agent reports the rollback outcome.
+func (d *Dispatcher) cancelRestore(ctx context.Context, run *model.Run) error {
+	if run.Status == model.RunQueued {
+		err := d.store.FinishRestoreRun(ctx, store.FinishRestoreRunInput{
+			RunID:        run.ID,
+			FromStatuses: []string{model.RunQueued},
+			ToStatus:     model.RunCancelled,
+			ErrorCode:    model.ErrCancelled,
+			ErrorMessage: "restore cancelled before dispatch",
+			Phase:        model.RestorePhaseFailed,
+			FinishedAt:   time.Now().UTC(),
+		})
+		if err != nil && !errors.Is(err, store.ErrInvalidTransition) {
+			return err
+		}
+		d.deleteRunSecrets(ctx, run.ID)
+		return nil
+	}
+	d.sendCancel(ctx, run.ID, run.AgentID)
+	if err := d.store.RequestRestoreStop(ctx, run.ID, time.Now().UTC().Add(restoreCancelGrace)); err != nil {
+		return err
+	}
+	d.appendDispatchLog(ctx, run.ID, "warn", "已请求 Agent 停止恢复，等待回滚结果")
+	return nil
+}
+
+// restoreCancelGraceExhausted records manual recovery for a restore whose cancel
+// grace expired or whose result never arrived. The run ends but the restore
+// request keeps blocking its repository and the database occupancy.
+func (d *Dispatcher) markRestoreManualRecovery(ctx context.Context, run *model.Run) {
+	err := d.store.FinishRestoreRun(ctx, store.FinishRestoreRunInput{
+		RunID:        run.ID,
+		ToStatus:     model.RunFailed,
+		ErrorCode:    model.ErrTimeout,
+		ErrorMessage: "restore did not report a trusted result; manual recovery required",
+		Phase:        model.RestorePhaseManualRecoveryNeeded,
+		FinishedAt:   time.Now().UTC(),
+	})
+	if err != nil {
+		if !errors.Is(err, store.ErrInvalidTransition) {
+			log.Printf("dispatcher: failed to mark restore run %s manual recovery: %v", run.ID, err)
+		}
+		return
+	}
+	d.deleteRunSecrets(ctx, run.ID)
+	if nerr := d.notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
+		notification.LogFailure(run.ID, nerr)
+	}
+}
+
+// handleRestoreTimeout applies the restore-specific deadline: the run is asked
+// to stop first, then given a grace window to finish rollback before manual
+// recovery is recorded. Repeated ticks never extend either deadline.
+func (d *Dispatcher) handleRestoreTimeout(ctx context.Context, run *model.Run, now time.Time) {
+	if run.LeaseExpiresAt == nil || now.Before(*run.LeaseExpiresAt) {
+		return
+	}
+	rr, err := d.store.GetRestoreRequestByRunID(ctx, run.ID)
+	if err != nil || model.RestorePhaseIsTerminal(rr.Phase) {
+		return
+	}
+	// 失去执行连接（含 Server 重启后 Agent 未重连）不能证明执行已经停止。
+	if !d.reg.IsConnected(run.AgentID) {
+		if rr.Phase != model.RestorePhaseManualRecoveryNeeded {
+			d.markRestoreManualRecovery(ctx, run)
+		}
+		return
+	}
+	if rr.Phase == model.RestorePhaseCancelling {
+		d.markRestoreManualRecovery(ctx, run)
+		return
+	}
+	d.sendCancel(ctx, run.ID, run.AgentID)
+	if err := d.store.RequestRestoreStop(ctx, run.ID, now.Add(restoreCancelGrace)); err != nil {
+		log.Printf("dispatcher: failed to request restore stop for %s: %v", run.ID, err)
+		return
+	}
+	d.appendDispatchLog(ctx, run.ID, "error", "恢复执行超过期限，已请求 Agent 停止并等待回滚结果")
+}
+
 // buildExecuteCommand constructs the ExecuteCommand message for a run.
 // Plan may be nil for system operations (snapshots/check/forget/etc) that don't have a plan.
 func (d *Dispatcher) buildExecuteCommand(run *model.Run, _ *model.Plan, repo *model.Repository, target *model.StorageTarget) (*bmcv1.ExecuteCommand, error) {
@@ -529,6 +720,10 @@ func (d *Dispatcher) Cancel(ctx context.Context, runID string) error {
 	// If run is already terminal, nothing to do
 	if run.Status == model.RunSucceeded || run.Status == model.RunFailed || run.Status == model.RunCancelled {
 		return nil
+	}
+
+	if run.Operation == model.OpRestore {
+		return d.cancelRestore(ctx, run)
 	}
 
 	// If run is queued (not yet dispatched), just mark cancelled
@@ -640,6 +835,11 @@ func (d *Dispatcher) checkTimeouts() {
 
 	now := time.Now().UTC()
 	for _, run := range runs {
+		if run.Operation == model.OpRestore {
+			// 恢复使用专用期限与取消宽限，不能沿用系统任务的硬失败逻辑。
+			d.handleRestoreTimeout(ctx, &run, now)
+			continue
+		}
 		if run.LeaseExpiresAt != nil && now.After(*run.LeaseExpiresAt) {
 			if retryableOperation(run.Operation) {
 				if err := d.store.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {

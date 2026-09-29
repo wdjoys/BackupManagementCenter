@@ -5,11 +5,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
-import { apiGet, isApiClientError, isAbortError } from '@/api/client'
+import { apiGet, apiPost, isApiClientError, isAbortError } from '@/api/client'
 import { formatDateTime, translateEnum } from '@/i18n'
-import type { Run, RunProgress, RunLog, Plan, Agent } from '@/api/types'
+import type { Run, RunProgress, RunLog, Plan, Agent, RestoreRequestItem } from '@/api/types'
 import { AppErrorState } from '@/components/AppErrorState'
 import { StatusBadge } from '@/components/StatusBadge'
+import { Input } from '@/components/ui/input'
+import { RESTORE_PHASE_TONES, isRestorePhaseBlocking } from '@/views/snapshots/Types'
 import { PageLoadingState } from '@/components/PageLoadingState'
 import { toastSuccess, toastError } from '@/lib/toast'
 import {
@@ -71,6 +73,11 @@ export const RunDetailView: React.FC = () => {
 
   const [wsConnected, setWsConnected] = useState(false)
   const [copiedSnapshot, setCopiedSnapshot] = useState(false)
+  const [restoreRequest, setRestoreRequest] = useState<RestoreRequestItem | null>(null)
+  const [resolveNote, setResolveNote] = useState('')
+  const [resolveStopped, setResolveStopped] = useState(false)
+  const [resolveVerified, setResolveVerified] = useState(false)
+  const [resolving, setResolving] = useState(false)
 
   const logsWrapRef = useRef<HTMLDivElement | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -87,11 +94,46 @@ export const RunDetailView: React.FC = () => {
       const data = await apiGet<Run>(`/runs/${id}`)
       setRun(data)
       terminalRef.current = isTerminal(data.status)
+      if (data.operation === 'restore') {
+        // 恢复请求携带 phase 与保护快照 ID，用于展示阻塞状态与人工解除入口。
+        try {
+          const requests = await apiGet<RestoreRequestItem[]>('/restores', { limit: 200 })
+          setRestoreRequest(requests.find((r) => r.run_id === id) ?? null)
+        } catch {
+          setRestoreRequest(null)
+        }
+      }
     } catch (err: unknown) {
       if (isAbortError(err)) return
       setError(isApiClientError(err) ? err.message : t('runDetail.loadFailed'))
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleResolveRestore = async () => {
+    if (!restoreRequest || !id) return
+    if (!resolveNote.trim() || !resolveStopped || !resolveVerified) {
+      toastError(t('restore.resolve.required'))
+      return
+    }
+    setResolving(true)
+    try {
+      await apiPost(`/restores/${restoreRequest.id}/resolve`, {
+        run_id: id,
+        note: resolveNote.trim(),
+        execution_stopped: true,
+        target_verified: true,
+      })
+      toastSuccess(t('restore.resolve.success'))
+      setResolveNote('')
+      setResolveStopped(false)
+      setResolveVerified(false)
+      await loadRun()
+    } catch (err: unknown) {
+      toastError(isApiClientError(err) ? err.message : t('restore.resolve.failed'))
+    } finally {
+      setResolving(false)
     }
   }
 
@@ -359,6 +401,80 @@ export const RunDetailView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {restoreRequest?.phase && (
+        <Card className="border-border bg-card/60 shadow-sm">
+          <CardContent className="p-4 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-muted-foreground">{t('runDetail.progress.phase')}</span>
+              <StatusBadge tone={RESTORE_PHASE_TONES[restoreRequest.phase] ?? 'secondary'}>
+                {t(`restore.phases.${restoreRequest.phase}`, { defaultValue: restoreRequest.phase })}
+              </StatusBadge>
+              {restoreRequest.rollback_snapshot_id && (
+                <span className="text-[11px] text-muted-foreground font-mono">
+                  {t('restore.rollbackSnapshot')}: {restoreRequest.rollback_snapshot_id}
+                </span>
+              )}
+            </div>
+            {restoreRequest.phase === 'cancelling' && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">{t('restore.cancelPending')}</p>
+            )}
+            {isRestorePhaseBlocking(restoreRequest.phase) && (
+              <div className="space-y-2 border-t border-border pt-3">
+                <p className="text-[11px] text-destructive">{t('restore.manualRecoveryHint')}</p>
+                <p className="text-[11px] font-mono text-muted-foreground">
+                  {t('restore.resolve.runId', { id })}
+                </p>
+                <p className="text-[11px] text-muted-foreground">{t('restore.resolve.message')}</p>
+                <div className="space-y-1.5">
+                  <span className="text-[11px] text-muted-foreground">{t('restore.resolve.note')}</span>
+                  <Input
+                    value={resolveNote}
+                    onChange={(e) => setResolveNote(e.target.value)}
+                    placeholder={t('restore.resolve.notePlaceholder')}
+                    className="h-9 text-xs"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="resolve-stopped"
+                    checked={resolveStopped}
+                    onCheckedChange={(checked) => setResolveStopped(checked === true)}
+                  />
+                  <label htmlFor="resolve-stopped" className="text-xs cursor-pointer">
+                    {t('restore.resolve.confirmExecutionStopped')}
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="resolve-verified"
+                    checked={resolveVerified}
+                    onCheckedChange={(checked) => setResolveVerified(checked === true)}
+                  />
+                  <label htmlFor="resolve-verified" className="text-xs cursor-pointer">
+                    {t('restore.resolve.confirmTargetVerified')}
+                  </label>
+                </div>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleResolveRestore}
+                  disabled={resolving || !resolveNote.trim() || !resolveStopped || !resolveVerified}
+                  className="h-8 text-xs gap-1.5"
+                >
+                  {resolving ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                  {t('restore.resolve.action')}
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Info Card */}
       <Card className="border-border bg-card/60 shadow-sm">

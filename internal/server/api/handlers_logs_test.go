@@ -14,7 +14,16 @@ import (
 	"backupmanagementcenter/internal/server/store"
 )
 
+// loginTestAdmin returns the session cookie only. Callers that issue
+// non-GET requests need the CSRF cookie as well; use loginTestAdminSession.
 func loginTestAdmin(t *testing.T, handler http.Handler) *http.Cookie {
+	t.Helper()
+	session, _ := loginTestAdminSession(t, handler)
+	return session
+}
+
+// loginTestAdminSession signs in and returns the session and CSRF cookies.
+func loginTestAdminSession(t *testing.T, handler http.Handler) (*http.Cookie, *http.Cookie) {
 	t.Helper()
 	loginBody, _ := json.Marshal(map[string]string{
 		"username": "admin",
@@ -25,13 +34,19 @@ func loginTestAdmin(t *testing.T, handler http.Handler) *http.Cookie {
 	loginRec := httptest.NewRecorder()
 	handler.ServeHTTP(loginRec, loginReq)
 
+	var session, csrf *http.Cookie
 	for _, c := range loginRec.Result().Cookies() {
-		if c.Name == auth.SessionCookie {
-			return c
+		switch c.Name {
+		case auth.SessionCookie:
+			session = c
+		case auth.CSRFCookie:
+			csrf = c
 		}
 	}
-	t.Fatalf("session cookie not found after login")
-	return nil
+	if session == nil || csrf == nil {
+		t.Fatalf("session or csrf cookie not found after login")
+	}
+	return session, csrf
 }
 
 func TestListAgentLogsViaQueryAndPathParam(t *testing.T) {

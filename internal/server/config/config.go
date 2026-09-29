@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type Server struct {
@@ -28,6 +29,21 @@ type Server struct {
 	// deployments where a reverse proxy (Caddy/Nginx) terminates all TLS.
 	TLSMode     string
 	DevInsecure bool // BMC_DEV_INSECURE=1 allows missing TLS (local dev only)
+
+	// DatabaseRestoreKinds lists the database kinds whose restore path has been
+	// verified end-to-end on this deployment (BMC_DATABASE_RESTORE_KINDS, e.g.
+	// "postgresql,sqlite"). Every kind is disabled by default: a database
+	// restore overwrites data and must not run until the operator has verified
+	// pre-restore backup and rollback against the real target.
+	DatabaseRestoreKinds []string
+}
+
+// knownDatabaseRestoreKinds 是允许通过 BMC_DATABASE_RESTORE_KINDS 启用的 kind。
+var knownDatabaseRestoreKinds = map[string]bool{
+	"postgresql": true,
+	"mysql":      true,
+	"mongodb":    true,
+	"sqlite":     true,
 }
 
 func LoadServer() (Server, error) {
@@ -58,7 +74,24 @@ func LoadServer() (Server, error) {
 	if !c.DevInsecure && c.TLSMode != "none" && (c.TLSCertFile == "" || c.TLSKeyFile == "") {
 		return c, fmt.Errorf("config: BMC_TLS_CERT_FILE and BMC_TLS_KEY_FILE are required (or BMC_TLS_MODE=none behind a TLS proxy, or BMC_DEV_INSECURE=1 for local development)")
 	}
+	for _, kind := range splitList(os.Getenv("BMC_DATABASE_RESTORE_KINDS")) {
+		if !knownDatabaseRestoreKinds[kind] {
+			return c, fmt.Errorf("config: BMC_DATABASE_RESTORE_KINDS contains unknown kind %q", kind)
+		}
+		c.DatabaseRestoreKinds = append(c.DatabaseRestoreKinds, kind)
+	}
 	return c, nil
+}
+
+// splitList 解析逗号分隔的环境变量列表，去除空白与空项。
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func env(key, def string) string {

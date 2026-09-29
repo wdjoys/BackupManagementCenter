@@ -188,7 +188,7 @@ export const DashboardView: React.FC = () => {
                         <TableCell className="font-medium text-xs text-foreground">
                           {item.plan_name}
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground text-right">
+                        <TableCell className="text-xs text-muted-foreground">
                           {formatDateTime(item.next_fire_at)}
                         </TableCell>
                       </TableRow>
@@ -231,7 +231,7 @@ export const DashboardView: React.FC = () => {
                         <TableCell className="font-medium text-xs text-foreground">
                           {repo.name}
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground text-right">
+                        <TableCell className="text-xs text-muted-foreground">
                           {repo.last_check_at ? (
                             formatDateTime(repo.last_check_at)
                           ) : (

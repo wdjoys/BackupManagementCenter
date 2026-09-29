@@ -131,8 +131,8 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                             <TableCell className="text-xs text-muted-foreground">
                               {repo.last_check_at ? formatDateTime(repo.last_check_at) : t('common.never')}
                             </TableCell>
-                            <TableCell className="text-xs text-right">
-                              <div className="flex items-center justify-end gap-1">
+                            <TableCell className="text-xs">
+                              <div className="flex items-center gap-1">
                                 {repo.status !== 'ready' && (
                                   <Button
                                     variant="ghost"

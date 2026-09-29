@@ -331,8 +331,8 @@ export const AgentsView: React.FC = () => {
                             <TableCell className="text-xs text-muted-foreground">
                               {formatDateTime(agent.enrolled_at)}
                             </TableCell>
-                            <TableCell className="text-xs text-right">
-                              <div className="flex items-center justify-end gap-1">
+                            <TableCell className="text-xs">
+                              <div className="flex items-center gap-1">
                                 <Button
                                   variant="ghost"
                                   size="sm"

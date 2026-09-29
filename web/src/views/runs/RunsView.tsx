@@ -451,7 +451,7 @@ export const RunsView: React.FC = () => {
                             <TableCell className="text-xs text-muted-foreground font-mono">
                               {formatDuration(run.started_at, run.finished_at)}
                             </TableCell>
-                            <TableCell className="text-xs text-right">
+                            <TableCell className="text-xs">
                               {canCancel && (
                                 <Button
                                   variant="ghost"

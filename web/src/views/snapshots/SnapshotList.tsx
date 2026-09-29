@@ -116,8 +116,8 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                           ({item.agentDisplay.hostname})
                         </span>
                       </TableCell>
-                      <TableCell className="text-xs text-right">
-                        <div className="flex items-center justify-end gap-2">
+                      <TableCell className="text-xs">
+                        <div className="flex items-center gap-2">
                           <Button
                             variant="ghost"
                             size="sm"

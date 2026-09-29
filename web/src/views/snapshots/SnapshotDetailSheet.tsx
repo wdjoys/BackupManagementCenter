@@ -278,7 +278,7 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
                           <TableCell className="text-xs text-muted-foreground font-mono text-right px-2">
                             {formatSize(entry.size)}
                           </TableCell>
-                          <TableCell className="text-xs text-muted-foreground font-mono text-right px-2">
+                          <TableCell className="text-xs text-muted-foreground font-mono px-2">
                             {formatDateTime(entry.mtime)}
                           </TableCell>
                         </TableRow>

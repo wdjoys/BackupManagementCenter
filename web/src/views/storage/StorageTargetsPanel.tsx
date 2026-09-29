@@ -108,8 +108,8 @@ export const StorageTargetsPanel: React.FC<StorageTargetsPanelProps> = ({
                           <TableCell className="text-xs text-muted-foreground">
                             {formatDateTime(tgt.updated_at)}
                           </TableCell>
-                          <TableCell className="text-xs text-right">
-                            <div className="flex items-center justify-end gap-1">
+                          <TableCell className="text-xs">
+                            <div className="flex items-center gap-1">
                               <Button
                                 variant="ghost"
                                 size="sm"

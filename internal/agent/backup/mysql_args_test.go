@@ -142,3 +142,14 @@ func TestExitErrorMessageWrapsCause(t *testing.T) {
 		t.Fatalf("unexpected directive rendering: %v", err)
 	}
 }
+
+// 错误文案不得重复 "failed"：exitError 自身会补 "failed (exit N)"。
+func TestExitErrorMessageHasSingleFailedWord(t *testing.T) {
+	err := exitError("mysqldump", 2, nil)
+	if got := err.Error(); got != "mysqldump failed (exit 2)" {
+		t.Fatalf("unexpected message: %q", got)
+	}
+	if strings.Count(err.Error(), "failed") != 1 {
+		t.Fatalf("must not repeat failed: %q", err.Error())
+	}
+}

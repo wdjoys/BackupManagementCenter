@@ -90,7 +90,7 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 		args = append(args, source.ExtraArgs...)
 		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dumpall"), Args: args, Env: env}, logLine, logLine)
 		if err != nil || exitCode != 0 {
-			return nil, exitError("pg_dumpall globals failed", exitCode, err)
+			return nil, exitError("pg_dumpall globals", exitCode, err)
 		}
 		dbExports = append(dbExports, DbExport{Database: "globals", File: "globals.sql", Format: "sql"})
 		toolVersions["pg_dumpall"] = getToolVersion(ctx, rc.Exec, toolPath("pg_dumpall"), env)
@@ -142,7 +142,7 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 		args = append(args, source.ExtraArgs...)
 		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, logLine)
 		if err != nil || exitCode != 0 {
-			return nil, exitError("pg_dump failed", exitCode, err)
+			return nil, exitError("pg_dump", exitCode, err)
 		}
 		dbExports = append(dbExports, DbExport{Database: source.Database, File: filepath.Base(dumpFile), Format: "pgdump"})
 		toolVersions["pg_dump"] = getToolVersion(ctx, rc.Exec, toolPath("pg_dump"), env)
@@ -252,7 +252,7 @@ func (a *PostgreSQLAdapter) TargetExists(ctx context.Context, spec *RestoreSpec)
 		"SELECT 1 FROM pg_database WHERE datname = '" + strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "'"),
 		Env: c.env}, func(line string) { out = strings.TrimSpace(line) }, c.logf)
 	if err != nil || exit != 0 {
-		return false, exitError("check postgres target database failed", exit, err)
+		return false, exitError("check postgres target database", exit, err)
 	}
 	return out != "", nil
 }
@@ -279,7 +279,7 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 				strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "' AND d.datdba = (SELECT oid FROM pg_roles WHERE rolname = current_user)) THEN 'ok' ELSE 'denied' END"),
 			Env: c.env}, func(line string) { ability = strings.TrimSpace(line) }, c.logf)
 		if err != nil || exit != 0 {
-			return exitError("check postgres rebuild permission failed", exit, err)
+			return exitError("check postgres rebuild permission", exit, err)
 		}
 		if ability != "ok" {
 			return fmt.Errorf("current role cannot drop and recreate database %q; refusing a partial overwrite", c.db.TargetDatabase)
@@ -288,15 +288,15 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 		termSQL := "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '" +
 			strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "' AND pid <> pg_backend_pid()"
 		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(termSQL), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-			return exitError("terminate postgres target connections failed", exit, err)
+			return exitError("terminate postgres target connections", exit, err)
 		}
 		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE " + quoted), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-			return exitError("drop postgres target database failed", exit, err)
+			return exitError("drop postgres target database", exit, err)
 		}
 	}
 	// CREATE DATABASE 不带 IF NOT EXISTS：并发的其他执行者创建的库必须冲突失败。
 	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("CREATE DATABASE " + quoted), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-		return exitError("create postgres target database failed", exit, err)
+		return exitError("create postgres target database", exit, err)
 	}
 
 	if spec.ArtifactFile == "" {
@@ -309,7 +309,7 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 		spec.ArtifactFile,
 	}
 	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.pgRest, Args: args, Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-		return exitError("pg_restore failed", exit, err)
+		return exitError("pg_restore", exit, err)
 	}
 	return nil
 }
@@ -327,7 +327,7 @@ func (a *PostgreSQLAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpe
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.pgRest, Args: []string{"-l", spec.ArtifactFile}},
 		func(line string) { listOut.WriteString(line); listOut.WriteString("\n") }, c.logf)
 	if err != nil || exit != 0 {
-		return exitError("pg_restore -l failed", exit, err)
+		return exitError("pg_restore -l", exit, err)
 	}
 	for name := range pgDumpRelationNames(listOut.String()) {
 		dumpObjects[name] = struct{}{}
@@ -339,7 +339,7 @@ func (a *PostgreSQLAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpe
 	exit, err = spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.targetQuery(query), Env: c.env},
 		func(line string) { got.WriteString(strings.TrimSpace(line)); got.WriteString("\n") }, c.logf)
 	if err != nil || exit != 0 {
-		return exitError("postgresql verification query failed", exit, err)
+		return exitError("postgresql verification query", exit, err)
 	}
 	for _, line := range strings.Split(got.String(), "\n") {
 		if line = strings.TrimSpace(line); line != "" {
@@ -366,11 +366,11 @@ func (a *PostgreSQLAdapter) RemoveTarget(ctx context.Context, spec *RestoreSpec)
 	termSQL := "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '" +
 		strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "' AND pid <> pg_backend_pid()"
 	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(termSQL), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-		return exitError("terminate postgres target connections failed", exit, err)
+		return exitError("terminate postgres target connections", exit, err)
 	}
 	quoted := `"` + strings.ReplaceAll(c.db.TargetDatabase, `"`, `""`) + `"`
 	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE IF EXISTS " + quoted), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-		return exitError("drop postgres target database failed", exit, err)
+		return exitError("drop postgres target database", exit, err)
 	}
 	return nil
 }

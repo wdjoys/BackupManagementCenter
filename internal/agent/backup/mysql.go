@@ -100,7 +100,7 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 
 	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, logLine)
 	if err != nil || exitCode != 0 {
-		return nil, exitError("mysqldump failed", exitCode, err)
+		return nil, exitError("mysqldump", exitCode, err)
 	}
 	toolVersions["mysqldump"] = getToolVersion(ctx, rc.Exec, mysqldumpPath, nil)
 
@@ -204,7 +204,7 @@ func (c *mysqlCtx) runQuery(ctx context.Context, spec *RestoreSpec, query string
 			}
 		}, c.logf)
 	if err != nil || exit != 0 {
-		return exitError("mysql query failed", exit, err)
+		return exitError("mysql query", exit, err)
 	}
 	return nil
 }
@@ -252,7 +252,7 @@ func (a *MySQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 	}
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.mysql, Args: dumpArgs, StdinPath: spec.ArtifactFile}, c.logf, c.logf)
 	if err != nil || exit != 0 {
-		return exitError("mysql restore failed", exit, err)
+		return exitError("mysql restore", exit, err)
 	}
 	return nil
 }

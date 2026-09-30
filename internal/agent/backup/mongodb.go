@@ -181,7 +181,7 @@ func (c *mongoCtx) runJS(ctx context.Context, spec *RestoreSpec, js string, scan
 			}
 		}, c.logf)
 	if err != nil || exit != 0 {
-		return exitError("mongosh query failed", exit, err)
+		return exitError("mongosh query", exit, err)
 	}
 	return nil
 }
@@ -248,7 +248,7 @@ func (a *MongoDBAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 	}
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: toolPath("mongorestore"), Args: args}, c.logf, c.logf)
 	if err != nil || exit != 0 {
-		return exitError("mongorestore failed", exit, err)
+		return exitError("mongorestore", exit, err)
 	}
 	return nil
 }
@@ -269,7 +269,7 @@ func (a *MongoDBAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) 
 		Args: []string{"--archive=" + spec.ArtifactFile, "--gzip", "--config=" + c.config, "--dryRun", "--verbose"}},
 		func(line string) { out.WriteString(line); out.WriteString("\n") }, c.logf)
 	if err != nil || exit != 0 {
-		return exitError("mongorestore dry run failed", exit, err)
+		return exitError("mongorestore dry run", exit, err)
 	}
 	parsed := mongoDumpNamespaces(out.String())
 	if len(parsed) == 0 {

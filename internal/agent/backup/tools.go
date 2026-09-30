@@ -3,6 +3,7 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
@@ -36,6 +37,16 @@ func toolPath(name string) string {
 // that must create secret files in the private temp dir.
 func WriteSecretFile(tempDir, name, content string) (string, error) {
 	return writeSecretFile(tempDir, name, content)
+}
+
+// exitError 构造工具失败错误。OSExecutor 对非零退出返回 (exitCode, nil)，
+// err 仅在进程无法启动或流读取失败时非 nil；直接 %w 会把 nil 渲染成
+// "%!w(<nil>)"，因此这里按需拼上退出码。
+func exitError(tool string, exitCode int, err error) error {
+	if err != nil {
+		return fmt.Errorf("%s failed (exit %d): %w", tool, exitCode, err)
+	}
+	return fmt.Errorf("%s failed (exit %d)", tool, exitCode)
 }
 
 // getToolVersion runs `<exe> --version` and returns the first non-empty

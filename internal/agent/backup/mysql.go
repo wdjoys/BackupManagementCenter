@@ -73,7 +73,7 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 		nonTransactionalQuery += " AND table_schema = '" + strings.ReplaceAll(source.Database, "'", "''") + "'"
 	}
 	var nonTransactional string
-	if _, checkErr := rc.Exec.Run(ctx, Cmd{Exe: toolPath("mysql"), Args: []string{"--defaults-extra-file=" + cnfFile, "-N", "-s", "-e", nonTransactionalQuery}}, func(line string) {
+	if _, checkErr := rc.Exec.Run(ctx, Cmd{Exe: toolPath("mysql"), Args: append([]string{"--defaults-extra-file=" + cnfFile}, "-N", "-s", "-e", nonTransactionalQuery)}, func(line string) {
 		nonTransactional = strings.TrimSpace(line)
 	}, logLine); checkErr == nil {
 		if count, parseErr := strconv.Atoi(nonTransactional); parseErr == nil && count > 0 {
@@ -84,10 +84,11 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 
 	dumpFile := filepath.Join(stagingDir, fmt.Sprintf("%s.sql", rc.Task.PlanID))
+	// --defaults-extra-file 必须是第一个参数，出现在后面会被客户端当成未知变量。
 	args := []string{
+		"--defaults-extra-file=" + cnfFile,
 		"--single-transaction", "--quick", "--routines", "--events", "--triggers",
 		"--hex-blob", "--no-tablespaces",
-		"--defaults-extra-file=" + cnfFile,
 		"--result-file=" + dumpFile,
 	}
 	if source.Database == "all" {
@@ -99,7 +100,7 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 
 	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, logLine)
 	if err != nil || exitCode != 0 {
-		return nil, fmt.Errorf("mysqldump failed (exit %d): %w", exitCode, err)
+		return nil, exitError("mysqldump failed", exitCode, err)
 	}
 	toolVersions["mysqldump"] = getToolVersion(ctx, rc.Exec, mysqldumpPath, nil)
 
@@ -184,9 +185,11 @@ var mysqlSystemSchemas = map[string]bool{
 }
 
 // args 构造 mysql 客户端参数：-e 执行语句，或 stdin 导入 dump。
+// --defaults-extra-file 必须是第一个参数，否则客户端报 unknown variable。
 func (c *mysqlCtx) args(query string) []string {
 	return []string{
-		"--binary-mode", "--defaults-extra-file=" + c.cnf,
+		"--defaults-extra-file=" + c.cnf,
+		"--binary-mode",
 		"-h", c.db.TargetHost, "-P", strconv.Itoa(c.db.TargetPort), "-u", c.db.TargetUsername,
 		"-e", query,
 	}
@@ -201,7 +204,7 @@ func (c *mysqlCtx) runQuery(ctx context.Context, spec *RestoreSpec, query string
 			}
 		}, c.logf)
 	if err != nil || exit != 0 {
-		return fmt.Errorf("mysql query failed (exit %d): %w", exit, err)
+		return exitError("mysql query failed", exit, err)
 	}
 	return nil
 }
@@ -242,13 +245,14 @@ func (a *MySQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 		return fmt.Errorf("prepare mysql target database: %w", err)
 	}
 	dumpArgs := []string{
-		"--binary-mode", "--defaults-extra-file=" + c.cnf,
+		"--defaults-extra-file=" + c.cnf,
+		"--binary-mode",
 		"-h", c.db.TargetHost, "-P", strconv.Itoa(c.db.TargetPort), "-u", c.db.TargetUsername,
 		c.db.TargetDatabase,
 	}
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.mysql, Args: dumpArgs, StdinPath: spec.ArtifactFile}, c.logf, c.logf)
 	if err != nil || exit != 0 {
-		return fmt.Errorf("mysql restore failed (exit %d): %w", exit, err)
+		return exitError("mysql restore failed", exit, err)
 	}
 	return nil
 }

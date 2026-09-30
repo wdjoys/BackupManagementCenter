@@ -56,7 +56,7 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 	}
 
 	// Write mongodb config YAML (0600)
-	configContent := buildMongoConfig(source.Host, source.Port, source.Username, rc.Secrets.DBPassword, source.Database, source.AuthSource)
+	configContent := buildMongoConfig(source.Host, source.Port, source.Username, rc.Secrets.DBPassword, source.AuthSource)
 	configFile, err := writeSecretFile(rc.TempDir, "mongo.yml", configContent)
 	if err != nil {
 		return nil, fmt.Errorf("write mongo config: %w", err)
@@ -81,7 +81,7 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 	logLine := func(l string) { rc.Logf("info", "%s", l) }
 	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mongodumpPath, Args: args, Env: nil}, logLine, logLine)
 	if err != nil || exitCode != 0 {
-		return nil, fmt.Errorf("mongodump failed (exit %d): %w", exitCode, err)
+		return nil, exitError("mongodump", exitCode, err)
 	}
 	toolVersions["mongodump"] = getToolVersion(ctx, rc.Exec, mongodumpPath, nil)
 
@@ -148,7 +148,7 @@ func mongoPrepare(spec *RestoreSpec) (*mongoCtx, error) {
 		authSource = "admin"
 	}
 	configFile, err := WriteSecretFile(spec.StagingDir, "mongo-restore.yml",
-		buildMongoConfig(db.TargetHost, db.TargetPort, db.TargetUsername, spec.Secrets.DBPassword, db.TargetDatabase, authSource))
+		buildMongoConfig(db.TargetHost, db.TargetPort, db.TargetUsername, spec.Secrets.DBPassword, authSource))
 	if err != nil {
 		return nil, fmt.Errorf("write mongo restore config: %w", err)
 	}
@@ -181,7 +181,7 @@ func (c *mongoCtx) runJS(ctx context.Context, spec *RestoreSpec, js string, scan
 			}
 		}, c.logf)
 	if err != nil || exit != 0 {
-		return fmt.Errorf("mongosh query failed (exit %d): %w", exit, err)
+		return exitError("mongosh query failed", exit, err)
 	}
 	return nil
 }
@@ -192,9 +192,7 @@ func (c *mongoCtx) uri() string {
 	if authSource == "" {
 		authSource = "admin"
 	}
-	user := url.QueryEscape(c.db.TargetUsername)
-	pass := url.QueryEscape(c.password)
-	return fmt.Sprintf("mongodb://%s:%s@%s:%d/?authSource=%s", user, pass, c.db.TargetHost, c.db.TargetPort, url.QueryEscape(authSource))
+	return mongoURI(c.db.TargetHost, c.db.TargetPort, c.db.TargetUsername, c.password, authSource)
 }
 
 // TargetExists reports whether the target database has been created.
@@ -207,13 +205,25 @@ func (a *MongoDBAdapter) TargetExists(ctx context.Context, spec *RestoreSpec) (b
 		return false, err
 	}
 	found := ""
-	js := fmt.Sprintf(
-		"const r = conn.adminCommand({listDatabases:1, filter:{name:%s}});\n"+
-			"r.databases.forEach(function(d){print(d.name);});", strconv.Quote(c.db.TargetDatabase))
+	js := mongoTargetExistsScript(c.db.TargetDatabase)
 	if err := c.runJS(ctx, spec, js, func(line string) { found = line }); err != nil {
 		return false, err
 	}
 	return found == c.db.TargetDatabase, nil
+}
+
+// mongoTargetExistsScript 生成用于判断目标库是否存在的 JS。
+// adminCommand 挂在 Database 对象上；Mongo(uri) 返回的连接对象没有该方法，
+// 直接调用会抛 "conn.adminCommand is not a function"。
+func mongoTargetExistsScript(database string) string {
+	return fmt.Sprintf(
+		"const r = db.adminCommand({listDatabases:1, filter:{name:%s}});\n"+
+			"r.databases.forEach(function(d){print(d.name);});", strconv.Quote(database))
+}
+
+// mongoCollectionNamesScript 列出当前库的集合名。
+func mongoCollectionNamesScript() string {
+	return "db.getCollectionNames().forEach(function(n){print(n);});"
 }
 
 // Import loads the archive into the target. A new target is created without
@@ -238,7 +248,7 @@ func (a *MongoDBAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 	}
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: toolPath("mongorestore"), Args: args}, c.logf, c.logf)
 	if err != nil || exit != 0 {
-		return fmt.Errorf("mongorestore failed (exit %d): %w", exit, err)
+		return exitError("mongorestore failed", exit, err)
 	}
 	return nil
 }
@@ -246,8 +256,8 @@ func (a *MongoDBAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 // VerifyRestored lists the namespaces the archive would restore and requires
 // every one of them to exist in the target.
 //
-// ponytail: 依赖 mongorestore --dryRun 的 verbose 输出解析；若上游格式变化，
-// 验证会失败并触发回滚（fail-closed）而不是放过未验证的导入。
+// 解析失败必须中止（fail-closed）：把“解析不出来”当成“归档为空”会让一次
+// 完全没落地的导入静默通过验证。
 func (a *MongoDBAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) error {
 	c, err := mongoPrepare(spec)
 	if err != nil {
@@ -259,9 +269,13 @@ func (a *MongoDBAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) 
 		Args: []string{"--archive=" + spec.ArtifactFile, "--gzip", "--config=" + c.config, "--dryRun", "--verbose"}},
 		func(line string) { out.WriteString(line); out.WriteString("\n") }, c.logf)
 	if err != nil || exit != 0 {
-		return fmt.Errorf("mongorestore dry run failed (exit %d): %w", exit, err)
+		return exitError("mongorestore dry run failed", exit, err)
 	}
-	for _, ns := range mongoDumpNamespaces(out.String()) {
+	parsed := mongoDumpNamespaces(out.String())
+	if len(parsed) == 0 {
+		return errors.New("mongodb restore verification failed: could not read any namespace from the mongorestore --dryRun output")
+	}
+	for _, ns := range parsed {
 		parts := strings.SplitN(ns, ".", 2)
 		if len(parts) != 2 {
 			continue
@@ -271,15 +285,13 @@ func (a *MongoDBAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) 
 		}
 		namespaces[parts[0]][parts[1]] = struct{}{}
 	}
-	if len(namespaces) == 0 {
-		spec.Logf("info", "mongodb verification: archive contains no collections")
-		return nil
-	}
 	var missing []string
 	for db, cols := range namespaces {
 		present := map[string]struct{}{}
-		js := "db.getCollectionNames().forEach(function(n){print(n);});"
 		_ = db
+		// 目标库用 TargetDatabase：归档里的库名可能与目标名不同
+		// （Import 用 --nsFrom/--nsTo 重命名）。
+		js := mongoCollectionNamesScript()
 		if err := c.runJS(ctx, spec, js, func(line string) { present[line] = struct{}{} }); err != nil {
 			return err
 		}
@@ -312,47 +324,86 @@ func (a *MongoDBAdapter) RemoveTarget(ctx context.Context, spec *RestoreSpec) er
 	return nil
 }
 
-// mongoDumpNamespaces 从 mongorestore --dryRun --verbose 输出里抽取命名空间。
+// mongoDumpNamespaces 从 mongorestore --dryRun --verbose 输出里抽取“归档中的”
+// 命名空间。
+//
+// archive 模式下当前工具（Database Tools 100.x）输出：
+//
+//	found collection `appdb.users` bson to restore to `appdb.users`
+//	found collection metadata from `appdb.users` to restore to `appdb.users`
+//
+// 而旧版 / 目录模式下是 "reading metadata for appdb.users from …"。这里两种
+// 都认，并优先取 `from` 一侧（`to` 一侧可能是 --nsFrom/--nsTo 重命名后的目标名）。
 func mongoDumpNamespaces(out string) []string {
 	seen := map[string]struct{}{}
 	var namespaces []string
-	for _, line := range strings.Split(out, "\n") {
-		idx := strings.Index(line, "reading metadata for ")
-		if idx < 0 {
-			continue
-		}
-		rest := strings.TrimSpace(line[idx+len("reading metadata for "):])
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			continue
-		}
-		ns := strings.TrimSuffix(fields[0], "...")
-		if ns == "" {
-			continue
+	add := func(ns string) {
+		ns = strings.TrimSpace(strings.Trim(ns, "`"))
+		if ns == "" || strings.ContainsAny(ns, " \t") {
+			return
 		}
 		if _, ok := seen[ns]; ok {
-			continue
+			return
 		}
 		seen[ns] = struct{}{}
 		namespaces = append(namespaces, ns)
 	}
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if idx := strings.Index(trimmed, "reading metadata for "); idx >= 0 {
+			rest := strings.TrimSpace(trimmed[idx+len("reading metadata for "):])
+			if fields := strings.Fields(rest); len(fields) > 0 {
+				// 目录模式为 "ns from path"；archive 模式无 "from"。
+				add(strings.TrimSuffix(fields[0], "..."))
+			}
+			continue
+		}
+		if idx := strings.Index(trimmed, "found collection metadata from "); idx >= 0 {
+			add(firstToken(trimmed[idx+len("found collection metadata from "):]))
+			continue
+		}
+		if idx := strings.Index(trimmed, "archive prelude "); idx >= 0 {
+			add(firstToken(trimmed[idx+len("archive prelude "):]))
+		}
+	}
 	return namespaces
 }
 
-// buildMongoConfig builds the YAML config for mongodump/mongorestore.
-func buildMongoConfig(host string, port int, username, password, database, authSource string) string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("host: %s\n", strconv.Quote(host)))
-	b.WriteString(fmt.Sprintf("port: %d\n", port))
-	if username != "" {
-		b.WriteString(fmt.Sprintf("username: %s\n", strconv.Quote(username)))
+// firstToken 返回 s 中第一个空白分隔的片段。
+func firstToken(s string) string {
+	if fields := strings.Fields(s); len(fields) > 0 {
+		return fields[0]
 	}
-	if password != "" {
-		b.WriteString(fmt.Sprintf("password: %s\n", strconv.Quote(password)))
-	}
+	return ""
+}
+
+// mongoURI 构造带凭据的连接串。只会写进 0600 配置文件，绝不进入 argv。
+func mongoURI(host string, port int, username, password, authSource string) string {
 	if authSource == "" {
 		authSource = "admin"
 	}
-	b.WriteString(fmt.Sprintf("authSource: %s\n", strconv.Quote(authSource)))
+	// 无凭据时不能省略 "@"：否则解析出空用户信息段。
+	creds := ""
+	if username != "" {
+		creds = url.QueryEscape(username) + ":" + url.QueryEscape(password) + "@"
+	}
+	return fmt.Sprintf("mongodb://%s%s:%d/?authSource=%s",
+		creds, host, port, url.QueryEscape(authSource))
+}
+
+// buildMongoConfig builds the YAML config for mongodump/mongorestore.
+//
+// Database Tools 的 --config 只认识 password / uri / sslPEMKeyPassword /
+// destinationPassword 四个字段；host、port、username、authSource 写在扁平
+// YAML 里会被拒绝（"field host not found in type struct {...}"）并直接退出。
+// 因此连接信息统一编码进 uri。
+func buildMongoConfig(host string, port int, username, password, authSource string) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("uri: %s\n", strconv.Quote(mongoURI(host, port, username, password, authSource))))
+	// uri 已含密码时这个字段是可选的，但显式写出可保证 uri 被改写或
+	// 查询参数丢失时仍能认证。
+	if password != "" {
+		b.WriteString(fmt.Sprintf("password: %s\n", strconv.Quote(password)))
+	}
 	return b.String()
 }

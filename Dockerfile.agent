@@ -18,22 +18,65 @@ ARG DEBIAN_MIRROR=mirrors.aliyun.com
 ARG RESTIC_VERSION=0.18.0
 ARG RCLONE_VERSION=1.69.0
 ARG MONGODB_TOOLS_VERSION=100.12.2
+# MySQL 客户端必须是官方 mysql 二进制：Debian 的 mariadb-client
+# （default-mysql-client 的实体）在 dump 前会探测
+# information_schema.columns.generation_expression，该列在 MySQL 5.6 及更早
+# 版本不存在，导致对旧服务端的备份必然失败
+# （Unknown column 'generation_expression' (1054)）。
+# 官方 APT 源的签名密钥已过期（EXPKEYSIG），因此改用 tarball 提取客户端。
+ARG MYSQL_CLIENT_VERSION=8.0.40
+ARG MYSQL_BASE_URL=https://dev.mysql.com/get/Downloads/MySQL-8.0
+# PostgreSQL 客户端主版本必须 >= 目标服务端主版本，否则 pg_dump 直接
+# abort（"server version mismatch"）。Debian bookworm 自带 15，无法备份
+# PG 16+；改用 PGDG 提供的最新客户端，可备份所有更旧的服务端。
+ARG PG_CLIENT_MAJOR=18
+ARG PGDG_BASE_URL=https://apt.postgresql.org/pub/repos/apt
+ARG PGDG_KEY_URL=https://www.postgresql.org/media/keys/ACCC4CF8.asc
 ARG RESTIC_BASE_URL=https://gh-proxy.com/https://github.com/restic/restic/releases/download
 ARG RCLONE_BASE_URL=https://gh-proxy.com/https://github.com/rclone/rclone/releases/download
+# fetch 带重试的下载：国内到 GitHub/厂商 CDN 的连接时常被重置，
+# 单次 curl 失败会让整个镜像构建失败。
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+RUN printf '%s\n' \
+      '#!/bin/bash' \
+      'set -eo pipefail' \
+      'url="$1"; out="$2"; tries="${3:-8}"' \
+      'for i in $(seq 1 "$tries"); do' \
+      '  if curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --connect-timeout 15 "$url" -o "$out"; then exit 0; fi' \
+      '  echo "fetch attempt $i/$tries failed: $url" >&2; sleep 3' \
+      'done' \
+      'echo "fetch exhausted retries: $url" >&2; exit 1' \
+      > /usr/local/bin/fetch && chmod 0755 /usr/local/bin/fetch
+
 RUN sed -i "s|deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g; s|security.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|g" /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip bzip2 sqlite3 mariadb-client postgresql-client && \
-    rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL "${RESTIC_BASE_URL}/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" | bunzip2 > /usr/local/bin/restic && \
-    chmod 0755 /usr/local/bin/restic && \
-    curl -fsSL "${RCLONE_BASE_URL}/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip && \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg unzip bzip2 xz-utils sqlite3 mariadb-client && \
+    rm -rf /var/lib/apt/lists/*
+
+# PostgreSQL 客户端从 PGDG 安装（bookworm 自带 15 无法备份 PG 16+）。
+RUN fetch "${PGDG_KEY_URL}" /tmp/pgdg.asc && gpg --dearmor -o /usr/share/keyrings/pgdg.gpg /tmp/pgdg.asc && rm -f /tmp/pgdg.asc && \
+    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] ${PGDG_BASE_URL} bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && apt-get install -y --no-install-recommends "postgresql-client-${PG_CLIENT_MAJOR}" && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN fetch "${RESTIC_BASE_URL}/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" /tmp/restic.bz2 && \
+    bunzip2 -c /tmp/restic.bz2 > /usr/local/bin/restic && chmod 0755 /usr/local/bin/restic && rm -f /tmp/restic.bz2
+
+RUN fetch "${RCLONE_BASE_URL}/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" /tmp/rclone.zip && \
     unzip -q /tmp/rclone.zip -d /tmp/rclone && \
     install -m 0755 "/tmp/rclone/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone && \
-    rm -rf /tmp/rclone /tmp/rclone.zip && \
-    curl -fsSL "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-debian12-x86_64-${MONGODB_TOOLS_VERSION}.tgz" -o /tmp/mongodb-tools.tgz && \
+    rm -rf /tmp/rclone /tmp/rclone.zip
+
+RUN fetch "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-debian12-x86_64-${MONGODB_TOOLS_VERSION}.tgz" /tmp/mongodb-tools.tgz && \
     mkdir -p /tmp/mongodb-tools && tar -xzf /tmp/mongodb-tools.tgz -C /tmp/mongodb-tools --strip-components=1 && \
     install -m 0755 /tmp/mongodb-tools/bin/mongodump /usr/local/bin/mongodump && \
     install -m 0755 /tmp/mongodb-tools/bin/mongorestore /usr/local/bin/mongorestore && \
     rm -rf /tmp/mongodb-tools /tmp/mongodb-tools.tgz
+
+RUN fetch "${MYSQL_BASE_URL}/mysql-${MYSQL_CLIENT_VERSION}-linux-glibc2.28-x86_64.tar.xz" /tmp/mysql-client.tar.xz && \
+    mkdir -p /tmp/mysql-client && tar -xJf /tmp/mysql-client.tar.xz -C /tmp/mysql-client --strip-components=1 && \
+    install -m 0755 /tmp/mysql-client/bin/mysql /usr/local/bin/mysql && \
+    install -m 0755 /tmp/mysql-client/bin/mysqldump /usr/local/bin/mysqldump && \
+    rm -rf /tmp/mysql-client /tmp/mysql-client.tar.xz
 COPY --from=go-build /out/backup-center-agent /usr/local/bin/backup-center-agent
 # 固定 UID/GID 65532，并让持久 scratch/restore 卷由非 root 用户使用。
 RUN groupadd --system --gid 65532 bmc-agent && \

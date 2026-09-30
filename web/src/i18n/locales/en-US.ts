@@ -302,6 +302,9 @@ export default {
     },
     "created": "Plan created",
     "updated": "Plan updated",
+    "saved": "Plan saved",
+    "enabled": "Plan enabled",
+    "disabled": "Plan disabled",
     "validationFailed": "Plan validation failed",
     "deleteDialog": {
       "title": "Delete plan",
@@ -336,8 +339,9 @@ export default {
       "no": "No",
       "databasePath": "Database path",
       "databasePathPlaceholder": "/absolute/path/to/database.sqlite",
-      "estimatedDumpBytes": "Estimated dump bytes",
-      "dumpBytesHint": "Estimate by largest DB; agent needs ~1.2× of this for temp space",
+      "estimatedDumpSize": "Estimated dump size",
+      "dumpSizeUnit": "GiB",
+      "dumpBytesHint": "Size of the largest database; agent needs ~1.3× of this free for the temp dump. Max 100 GiB.",
       "host": "Host",
       "hostPlaceholder": "host or IP",
       "port": "Port",
@@ -351,7 +355,8 @@ export default {
       "captureOplog": "Capture oplog",
       "description": "Configure backup sources, destinations, and cron rules",
       "oneFileSystemHint": "File system backups currently accept one valid target path",
-      "captureOplogHint": "Recommended for point-in-time recovery on MongoDB"
+      "captureOplogHint": "Recommended for point-in-time recovery on MongoDB",
+      "validationFailed": "Plan validation failed"
     },
     "rules": {
       "nameRequired": "Name is required",
@@ -368,7 +373,8 @@ export default {
       "portRange": "Port must be between 1 and 65535",
       "usernameRequired": "Username is required",
       "databaseRequired": "Database is required, or 'all'",
-      "dumpBytesPositive": "Estimated dump bytes must be > 0",
+      "dumpBytesPositive": "Estimated dump size must be greater than 0",
+      "dumpBytesTooLarge": "Estimated dump size cannot exceed 100 GiB",
       "pathRequired": "Path is required",
       "absolutePath": "Must be an absolute path",
       "pathsRequired": "At least one path is required",
@@ -790,7 +796,8 @@ export default {
       "title": "Confirm Restore",
       "execute": "Execute",
       "inputPlaceholder": "e.g. {{example}}",
-      "inputRequired": "Please enter a confirmation string"
+      "inputRequired": "Please enter a confirmation string",
+      "confirmationMismatch": "The confirmation must exactly match the target name or full path."
     },
     "messages": {
       "reposLoadFailed": "Failed to load repositories.",

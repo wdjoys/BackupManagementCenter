@@ -302,6 +302,9 @@ export default {
     },
     "created": "计划已创建",
     "updated": "计划已更新",
+    "saved": "计划已保存",
+    "enabled": "计划已启用",
+    "disabled": "计划已停用",
     "validationFailed": "计划校验未通过",
     "deleteDialog": {
       "title": "删除计划",
@@ -336,8 +339,9 @@ export default {
       "no": "否",
       "databasePath": "数据库文件路径",
       "databasePathPlaceholder": "/绝对/路径/database.sqlite",
-      "estimatedDumpBytes": "预估导出字节数",
-      "dumpBytesHint": "按最大的数据库估算；Agent 需要约 1.2 倍的临时空间",
+      "estimatedDumpSize": "预估导出大小",
+      "dumpSizeUnit": "GiB",
+      "dumpBytesHint": "按最大的数据库估算；Agent 需要约 1.3 倍空闲空间用于临时导出。上限 100 GiB。",
       "host": "主机",
       "hostPlaceholder": "主机名或 IP",
       "port": "端口",
@@ -351,7 +355,8 @@ export default {
       "captureOplog": "捕获 oplog",
       "description": "配置备份源、存储目标与周期调度规则",
       "oneFileSystemHint": "文件系统备份每次仅支持指定一个有效目标路径",
-      "captureOplogHint": "建议生产环境开启 oplog 增量捕获"
+      "captureOplogHint": "建议生产环境开启 oplog 增量捕获",
+      "validationFailed": "计划校验未通过"
     },
     "rules": {
       "nameRequired": "请输入名称",
@@ -368,7 +373,8 @@ export default {
       "portRange": "端口必须在 1 到 65535 之间",
       "usernameRequired": "请输入用户名",
       "databaseRequired": "请输入数据库名，或填 'all'",
-      "dumpBytesPositive": "预估导出字节数必须大于 0",
+      "dumpBytesPositive": "预估导出大小必须大于 0",
+      "dumpBytesTooLarge": "预估导出大小不能超过 100 GiB",
       "pathRequired": "请输入路径",
       "absolutePath": "必须是绝对路径",
       "pathsRequired": "至少需要一个路径",
@@ -790,7 +796,8 @@ export default {
       "title": "确认恢复",
       "execute": "执行",
       "inputPlaceholder": "例如：{{example}}",
-      "inputRequired": "请输入确认字符串"
+      "inputRequired": "请输入确认字符串",
+      "confirmationMismatch": "确认值必须与目标名称/完整路径完全一致。"
     },
     "messages": {
       "reposLoadFailed": "加载仓库列表失败。",

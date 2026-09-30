@@ -17,6 +17,7 @@ import { PlanBasicsSection } from './PlanBasicsSection'
 import { PlanScheduleSection } from './PlanScheduleSection'
 import { PlanRetentionSection } from './PlanRetentionSection'
 import { PlanSourceSection } from './PlanSourceSection'
+import { BYTES_PER_GIB } from './DumpSizeInput'
 
 export interface PlanFormProps {
   model: PlanFormModel
@@ -152,6 +153,15 @@ export const PlanForm: React.FC<PlanFormProps> = ({
       }
       if (!model.source.username?.trim()) errs['source.username'] = t('plans.rules.usernameRequired')
       if (!model.source.database?.trim()) errs['source.database'] = t('plans.rules.databaseRequired')
+      const dbEstimate = model.source.estimated_dump_bytes
+      if (dbEstimate == null || dbEstimate <= 0) {
+        errs['source.estimated_dump_bytes'] = t('plans.rules.dumpBytesPositive')
+      }
+    }
+    // 上限对 sqlite 同样生效（后端在 kind 分支之外检查）。
+    const estimate = model.source.estimated_dump_bytes
+    if (estimate != null && estimate > 100 * BYTES_PER_GIB) {
+      errs['source.estimated_dump_bytes'] = t('plans.rules.dumpBytesTooLarge')
     }
 
     setErrors(errs)

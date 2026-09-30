@@ -6,6 +6,7 @@ import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { TagInput } from './TagInput'
+import { DumpSizeInput } from './DumpSizeInput'
 import type { PathMapping } from '@/api/types'
 import type { PlanFormSource, PlanKind } from './Types'
 import { FolderTree } from 'lucide-react'
@@ -122,26 +123,13 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
             )}
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="sqlite-dump" className="text-xs">
-              {t('plans.form.estimatedDumpBytes')}
-            </Label>
-            <Input
-              id="sqlite-dump"
-              type="number"
-              min={1}
-              step={1073741824}
-              value={source.estimated_dump_bytes ?? ''}
-              onChange={(e) =>
-                onUpdateSource({
-                  estimated_dump_bytes: e.target.value ? Number(e.target.value) : undefined,
-                })
-              }
-              disabled={submitting}
-              className="h-9 text-xs"
-            />
-            <p className="text-xs text-muted-foreground">{t('plans.form.dumpBytesHint')}</p>
-          </div>
+          <DumpSizeInput
+            id="sqlite-dump"
+            value={source.estimated_dump_bytes}
+            onChange={(bytes) => onUpdateSource({ estimated_dump_bytes: bytes })}
+            error={errors['source.estimated_dump_bytes']}
+            submitting={submitting}
+          />
         </div>
       )}
 
@@ -233,6 +221,17 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
             {errors['source.database'] && (
               <p className="text-[11px] text-destructive">{errors['source.database']}</p>
             )}
+          </div>
+
+          <div className="sm:col-span-2">
+            <DumpSizeInput
+              id="db-dump-bytes"
+              required
+              value={source.estimated_dump_bytes}
+              onChange={(bytes) => onUpdateSource({ estimated_dump_bytes: bytes })}
+              error={errors['source.estimated_dump_bytes']}
+              submitting={submitting}
+            />
           </div>
 
           <div className="space-y-1.5 sm:col-span-2">

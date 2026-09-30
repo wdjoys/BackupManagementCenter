@@ -847,6 +847,74 @@ func TestPlan(t *testing.T) {
 	}
 }
 
+// 旧库可能残留负数估算值；GetPlan 必须把它归一化为“未设置”，且
+// Source 与 SourceJSON 两条消费路径都要干净（planToView 直接反序列化后者）。
+func TestPlanEstimatedDumpBytesNormalized(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+		ID: "agent-1", Name: "a", Hostname: "h", OS: "linux", Version: "1.0",
+		Status: model.AgentOffline, LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
+		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
+	})
+	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
+		ID: "tgt-1", Name: "gdrive", Type: "rclone", RemoteName: "gdrive",
+		EncryptedConfig: []byte("x"), CreatedAt: now, UpdatedAt: now,
+	})
+	_ = ts.CreateRepository(ctx, &model.Repository{
+		ID: "repo-1", AgentID: "agent-1", StorageTargetID: "tgt-1",
+		RepositoryPath: "gdrive:b/a", EncryptedPassword: []byte("pw"),
+		Status: "ready", CreatedAt: now, UpdatedAt: now,
+	})
+
+	legacy := `{"host":"db","port":5432,"username":"u","database":"all","estimated_dump_bytes":-5}`
+	_ = ts.CreatePlan(ctx, &model.Plan{
+		ID: "plan-neg", Name: "legacy", AgentID: "agent-1", Kind: model.KindPostgreSQL,
+		Schedule: "0 2 * * *", Timezone: "UTC", Enabled: true,
+		SourceJSON: legacy, RepositoryID: "repo-1",
+		Retention: model.Retention{KeepLast: 7}, RetentionJSON: retentionJSON(),
+		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
+	})
+
+	got, err := ts.GetPlan(ctx, "plan-neg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source.EstimatedDumpBytes != 0 {
+		t.Fatalf("Source: want 0, got %d", got.Source.EstimatedDumpBytes)
+	}
+
+	// SourceJSON 也必须归一化；API 层 planToView 只读它。
+	var fromJSON model.PlanSource
+	if err := json.Unmarshal([]byte(got.SourceJSON), &fromJSON); err != nil {
+		t.Fatal(err)
+	}
+	if fromJSON.EstimatedDumpBytes != 0 {
+		t.Fatalf("SourceJSON: want 0, got %d", fromJSON.EstimatedDumpBytes)
+	}
+	// omitempty 语义：序列化后不应出现该字段，前端按“未设置”重新采集。
+	var probe map[string]any
+	_ = json.Unmarshal([]byte(got.SourceJSON), &probe)
+	if _, present := probe["estimated_dump_bytes"]; present {
+		t.Fatalf("estimated_dump_bytes must be omitted: %s", got.SourceJSON)
+	}
+	// 合法值必须原样保留，归一化不能误伤。
+	good := `{"host":"db","port":5432,"username":"u","database":"all","estimated_dump_bytes":4096}`
+	_ = ts.CreatePlan(ctx, &model.Plan{
+		ID: "plan-ok", Name: "ok", AgentID: "agent-1", Kind: model.KindPostgreSQL,
+		Schedule: "0 2 * * *", Timezone: "UTC", Enabled: true,
+		SourceJSON: good, RepositoryID: "repo-1",
+		Retention: model.Retention{KeepLast: 7}, RetentionJSON: retentionJSON(),
+		TimeoutSeconds: 3600, CreatedAt: now, UpdatedAt: now,
+	})
+	ok, _ := ts.GetPlan(ctx, "plan-ok")
+	if ok.Source.EstimatedDumpBytes != 4096 {
+		t.Fatalf("positive value must survive, got %d", ok.Source.EstimatedDumpBytes)
+	}
+}
+
 func TestDeletePlanInUse(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)

@@ -2278,6 +2278,15 @@ func scanPlan(row interface{ Scan(dest ...any) error }) (*model.Plan, error) {
 
 	var src model.PlanSource
 	_ = json.Unmarshal([]byte(sourceJSON), &src)
+	// 归一化非法估算值：负值只可能来自旧版本写入（当前校验要求 > 0）。
+	// 必须同时回写 sourceJSON —— planToView 等调用方直接反序列化
+	// SourceJSON，只改 src 会被它们覆盖。
+	if src.EstimatedDumpBytes < 0 {
+		src.EstimatedDumpBytes = 0
+		if clean, err := json.Marshal(src); err == nil {
+			sourceJSON = string(clean)
+		}
+	}
 
 	var ret model.Retention
 	_ = json.Unmarshal([]byte(retentionJSON), &ret)

@@ -155,6 +155,7 @@ func main() {
 	orch := jobs.New(st, seal, nil, bus, instanceID)
 	disp := dispatchgrpc.NewDispatcher(st, reg, dispatchgrpc.DefaultConfig(), notifier)
 	disp.Src = orch
+	disp.Bus = bus
 	orch.Disp = disp // break constructor cycle: dispatcher needs orchestrator as CommandSource
 	// 恢复的前置授权读取 Agent 当前连接的能力（不是持久化的展示快照）。
 	orch.AgentCaps = reg

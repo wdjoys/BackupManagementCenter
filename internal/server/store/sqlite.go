@@ -1327,6 +1327,7 @@ func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, erro
 // ---------------------------------------------------------------------------
 
 // AppendRunLogs 幂等写入：id 由 SQLite 自增分配，source+source_seq 相同的历史行被忽略。
+// 成功插入的行回填 ID；被幂等忽略的行 ID 置 0。
 // 重复投递（Agent 重连重放、Server 重试）不会失败，也不会产生重复行。
 func (s *sqliteStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) error {
 	if len(logs) == 0 {
@@ -1349,9 +1350,17 @@ func (s *sqliteStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) er
 	}
 	defer stmt.Close()
 
-	for _, l := range logs {
-		if _, err := stmt.ExecContext(ctx, l.RunID, l.Source, int64(l.SourceSeq), l.Timestamp.Format(time.RFC3339Nano), l.Level, l.Message); err != nil {
+	for i := range logs {
+		l := &logs[i]
+		res, err := stmt.ExecContext(ctx, l.RunID, l.Source, int64(l.SourceSeq), l.Timestamp.Format(time.RFC3339Nano), l.Level, l.Message)
+		if err != nil {
 			return fmt.Errorf("append run log: %w", err)
+		}
+		// INSERT OR IGNORE 忽略重复行时 RowsAffected 为 0，此时没有可回填的 id。
+		if n, affErr := res.RowsAffected(); affErr == nil && n == 1 {
+			l.ID, _ = res.LastInsertId()
+		} else {
+			l.ID = 0
 		}
 	}
 

@@ -1804,10 +1804,23 @@ func TestRunLogs(t *testing.T) {
 	if err := ts.AppendRunLogs(ctx, logs); err != nil {
 		t.Fatal(err)
 	}
+	// 落库成功必须回填真实 ID，供实时推送按 id 去重/排序。
+	if logs[0].ID == 0 || logs[1].ID == 0 || logs[2].ID == 0 {
+		t.Fatalf("expected backfilled ids, got %+v", logs)
+	}
+	if logs[1].ID <= logs[0].ID || logs[2].ID <= logs[1].ID {
+		t.Fatalf("expected ascending backfilled ids, got %d, %d, %d", logs[0].ID, logs[1].ID, logs[2].ID)
+	}
 
-	// 重放同一批日志必须幂等：不报错、不产生重复行。
-	if err := ts.AppendRunLogs(ctx, logs); err != nil {
+	// 重放同一批日志必须幂等：不报错、不产生重复行，且被忽略的行 ID 置 0。
+	replay := append([]model.RunLog(nil), logs...)
+	if err := ts.AppendRunLogs(ctx, replay); err != nil {
 		t.Fatalf("replay should be idempotent, got %v", err)
+	}
+	for i, l := range replay {
+		if l.ID != 0 {
+			t.Fatalf("replay[%d].ID = %d, want 0 (ignored duplicate)", i, l.ID)
+		}
 	}
 
 	listed, _ := ts.ListRunLogs(ctx, "run-1", 0, 10)

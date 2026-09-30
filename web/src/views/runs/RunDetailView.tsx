@@ -52,6 +52,26 @@ type WsMessage = WsStateMessage | WsProgressMessage | WsLogMessage
 const MAX_LOG_ROWS = 5000
 const MAX_RECONNECT = 5
 
+// 按 id 去重并升序排列，只保留最新的 MAX_LOG_ROWS 条。
+function mergeLogs(prev: RunLog[], incoming: RunLog[]): RunLog[] {
+  const byId = new Map<number, RunLog>()
+  for (const item of prev) byId.set(item.id, item)
+  for (const item of incoming) byId.set(item.id, item)
+  const merged = Array.from(byId.values()).sort((a, b) => a.id - b.id)
+  return merged.length > MAX_LOG_ROWS ? merged.slice(merged.length - MAX_LOG_ROWS) : merged
+}
+
+// 固定格式 MM-DD HH:mm:ss.SSS，等宽字体下每行宽度一致，保证列对齐。
+function formatLogTime(ts: string): string {
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ts
+  const p = (n: number, w = 2) => String(n).padStart(w, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`
+}
+
+// 表头与日志行共用：grid 固定列宽，保证三列在所有行对齐。
+const LOG_GRID = 'grid grid-cols-[18ch_7ch_minmax(0,1fr)] items-baseline gap-3 font-mono text-xs'
+
 function isTerminal(status?: string): boolean {
   return status === 'succeeded' || status === 'failed' || status === 'cancelled'
 }
@@ -159,7 +179,7 @@ export const RunDetailView: React.FC = () => {
     logsAbortControllerRef.current = controller
     try {
       const data = await apiGet<RunLog[]>(`/runs/${id}/logs`, { limit: 500 }, { signal: controller.signal })
-      setLogs(data)
+      setLogs((prev) => mergeLogs(prev, data))
       setHasMoreLogs(data.length >= 500)
     } catch (err: unknown) {
       if (isAbortError(err)) return
@@ -188,18 +208,7 @@ export const RunDetailView: React.FC = () => {
       if (data.length < 500) {
         setHasMoreLogs(false)
       }
-      setLogs((prev) => {
-        const merged = [...data, ...prev]
-        const idMap = new Map<number, RunLog>()
-        for (const item of merged) {
-          idMap.set(item.id, item)
-        }
-        const unique = Array.from(idMap.values()).sort((a, b) => a.id - b.id)
-        if (unique.length > MAX_LOG_ROWS) {
-          unique.splice(0, unique.length - MAX_LOG_ROWS)
-        }
-        return unique
-      })
+      setLogs((prev) => mergeLogs(prev, data))
     } catch {
       // Non-critical
     } finally {
@@ -262,17 +271,13 @@ export const RunDetailView: React.FC = () => {
               setRun((prev) => (prev ? { ...prev, progress: msg.progress } : prev))
             } else if (msg.type === 'log') {
               setLogs((prev) => {
-                const idx = prev.findIndex((l) => l.id === msg.entry.id)
-                if (idx >= 0) {
-                  const updated = [...prev]
-                  updated[idx] = msg.entry
-                  return updated
+                const last = prev[prev.length - 1]
+                // 常规路径：ID 递增，直接追加，避免每条实时日志都重排整个列表。
+                if (!last || msg.entry.id > last.id) {
+                  const next = [...prev, msg.entry]
+                  return next.length > MAX_LOG_ROWS ? next.slice(next.length - MAX_LOG_ROWS) : next
                 }
-                const next = [...prev, msg.entry]
-                if (next.length > MAX_LOG_ROWS) {
-                  next.splice(0, next.length - MAX_LOG_ROWS)
-                }
-                return next
+                return mergeLogs(prev, [msg.entry])
               })
             }
           } catch {
@@ -357,6 +362,8 @@ export const RunDetailView: React.FC = () => {
       />
     )
   }
+
+  const percent = Math.min(100, Math.max(0, run.progress?.percent ?? 0))
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -512,6 +519,8 @@ export const RunDetailView: React.FC = () => {
                   <Copy className="h-3 w-3" aria-hidden="true" />
                 )}
               </Button>
+            ) : run.operation === 'backup' && !isTerminal(run.status) ? (
+              <p className="text-xs text-muted-foreground">{t('runDetail.snapshotPending')}</p>
             ) : (
               <p className="text-xs text-muted-foreground font-mono">—</p>
             )}
@@ -564,36 +573,32 @@ export const RunDetailView: React.FC = () => {
                 {t('runDetail.progress.title')}
               </CardTitle>
               <span className="text-xs font-mono font-medium text-primary">
-                {Math.round(run.progress.percent ?? 0)}%
+                {percent.toFixed(1)}%
               </span>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            <Progress value={run.progress.percent ?? 0} className="h-2 bg-muted" />
-            <div className="flex flex-wrap items-center justify-between text-xs text-muted-foreground gap-2 pt-1">
+            <Progress value={percent} className="h-2 bg-muted" aria-label={t('runDetail.progress.title')} />
+            <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1 text-xs">
               <div>
-                <span className="font-medium text-foreground">
-                  {t('runDetail.progress.phase')}:{' '}
-                </span>
-                <span>{translateEnum('runDetail.phases', run.progress.phase)}</span>
+                <dt className="text-[11px] text-muted-foreground">{t('runDetail.progress.step')}</dt>
+                <dd className="font-medium text-foreground">{translateEnum('runDetail.phases', run.progress.phase)}</dd>
               </div>
               <div>
-                <span className="font-medium text-foreground">
-                  {t('runDetail.progress.bytes')}:{' '}
-                </span>
-                <span className="font-mono">
-                  {formatBytes(run.progress.bytes_done)} / {formatBytes(run.progress.bytes_total)}
-                </span>
+                <dt className="text-[11px] text-muted-foreground">{t('runDetail.progress.bytesDone')}</dt>
+                <dd className="font-mono text-foreground">{formatBytes(run.progress.bytes_done)}</dd>
               </div>
               <div>
-                <span className="font-medium text-foreground">
-                  {t('runDetail.progress.files')}:{' '}
-                </span>
-                <span className="font-mono">
+                <dt className="text-[11px] text-muted-foreground">{t('runDetail.progress.bytesTotal')}</dt>
+                <dd className="font-mono text-foreground">{formatBytes(run.progress.bytes_total)}</dd>
+              </div>
+              <div>
+                <dt className="text-[11px] text-muted-foreground">{t('runDetail.progress.files')}</dt>
+                <dd className="font-mono text-foreground">
                   {run.progress.files_done ?? '—'} / {run.progress.files_total ?? '—'}
-                </span>
+                </dd>
               </div>
-            </div>
+            </dl>
           </CardContent>
         </Card>
       )}
@@ -640,45 +645,52 @@ export const RunDetailView: React.FC = () => {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          {/* 列宽单位 ch 与日志行共用 grid 容器基准的 text-xs，表头与行必须同一基准才能对齐。 */}
+          <div className={`${LOG_GRID} px-5 py-1.5 border-b border-border bg-muted/20 text-muted-foreground`}>
+            <span className="text-[11px]">{t('runDetail.logs.time')}</span>
+            <span className="text-[11px]">{t('runDetail.logs.source')}</span>
+            <span className="text-[11px]">{t('runDetail.logs.message')}</span>
+          </div>
           <div
             ref={logsWrapRef}
-            className="run-log-console h-96 overflow-y-auto p-4 font-mono text-xs text-foreground/90 space-y-1"
+            className="run-log-console h-96 overflow-y-auto px-4 py-2 space-y-0.5 text-foreground/90"
           >
             {logs.length > 0 ? (
               logs.map((log) => {
-                const isError = log.level === 'error' || log.level === 'warn'
                 const fromServer = log.source === 'server'
                 const sourceLabel = fromServer
                   ? t('runDetail.logs.sourceServer')
                   : t('runDetail.logs.sourceAgent')
+                const levelClass =
+                  log.level === 'error'
+                    ? 'text-rose-600 dark:text-rose-400 font-medium'
+                    : log.level === 'warn'
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : 'text-foreground'
                 return (
-                  <div key={log.id} className="log-row flex gap-3 leading-relaxed hover:bg-muted/50 py-0.5 px-1 rounded">
-                    <span className="log-time text-[11px] text-muted-foreground/80 select-none shrink-0 tabular-nums">
-                      {formatDateTime(log.timestamp, { second: '2-digit' })}
-                      {`.${String(new Date(log.timestamp).getMilliseconds()).padStart(3, '0')}`}
+                  <div key={log.id} className={`log-row ${LOG_GRID} rounded px-1 py-0.5 hover:bg-muted/50`}>
+                    <time dateTime={log.timestamp} className="text-[11px] text-muted-foreground/80 tabular-nums whitespace-nowrap">
+                      {formatLogTime(log.timestamp)}
+                    </time>
+                    <span
+                      className={
+                        fromServer
+                          ? 'text-[11px] font-semibold text-sky-600 dark:text-sky-400'
+                          : 'text-[11px] font-medium text-muted-foreground'
+                      }
+                    >
+                      {sourceLabel}
                     </span>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span
-                          className={
-                            fromServer
-                              ? 'select-none shrink-0 font-bold text-sky-500 dark:text-sky-400'
-                              : 'select-none shrink-0 font-medium text-muted-foreground'
-                          }
-                        >
-                          [{sourceLabel}]
+                        <span tabIndex={0} className={`block truncate ${levelClass}`}>
+                          {log.message}
                         </span>
                       </TooltipTrigger>
-                      <TooltipContent side="top" className="font-mono text-xs">
-                        {t('runDetail.logs.sourceTooltip', {
-                          source: sourceLabel,
-                          seq: log.source_seq,
-                        })}
+                      <TooltipContent side="top" className="max-w-sm max-h-64 overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs">
+                        {log.message}
                       </TooltipContent>
                     </Tooltip>
-                    <span className={isError ? 'flex-1 min-w-0 break-all text-rose-600 dark:text-rose-400 font-medium' : 'flex-1 min-w-0 break-all text-foreground'}>
-                      {log.message}
-                    </span>
                   </div>
                 )
               })

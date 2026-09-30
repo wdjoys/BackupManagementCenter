@@ -579,13 +579,20 @@ export default {
     "progress": {
       "title": "进度",
       "phase": "阶段：",
-      "bytes": "字节：",
-      "files": "文件：",
+      "step": "当前步骤",
+      "bytesDone": "已完成",
+      "bytesTotal": "总大小",
+      "files": "文件",
       "elapsed": "已用时："
     },
     "phases": {
       "dry_run": "试运行",
-      "backup": "备份中",
+      "preparing": "准备中",
+      "dumping": "导出数据",
+      "pre_backup": "保护性备份",
+      "restoring": "恢复中",
+      "rolling_back": "回滚中",
+      "backup": "上传到仓库",
       "done": "完成"
     },
     "logs": {
@@ -598,12 +605,13 @@ export default {
       "offline": "离线",
       "sourceAgent": "Agent",
       "sourceServer": "Server",
-      "sourceTooltip": "来源：{{source}} · 来源序号 #{{seq}}",
+      "source": "来源",
       "time": "时间",
       "level": "级别",
       "message": "消息",
       "empty": "暂无日志输出"
     },
+    "snapshotPending": "备份完成后生成",
     "loadFailed": "加载运行详情失败",
     "liveConnected": "实时日志流已连接",
     "disconnected": "实时连接已中断"

@@ -12,6 +12,8 @@ import (
 
 	"backupmanagementcenter/internal/agent/backup"
 	"backupmanagementcenter/internal/model"
+
+	bmcv1 "backupmanagementcenter/api/proto/v1"
 )
 
 func TestRunVerifyRemote_NilExecutorReturnsError(t *testing.T) {
@@ -370,4 +372,80 @@ func TestRunValidatePathsMirrorsHostPathIntoSourceRoot(t *testing.T) {
 	if _, err := runValidatePaths(context.Background(), Deps{SourceRoots: []string{root}}, t.TempDir(), params, backup.SecretBundle{}); err != nil {
 		t.Fatalf("validate paths = %v", err)
 	}
+}
+
+// backupScriptExecutor 按子命令返回预置输出，用于驱动完整的 runBackup 流程。
+type backupScriptExecutor struct{}
+
+func (backupScriptExecutor) Run(_ context.Context, cmd backup.Cmd, onStdout func(string), _ func(string)) (int, error) {
+	if len(cmd.Args) == 0 {
+		return 1, nil
+	}
+	switch cmd.Args[0] {
+	case "snapshots":
+		onStdout("[]")
+	case "backup":
+		// restic --json 的真实输出是扁平 JSON，逐行回调。
+		onStdout(`{"message_type":"status","percent_done":0.5,"total_files":2,"files_done":1,"total_bytes":2048,"bytes_done":1024}`)
+		onStdout(`{"message_type":"summary","snapshot_id":"abc123","files_new":2,"total_files_processed":2,"total_bytes_processed":2048,"total_duration":0.5}`)
+	}
+	return 0, nil
+}
+
+func TestRunBackupReportsSnapshotProgressAndLogs(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	params, err := json.Marshal(model.BackupTask{
+		PlanID:     "p1",
+		Kind:       model.KindFilesystem,
+		Repository: model.RepoAccess{RepositoryPath: "repo"},
+		Source:     model.PlanSource{Paths: []string{src}},
+		Tags:       []string{"run:r1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		logged   []string
+		phases   []string
+		progress []model.Progress
+	)
+	deps := Deps{
+		Exec: backupScriptExecutor{},
+		Logf: func(level, format string, args ...any) {
+			logged = append(logged, level+" "+fmt.Sprintf(format, args...))
+		},
+		Progress: func(p model.Progress) {
+			progress = append(progress, p)
+			phases = append(phases, p.Phase)
+		},
+	}
+
+	res, err := Execute(context.Background(), deps, t.TempDir(), bmcv1.ExecuteCommand_BACKUP, params, backup.SecretBundle{ResticPassword: "pw"})
+	if err != nil {
+		t.Fatalf("Execute BACKUP: %v", err)
+	}
+	if len(res.SnapshotIDs) != 1 || res.SnapshotIDs[0] != "abc123" {
+		t.Fatalf("SnapshotIDs = %v, want [abc123]", res.SnapshotIDs)
+	}
+
+	joined := strings.Join(logged, "\n")
+	if !strings.Contains(joined, "快照已创建：abc123") {
+		t.Errorf("missing snapshot log:\n%s", joined)
+	}
+	if !strings.Contains(joined, "开始备份：类型 filesystem") {
+		t.Errorf("missing start log:\n%s", joined)
+	}
+
+	wantPhases := []string{model.BackupPhasePreparing, model.BackupPhaseUploading, model.BackupPhaseDone}
+	got := strings.Join(phases, ",")
+	for _, want := range wantPhases {
+		if !strings.Contains(got, want) {
+			t.Errorf("progress phases %q missing %q", got, want)
+		}
+	}
+	_ = progress
 }

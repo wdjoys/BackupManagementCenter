@@ -579,13 +579,20 @@ export default {
     "progress": {
       "title": "Progress",
       "phase": "Phase:",
-      "bytes": "Bytes:",
-      "files": "Files:",
+      "step": "Current step",
+      "bytesDone": "Completed",
+      "bytesTotal": "Total size",
+      "files": "Files",
       "elapsed": "Elapsed:"
     },
     "phases": {
       "dry_run": "Dry-run",
-      "backup": "Backup",
+      "preparing": "Preparing",
+      "dumping": "Exporting data",
+      "pre_backup": "Protection backup",
+      "restoring": "Restoring",
+      "rolling_back": "Rolling back",
+      "backup": "Uploading to repository",
       "done": "Done"
     },
     "logs": {
@@ -598,12 +605,13 @@ export default {
       "offline": "Offline",
       "sourceAgent": "Agent",
       "sourceServer": "Server",
-      "sourceTooltip": "Source: {{source}} · Source #{{seq}}",
+      "source": "Source",
       "time": "Time",
       "level": "Level",
       "message": "Message",
       "empty": "No logs recorded yet"
     },
+    "snapshotPending": "Available after the backup finishes",
     "loadFailed": "Failed to load run",
     "liveConnected": "Live stream connected",
     "disconnected": "Live connection closed"

@@ -378,6 +378,40 @@ func (s *Service) handleAgentMessage(stream bmcv1.AgentControl_ConnectServer, st
 // Message handlers
 // ---------------------------------------------------------------------------
 
+// appendServerRunLog 记录 Server 视角的运行里程碑，并推送给实时日志订阅者。
+func (s *Service) appendServerRunLog(ctx context.Context, runID, level, message string) {
+	now := time.Now().UTC()
+	logs := []model.RunLog{{
+		RunID: runID, Source: model.RunLogSourceServer, SourceSeq: uint64(now.UnixNano()),
+		Timestamp: now, Level: level, Message: message,
+	}}
+	if err := s.store.AppendRunLogs(ctx, logs); err != nil {
+		log.Printf("failed to persist server run log for %s: %v", runID, err)
+		return
+	}
+	if logs[0].ID != 0 {
+		s.bus.Publish(runID, events.Event{Type: events.Log, Entry: &logs[0]})
+	}
+}
+
+// terminalRunLog 根据终态运行生成 Server 结束日志。
+func terminalRunLog(r *model.Run) (level, message string) {
+	switch r.Status {
+	case model.RunSucceeded:
+		if r.SnapshotID != "" {
+			return "info", "运行成功，快照 " + r.SnapshotID
+		}
+		return "info", "运行成功"
+	case model.RunFailed:
+		if r.ErrorMessage != "" {
+			return "error", fmt.Sprintf("运行失败：[%s] %s", r.ErrorCode, r.ErrorMessage)
+		}
+		return "error", fmt.Sprintf("运行失败：[%s]", r.ErrorCode)
+	default:
+		return "warn", "运行已取消"
+	}
+}
+
 func (s *Service) handleHeartbeat(ctx context.Context, agentID string, hb *bmcv1.Heartbeat) error {
 	// Throttle last_seen_at writes to at most once per 10 seconds
 	s.lastSeenMu.Lock()
@@ -438,6 +472,9 @@ func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca 
 			}); ok {
 				_ = rs.UpdateRestorePhase(ctx, runID, "running")
 			}
+		}
+		if err == nil {
+			s.appendServerRunLog(ctx, runID, "info", "Agent 已接收任务，开始执行")
 		}
 		return err
 	}
@@ -558,15 +595,18 @@ func (s *Service) handleRunLogBatch(ctx context.Context, agentID string, batch *
 			Message:   entry.GetMessage(),
 		}
 		logs = append(logs, logEntry)
-
-		// Publish log event (ID尚未分配，落库后由 store 回填给客户端)
-		s.bus.Publish(runID, events.Event{
-			Type:  events.Log,
-			Entry: &logEntry,
-		})
 	}
 
-	return s.store.AppendRunLogs(ctx, logs)
+	// 先落库拿到真实 ID 再推送：前端按 id 去重，ID 恒为 0 会让实时日志互相覆盖。
+	if err := s.store.AppendRunLogs(ctx, logs); err != nil {
+		return err
+	}
+	for i := range logs {
+		if logs[i].ID != 0 {
+			s.bus.Publish(runID, events.Event{Type: events.Log, Entry: &logs[i]})
+		}
+	}
+	return nil
 }
 
 // runLogSource 归一化来源标记；未升级的Agent留空时按 agent 归类。
@@ -760,6 +800,9 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	// Publish state event
 	updatedRun, _ := s.store.GetRun(ctx, runID)
 	if updatedRun != nil {
+		// 结束日志必须先于终态 state 推送：前端收到终态后会关闭 WebSocket。
+		level, message := terminalRunLog(updatedRun)
+		s.appendServerRunLog(ctx, runID, level, message)
 		s.bus.Publish(runID, events.Event{
 			Type: events.State,
 			Run:  updatedRun,

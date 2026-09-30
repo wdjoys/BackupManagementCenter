@@ -212,7 +212,7 @@ func TestCheckIncludesCommandOutputOnFailure(t *testing.T) {
 	}
 }
 func TestBackupIncludesCommandOutputOnFailure(t *testing.T) {
-	_, _, err := Backup(context.Background(), checkExecutor{stdout: `{"message_type":"exit_error","code":3,"message":"permission denied: /backup-sources/etc/shadow"}`, stderr: "unable to read source file", code: 3}, Options{Exe: "restic", RepoPath: "rclone:remote:/repo"}, []string{"/backup-sources"}, "", nil, false, nil)
+	_, err := Backup(context.Background(), checkExecutor{stdout: `{"message_type":"exit_error","code":3,"message":"permission denied: /backup-sources/etc/shadow"}`, stderr: "unable to read source file", code: 3}, Options{Exe: "restic", RepoPath: "rclone:remote:/repo"}, []string{"/backup-sources"}, "", nil, false, nil)
 	if err == nil {
 		t.Fatal("expected backup failure")
 	}
@@ -225,8 +225,8 @@ func TestBackupIncludesCommandOutputOnFailure(t *testing.T) {
 }
 func TestBackupEmitsStatusAndSummaryProgress(t *testing.T) {
 	stdoutLines := strings.Join([]string{
-		`{"message_type":"status","data":{"percent_done":0.25,"total_bytes":104857600,"bytes_done":26214400,"total_files":100,"files_done":25}}`,
-		`{"message_type":"summary","data":{"snapshot_id":"snap-123","total_bytes_processed":104857600,"total_files_processed":100}}`,
+		`{"message_type":"status","percent_done":0.25,"total_files":100,"files_done":25,"total_bytes":104857600,"bytes_done":26214400}`,
+		`{"message_type":"summary","files_new":3,"files_changed":1,"files_unmodified":96,"data_added":2048,"data_added_packed":1024,"total_files_processed":100,"total_bytes_processed":104857600,"total_duration":1.5,"snapshot_id":"snap-123"}`,
 	}, "\n")
 
 	var got []model.Progress
@@ -234,17 +234,20 @@ func TestBackupEmitsStatusAndSummaryProgress(t *testing.T) {
 		got = append(got, p)
 	}
 
-	summary, snapID, err := Backup(context.Background(), checkExecutor{stdout: stdoutLines}, Options{
+	summary, err := Backup(context.Background(), checkExecutor{stdout: stdoutLines}, Options{
 		Exe: "restic", RepoPath: "rclone:remote:/repo",
 	}, []string{"/data"}, "", nil, false, onProg)
 	if err != nil {
 		t.Fatalf("Backup failed: %v", err)
 	}
-	if snapID != "snap-123" {
-		t.Fatalf("snapID = %q, want snap-123", snapID)
+	if summary.SnapshotID != "snap-123" {
+		t.Fatalf("summary.SnapshotID = %q, want snap-123", summary.SnapshotID)
 	}
-	if summary == "" {
-		t.Fatal("expected summary")
+	if summary.FilesNew != 3 {
+		t.Errorf("summary.FilesNew = %d, want 3", summary.FilesNew)
+	}
+	if summary.DataAdded != 2048 {
+		t.Errorf("summary.DataAdded = %d, want 2048", summary.DataAdded)
 	}
 	if len(got) != 2 {
 		t.Fatalf("got %d progress events, want 2: %+v", len(got), got)
@@ -261,8 +264,8 @@ func TestBackupEmitsStatusAndSummaryProgress(t *testing.T) {
 	if status.FilesTotal != 100 || status.FilesDone != 25 {
 		t.Errorf("status files = %d / %d, want 25 / 100", status.FilesDone, status.FilesTotal)
 	}
-	if status.Phase != "backup" {
-		t.Errorf("status.Phase = %q, want backup", status.Phase)
+	if status.Phase != model.BackupPhaseUploading {
+		t.Errorf("status.Phase = %q, want %q", status.Phase, model.BackupPhaseUploading)
 	}
 
 	// 验证 summary 的 100% 收尾
@@ -276,8 +279,29 @@ func TestBackupEmitsStatusAndSummaryProgress(t *testing.T) {
 	if final.FilesDone != 100 || final.FilesTotal != 100 {
 		t.Errorf("final files = %d / %d, want 100 / 100", final.FilesDone, final.FilesTotal)
 	}
-	if final.Phase != "done" {
-		t.Errorf("final.Phase = %q, want done", final.Phase)
+	if final.Phase != model.BackupPhaseDone {
+		t.Errorf("final.Phase = %q, want %q", final.Phase, model.BackupPhaseDone)
+	}
+}
+
+// TestBackupLogsReadableSourceErrors 验证 restic stderr 的 JSON 错误行被转成可读文本进日志。
+func TestBackupLogsReadableSourceErrors(t *testing.T) {
+	var logged []string
+	_, err := Backup(context.Background(), checkExecutor{
+		stderr: `{"message_type":"error","error":{"message":"permission denied"},"during":"archival","item":"/data/secret"}`,
+		code:   3,
+	}, Options{
+		Exe: "restic", RepoPath: "repo",
+		Logf: func(l string) { logged = append(logged, l) },
+	}, []string{"/data"}, "", nil, false, nil)
+	if err == nil {
+		t.Fatal("expected backup failure")
+	}
+	if len(logged) != 1 {
+		t.Fatalf("got %d logged lines, want 1: %+v", len(logged), logged)
+	}
+	if logged[0] != "/data/secret: permission denied" {
+		t.Errorf("logged[0] = %q, want %q", logged[0], "/data/secret: permission denied")
 	}
 }
 

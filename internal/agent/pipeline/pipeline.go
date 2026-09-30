@@ -63,6 +63,47 @@ type Result struct {
 	ResultJSON  []byte
 }
 
+// logf 在 Logf 未注入时静默跳过。
+func (d Deps) logf(level, format string, args ...any) {
+	if d.Logf != nil {
+		d.Logf(level, format, args...)
+	}
+}
+
+// progress 在 Progress 未注入时静默跳过。
+func (d Deps) progress(p model.Progress) {
+	if d.Progress != nil {
+		d.Progress(p)
+	}
+}
+
+// humanBytes 以 1024 进制格式化字节数，与前端 formatBytes 保持一致。
+func humanBytes(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	units := []string{"KB", "MB", "GB", "TB", "PB"}
+	v := float64(n) / 1024
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	return fmt.Sprintf("%.2f %s", v, units[i])
+}
+
+// describeBackupSource 生成不含凭据的备份源描述，用于运行日志。
+func describeBackupSource(task model.BackupTask) string {
+	switch task.Kind {
+	case "filesystem":
+		return strings.Join(task.Source.Paths, ", ")
+	case "sqlite":
+		return task.Source.Path
+	default:
+		return fmt.Sprintf("%s:%d/%s", task.Source.Host, task.Source.Port, task.Source.Database)
+	}
+}
+
 // Execute runs the operation synchronously. tempDir is private and already
 // created; the caller wipes it afterwards regardless of outcome.
 func Execute(ctx context.Context, d Deps, tempDir string, op bmcv1.ExecuteCommand_Operation, params []byte, secrets backup.SecretBundle) (*Result, error) {
@@ -71,7 +112,15 @@ func Execute(ctx context.Context, d Deps, tempDir string, op bmcv1.ExecuteComman
 
 	switch op {
 	case bmcv1.ExecuteCommand_BACKUP:
-		return runBackup(ctx, d, tempDir, params, secrets)
+		res, err := runBackup(ctx, d, tempDir, params, secrets)
+		if err != nil {
+			if ctx.Err() != nil {
+				d.logf("warn", "备份已取消")
+			} else {
+				d.logf("error", "备份失败：%v", err)
+			}
+		}
+		return res, err
 	case bmcv1.ExecuteCommand_RESTORE:
 		return runRestore(ctx, d, tempDir, params, secrets, false)
 	case bmcv1.ExecuteCommand_RESTORE_DRY_RUN:
@@ -118,6 +167,11 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	if !ok {
 		return nil, &PipelineError{Code: "invalid_plan", Message: "unknown kind: " + task.Kind}
 	}
+	d.progress(model.Progress{Phase: model.BackupPhasePreparing})
+	d.logf("info", "开始备份：类型 %s，源 %s", task.Kind, describeBackupSource(task))
+	if task.Kind == "filesystem" && len(task.Source.Excludes) > 0 {
+		d.logf("info", "排除规则 %d 条", len(task.Source.Excludes))
+	}
 	if task.Kind == "filesystem" || task.Kind == "sqlite" {
 		paths := task.Source.Paths
 		if task.Kind == "sqlite" {
@@ -131,6 +185,7 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	if err := adapter.Validate(ctx, spec); err != nil {
 		return nil, &PipelineError{Code: "invalid_plan", Message: "validation failed", Cause: err}
 	}
+	d.logf("info", "源校验通过")
 
 	// Space check for database kinds
 	if task.Kind != "filesystem" {
@@ -165,9 +220,18 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 		Progress: d.Progress,
 	}
 
+	var dumpStart time.Time
+	if task.Kind != "filesystem" {
+		d.progress(model.Progress{Phase: model.BackupPhaseDumping})
+		d.logf("info", "开始导出数据")
+		dumpStart = time.Now()
+	}
 	artifact, err := adapter.Backup(ctx, rc)
 	if err != nil {
 		return nil, &PipelineError{Code: "backup_failed", Message: "adapter backup failed", Cause: err}
+	}
+	if task.Kind != "filesystem" {
+		d.logf("info", "导出完成，用时 %s", time.Since(dumpStart).Round(time.Second))
 	}
 
 	resticOpts, err := newResticOpts(d, task.Repository.RepositoryPath, tempDir, secrets)
@@ -181,6 +245,7 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	// existing snapshot instead of creating a duplicate.
 	for _, tag := range task.Tags {
 		if strings.HasPrefix(tag, "run:") {
+			d.logf("info", "检查本次运行是否已有快照")
 			if snapshots, snapErr := restic.Snapshots(ctx, d.Exec, resticOpts); snapErr == nil {
 				for _, snap := range snapshots {
 					for _, existingTag := range snap.Tags {
@@ -201,16 +266,40 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 		if task.Kind != "filesystem" && artifact.StagingDir != "" {
 			_ = os.RemoveAll(artifact.StagingDir)
 		}
+		d.progress(model.Progress{Phase: model.BackupPhaseDone, Percent: 100})
+		d.logf("info", "检测到本次运行已上传的快照 %s，跳过重复上传", snapshotID)
 		return &Result{SnapshotIDs: []string{snapshotID}}, nil
 	}
+	var summary restic.BackupSummary
+	lastStep := 0
+	onProgress := func(p model.Progress) {
+		d.progress(p)
+		if p.Phase != model.BackupPhaseUploading {
+			return
+		}
+		// 每跨过一个 10% 记录一条；restic 扫描期间总量会增长，百分比可能回退，只记录更高的档位。
+		step := int(p.Percent) / 10
+		if step > lastStep && step < 10 {
+			lastStep = step
+			d.logf("info", "上传进度 %d%%：%s / %s，文件 %d / %d", step*10, humanBytes(p.BytesDone), humanBytes(p.BytesTotal), p.FilesDone, p.FilesTotal)
+		}
+	}
+	d.logf("info", "开始上传到 restic 仓库")
 	if task.Kind == "filesystem" {
-		_, snapshotID, err = restic.Backup(ctx, d.Exec, resticOpts, artifact.LivePaths, artifact.ExcludeFile, task.Tags, artifact.OneFileSystem, d.Progress)
+		summary, err = restic.Backup(ctx, d.Exec, resticOpts, artifact.LivePaths, artifact.ExcludeFile, task.Tags, artifact.OneFileSystem, onProgress)
 	} else {
 		resticOpts.WorkingDir = artifact.StagingDir
-		_, snapshotID, err = restic.Backup(ctx, d.Exec, resticOpts, []string{"."}, "", task.Tags, false, d.Progress)
+		summary, err = restic.Backup(ctx, d.Exec, resticOpts, []string{"."}, "", task.Tags, false, onProgress)
 	}
 	if err != nil {
 		return nil, &PipelineError{Code: "backup_failed", Message: "restic backup failed", Cause: err}
+	}
+	snapshotID = summary.SnapshotID
+	d.logf("info", "上传完成：新增文件 %d，修改 %d，未变 %d；新增数据 %s（压缩后 %s）；共处理 %d 个文件 / %s，用时 %.1f 秒", summary.FilesNew, summary.FilesChanged, summary.FilesUnmodified, humanBytes(summary.DataAdded), humanBytes(summary.DataAddedPacked), summary.TotalFilesProcessed, humanBytes(summary.TotalBytesProcessed), summary.TotalDuration)
+	if snapshotID != "" {
+		d.logf("info", "快照已创建：%s", snapshotID)
+	} else {
+		d.logf("warn", "restic 未返回快照 ID")
 	}
 
 	if task.Kind != "filesystem" && artifact.StagingDir != "" {
@@ -549,15 +638,15 @@ func uploadProtectionBackup(ctx context.Context, d Deps, opts restic.Options, te
 		return "", errors.New("protection backup produced no paths")
 	}
 	d.Progress(model.Progress{Phase: model.RestorePhasePreBackup})
-	snapshotID, _, err := restic.Backup(ctx, d.Exec, opts, paths, artifact.ExcludeFile,
+	summary, err := restic.Backup(ctx, d.Exec, opts, paths, artifact.ExcludeFile,
 		[]string{restoreProtectionTagPrefix + task.RunID, "kind:" + task.Kind}, artifact.OneFileSystem, nil)
 	if err != nil {
 		return "", fmt.Errorf("upload protection backup: %w", err)
 	}
-	if snapshotID == "" {
+	if summary.SnapshotID == "" {
 		return "", errors.New("protection backup returned no snapshot id")
 	}
-	return snapshotID, nil
+	return summary.SnapshotID, nil
 }
 
 // restoreProtectionTagPrefix 与 server 端保护标签保持一致。

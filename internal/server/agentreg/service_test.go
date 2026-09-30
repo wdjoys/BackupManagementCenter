@@ -33,6 +33,20 @@ type fakeStore struct {
 	repoChecks   map[string]time.Time
 	agents       map[string]*model.Agent
 	tokens       map[string]*model.EnrollmentToken
+	logs         []model.RunLog
+	nextLogID    int64
+}
+
+// AppendRunLogs 复刻真实 store 的 ID 回填语义：插入的行拿到递增 ID。
+func (f *fakeStore) AppendRunLogs(_ context.Context, logs []model.RunLog) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range logs {
+		f.nextLogID++
+		logs[i].ID = f.nextLogID
+		f.logs = append(f.logs, logs[i])
+	}
+	return nil
 }
 
 func newFakeStore() *fakeStore {
@@ -672,4 +686,53 @@ func (f *fakeConnectServer) Context() context.Context {
 func (f *fakeConnectServer) Send(*bmcv1.ServerMessage) error { return nil }
 func (f *fakeConnectServer) Recv() (*bmcv1.AgentMessage, error) {
 	return nil, context.Canceled
+}
+
+// TestHandleRunResultLogsBeforeTerminalState 覆盖两点：结束日志先于终态事件推送，
+// 且日志落库后带真实 ID（前端靠 ID 去重，ID 为 0 会互相覆盖）。
+func TestHandleRunResultLogsBeforeTerminalState(t *testing.T) {
+	st := newFakeStore()
+	run := model.Run{
+		ID:        "run-log-order",
+		AgentID:   "agent-1",
+		Operation: model.OpBackup,
+		Status:    model.RunRunning,
+		QueuedAt:  time.Now().UTC(),
+	}
+	st.addRun(run)
+
+	bus := events.New()
+	svc := NewService(st, NewRegistry(), bus, DefaultConfig(), &recordingNotifier{}, nil)
+	ch, cancel := bus.Subscribe(run.ID)
+	defer cancel()
+
+	if err := svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:       run.ID,
+		Status:      bmcv1.RunResult_SUCCEEDED,
+		SnapshotIds: []string{"snap-123"},
+	}); err != nil {
+		t.Fatalf("handleRunResult: %v", err)
+	}
+
+	first := <-ch
+	if first.Type != events.Log {
+		t.Fatalf("first event type = %q, want log", first.Type)
+	}
+	if first.Entry == nil {
+		t.Fatal("log event without entry")
+	}
+	if first.Entry.Message != "运行成功，快照 snap-123" {
+		t.Errorf("log message = %q, want %q", first.Entry.Message, "运行成功，快照 snap-123")
+	}
+	if first.Entry.Source != model.RunLogSourceServer {
+		t.Errorf("log source = %q, want %q", first.Entry.Source, model.RunLogSourceServer)
+	}
+	if first.Entry.ID == 0 {
+		t.Error("log entry must carry the persisted ID")
+	}
+
+	second := <-ch
+	if second.Type != events.State {
+		t.Fatalf("second event type = %q, want state", second.Type)
+	}
 }

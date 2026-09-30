@@ -113,6 +113,7 @@ type Store interface {
 	FailStaleRuns(ctx context.Context, statuses []string, errorCode string, at time.Time) ([]string, error)
 
 	// Run logs
+	// AppendRunLogs 幂等写入运行日志；成功插入的行回填 ID，被幂等忽略的行 ID 置 0。
 	AppendRunLogs(ctx context.Context, logs []model.RunLog) error
 	ListRunLogs(ctx context.Context, runID string, beforeID int64, limit int) ([]model.RunLog, error)
 

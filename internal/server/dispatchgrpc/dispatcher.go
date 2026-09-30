@@ -13,6 +13,7 @@ import (
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/server/agentreg"
+	"backupmanagementcenter/internal/server/events"
 	"backupmanagementcenter/internal/server/jobs"
 	"backupmanagementcenter/internal/server/notification"
 	"backupmanagementcenter/internal/server/store"
@@ -86,6 +87,8 @@ type Dispatcher struct {
 	notifier notification.FailureNotifier
 	// Src builds the actual ExecuteCommand (params + decrypted secrets).
 	Src jobs.CommandSource
+	// Bus 可选：设置后，派发日志落库后推送给实时订阅者。
+	Bus events.Bus
 
 	mu           sync.Mutex
 	repoQueues   map[string]*repoQueue
@@ -411,16 +414,20 @@ func (d *Dispatcher) appendDispatchLog(ctx context.Context, runID, level, messag
 	d.dispatchLogMu.Unlock()
 
 	// 单条幂等写入：id 由 store 分配，source_seq 用当前纳秒保证同一 run 内不重复。
-	entry := model.RunLog{
+	logs := []model.RunLog{{
 		RunID:     runID,
 		Source:    model.RunLogSourceServer,
 		SourceSeq: uint64(now.UnixNano()),
 		Timestamp: now,
 		Level:     level,
 		Message:   message,
-	}
-	if err := d.store.AppendRunLogs(ctx, []model.RunLog{entry}); err != nil {
+	}}
+	if err := d.store.AppendRunLogs(ctx, logs); err != nil {
 		log.Printf("dispatcher: failed to persist run log for %s: %v", runID, err)
+		return
+	}
+	if d.Bus != nil && logs[0].ID != 0 {
+		d.Bus.Publish(runID, events.Event{Type: events.Log, Entry: &logs[0]})
 	}
 }
 

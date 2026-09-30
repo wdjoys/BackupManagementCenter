@@ -23,7 +23,7 @@ type Options struct {
 	CacheDir       string       // optional cache directory
 	RcloneConfFile string       // 0600 rclone.conf path; required for rclone: repos
 	WorkingDir     string       // optional working directory for relative backup paths
-	Logf           func(string) // optional raw stderr line sink
+	Logf           func(string) // optional stderr sink; called with a readable line, already level-tagged by the caller
 }
 
 // Snapshot represents a restic snapshot from --json output.
@@ -39,10 +39,11 @@ type Snapshot struct {
 type ProgressCallback func(model.Progress)
 
 // Backup runs `restic backup` with the given paths.
-// Returns (summary, snapshotID, error).
-func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []string, excludeFile string, tags []string, oneFS bool, onProgress ProgressCallback) (string, string, error) {
+// 返回解析后的 summary；SnapshotID 为空表示 restic 未输出 summary。
+func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []string, excludeFile string, tags []string, oneFS bool, onProgress ProgressCallback) (BackupSummary, error) {
+	var summary BackupSummary
 	if opts.Exe == "" {
-		return "", "", fmt.Errorf("restic exe not set")
+		return summary, fmt.Errorf("restic exe not set")
 	}
 	args := []string{"backup"}
 	if opts.RepoPath != "" {
@@ -70,8 +71,8 @@ func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []str
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
-	var snapshotID string
-	var lastSummary string
+	// JSON 模式下 restic 默认每秒输出 60 次 status，每条都会写 SQLite；限流为每秒 1 次。
+	env = append(env, "RESTIC_PROGRESS_FPS=1")
 	var outputTail strings.Builder
 	var outputMu sync.Mutex
 	appendOutput := func(line string) {
@@ -88,40 +89,57 @@ func Backup(ctx context.Context, exec backup.Executor, opts Options, paths []str
 		outputTail.WriteString(line)
 		outputTail.WriteByte('\n')
 	}
+	// restic --json 的每行是扁平 JSON（{"message_type":"status",...}），
+	// 不是 {"message_type":...,"data":{...}} 包装格式。
+	stderrLines := 0
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env, Dir: opts.WorkingDir},
 		func(line string) {
-			// Parse JSONL output
-			var msg jsonMessage
-			if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			var head struct {
+				MessageType string `json:"message_type"`
+			}
+			if json.Unmarshal([]byte(line), &head) != nil {
 				return
 			}
-			switch msg.MessageType {
+			switch head.MessageType {
 			case "status":
-				if onProgress != nil && msg.Data != nil {
-					var s resticStatus
-					if err := json.Unmarshal(msg.Data, &s); err == nil {
-						onProgress(s.toProgress())
-					}
+				var s resticStatus
+				if json.Unmarshal([]byte(line), &s) != nil {
+					return
+				}
+				if onProgress != nil {
+					onProgress(s.toProgress())
 				}
 			case "summary":
-				if msg.Data != nil {
-					var summary backupSummary
-					if err := json.Unmarshal(msg.Data, &summary); err == nil {
-						snapshotID = summary.SnapshotID
-						lastSummary = string(msg.Data)
-						if onProgress != nil {
-							onProgress(summary.toProgress())
-						}
-					}
+				var parsed BackupSummary
+				if json.Unmarshal([]byte(line), &parsed) != nil {
+					return
+				}
+				summary = parsed
+				if onProgress != nil {
+					onProgress(summary.toProgress())
 				}
 			case "error", "exit_error":
 				appendOutput(line)
 			}
-		}, appendOutput)
+		}, func(line string) {
+			appendOutput(line)
+			// restic 把逐文件错误写在 stderr；转成可读文本进运行日志，避免只留在错误尾巴里。
+			// stderr 回调只在单个 goroutine 中执行，计数器无需加锁。
+			if opts.Logf == nil {
+				return
+			}
+			stderrLines++
+			switch {
+			case stderrLines <= maxLoggedStderrLines:
+				opts.Logf(resticErrorText(line))
+			case stderrLines == maxLoggedStderrLines+1:
+				opts.Logf("restic 输出的更多错误已省略")
+			}
+		})
 	if err != nil || exitCode != 0 {
-		return "", "", enriched(mapResticError(exitCode, err), outputTail.String())
+		return summary, enriched(mapResticError(exitCode, err), outputTail.String())
 	}
-	return lastSummary, snapshotID, nil
+	return summary, nil
 }
 
 // CatConfig runs `restic cat config` to check if repo exists and password is correct.
@@ -605,10 +623,33 @@ func Init(ctx context.Context, exec backup.Executor, opts Options) error {
 	return nil
 }
 
-// jsonMessage represents a restic JSONL message.
-type jsonMessage struct {
-	MessageType string          `json:"message_type"`
-	Data        json.RawMessage `json:"data,omitempty"`
+// maxLoggedStderrLines 限制单次 Backup 记录到运行日志的 stderr 行数，
+// 避免大量损坏文件把日志刷爆；超出部分只记录一条省略提示。
+const maxLoggedStderrLines = 50
+
+// resticErrorText 把 restic --json 的错误行转成可读文本；非 JSON 行原样返回。
+func resticErrorText(line string) string {
+	var m struct {
+		MessageType string `json:"message_type"`
+		Message     string `json:"message"`
+		Item        string `json:"item"`
+		Error       struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(line), &m) != nil {
+		return line
+	}
+	switch m.MessageType {
+	case "error":
+		if m.Item != "" {
+			return m.Item + ": " + m.Error.Message
+		}
+		return m.Error.Message
+	case "exit_error":
+		return m.Message
+	}
+	return line
 }
 
 type resticStatus struct {
@@ -626,7 +667,7 @@ func (s resticStatus) toProgress() model.Progress {
 		pct = 100
 	}
 	return model.Progress{
-		Phase:      "backup",
+		Phase:      model.BackupPhaseUploading,
 		Percent:    pct,
 		BytesDone:  s.BytesDone,
 		BytesTotal: s.TotalBytes,
@@ -635,30 +676,27 @@ func (s resticStatus) toProgress() model.Progress {
 	}
 }
 
-type backupSummary struct {
-	SnapshotID      string `json:"snapshot_id"`
-	TotalBytes      int64  `json:"total_bytes_processed"`
-	TotalFiles      int64  `json:"total_files_processed"`
-	FilesDone       int64  `json:"files_done"`
-	TotalBytesDone  int64  `json:"bytes_done"`
+// BackupSummary 是 restic backup --json 最后一行 summary 的解析结果（扁平格式）。
+type BackupSummary struct {
+	SnapshotID          string  `json:"snapshot_id"`
+	FilesNew            int64   `json:"files_new"`
+	FilesChanged        int64   `json:"files_changed"`
+	FilesUnmodified     int64   `json:"files_unmodified"`
+	DataAdded           int64   `json:"data_added"`
+	DataAddedPacked     int64   `json:"data_added_packed"`
+	TotalFilesProcessed int64   `json:"total_files_processed"`
+	TotalBytesProcessed int64   `json:"total_bytes_processed"`
+	TotalDuration       float64 `json:"total_duration"`
 }
 
-func (s backupSummary) toProgress() model.Progress {
-	bytesTotal := s.TotalBytes
-	if bytesTotal <= 0 {
-		bytesTotal = s.TotalBytesDone
-	}
-	filesTotal := s.TotalFiles
-	if filesTotal <= 0 {
-		filesTotal = s.FilesDone
-	}
+func (s BackupSummary) toProgress() model.Progress {
 	return model.Progress{
-		Phase:      "done",
+		Phase:      model.BackupPhaseDone,
 		Percent:    100,
-		BytesDone:  bytesTotal,
-		BytesTotal: bytesTotal,
-		FilesDone:  filesTotal,
-		FilesTotal: filesTotal,
+		BytesDone:  s.TotalBytesProcessed,
+		BytesTotal: s.TotalBytesProcessed,
+		FilesDone:  s.TotalFilesProcessed,
+		FilesTotal: s.TotalFilesProcessed,
 	}
 }
 

@@ -113,17 +113,12 @@
   }
 }
 
-/* 运行日志控制台：长消息必须在容器内换行，横向不得溢出。
-   缺了 overflow-x:hidden 与 min-width:0，flex 子项会把整行撑宽并压到
-   时间戳/来源列上，表现为“列重叠”。 */
 @layer components {
+  /* 运行日志控制台：时间/来源/消息三列由 grid 固定列宽对齐；消息单行截断，悬停查看全文，横向不得溢出。 */
   .run-log-console {
     overflow-x: hidden;
   }
   .run-log-console .log-row {
     min-width: 0;
-  }
-  .run-log-console .log-time {
-    flex: 0 0 auto;
   }
 }

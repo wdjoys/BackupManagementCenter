@@ -55,7 +55,8 @@ func (s *Server) serveRunWS(w http.ResponseWriter, r *http.Request, runID string
 	if err != nil {
 		return
 	}
-	for i := range logs {
+	// ListRunLogs 按 id 倒序返回；回放必须按时间正序，前端才能直接追加。
+	for i := len(logs) - 1; i >= 0; i-- {
 		if !sendEvent(events.Event{Type: events.Log, Entry: &logs[i]}) {
 			return
 		}

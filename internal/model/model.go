@@ -274,6 +274,14 @@ type Progress struct {
 	DetailJSON string `json:"detail_json,omitempty"`
 }
 
+// 备份运行阶段（Progress.Phase）；前端按 runDetail.phases.<phase> 翻译。
+const (
+	BackupPhasePreparing = "preparing"
+	BackupPhaseDumping   = "dumping"
+	BackupPhaseUploading = "backup"
+	BackupPhaseDone      = "done"
+)
+
 // RunLog 的稳定标识是 Server 落库时分配的 ID（也是分页游标）；
 // SourceSeq 保留产生方的本地序号，仅用于幂等去重，不作为标识展示。
 type RunLog struct {

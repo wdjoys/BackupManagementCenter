@@ -405,3 +405,36 @@ func TestSnapshotsUnrelatedFailureStaysGeneric(t *testing.T) {
 		t.Fatalf("expected restic_failed, got %s", re.Code)
 	}
 }
+
+// 保留策略必须按 host 分组：每条快照都带本次运行唯一的 run:<uuid> 标签，
+// staging 路径也每次不同，因此 --group-by host,tags（以及 restic 默认的
+// host,paths）会让每条快照自成一"组"，--keep-last/--keep-daily 对每组都成立，
+// forget 静默地一个也不删。这是线上实测到的"保留策略空转"缺陷。
+func TestForgetGroupsByHostOnly(t *testing.T) {
+	var cmd backup.Cmd
+	err := ForgetOnly(context.Background(), checkExecutor{cmd: &cmd}, Options{
+		Exe: "restic", RepoPath: "rclone:remote:/repo", CacheDir: "/cache/restic",
+	}, model.Retention{KeepLast: 1, KeepDaily: 7}, []string{"plan:plan-1", "kind:mysql"})
+	if err != nil {
+		t.Fatalf("ForgetOnly: %v", err)
+	}
+	want := []string{"forget", "--group-by", "host", "--repo", "rclone:remote:/repo",
+		"--cache-dir", "/cache/restic", "--tag", "plan:plan-1", "--tag", "kind:mysql",
+		"--keep-last", "1", "--keep-daily", "7", "--json"}
+	if len(cmd.Args) != len(want) {
+		t.Fatalf("args = %q, want %q", cmd.Args, want)
+	}
+	for i := range want {
+		if cmd.Args[i] != want[i] {
+			t.Fatalf("args = %q, want %q", cmd.Args, want)
+		}
+	}
+	// 分组里绝不能出现 tags 或 paths：两者都含每次运行唯一的值。
+	for i := 0; i+1 < len(cmd.Args); i++ {
+		if cmd.Args[i] == "--group-by" {
+			if g := cmd.Args[i+1]; g != "host" {
+				t.Fatalf("--group-by must be host only, got %q", g)
+			}
+		}
+	}
+}

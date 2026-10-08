@@ -1923,3 +1923,50 @@ func TestMaybeStartCleanupScanHonorsBackoff(t *testing.T) {
 		t.Fatalf("failed scan must wait for consume, got %d new runs", n-before)
 	}
 }
+
+// 计划级保留策略必须只作用于该计划的快照：StartRetentionRun 若不带计划标签，
+// restic forget 就没有 --tag 过滤，会把保留策略应用到整个仓库——删除其他计划
+// 的快照，并波及 restore-protection 保护快照。
+func TestStartRetentionRunScopesToPlan(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+	o, seal := newTestOrchestrator(st, newFakeDispatcher())
+	_ = seal
+
+	st.agents["agent-1"] = &model.Agent{
+		ID: "agent-1", Name: "a", Hostname: "h", Status: model.AgentOnline,
+		EnrolledAt: time.Now().UTC(),
+	}
+	st.repos["repo-1"] = &model.Repository{
+		ID: "repo-1", AgentID: "agent-1", RepositoryPath: "r:/x", Status: "ready",
+	}
+	st.plans["plan-1"] = &model.Plan{
+		ID: "plan-1", Name: "p", AgentID: "agent-1", Kind: model.KindMySQL,
+		Enabled: true, RepositoryID: "repo-1",
+		Retention: model.Retention{KeepLast: 3},
+	}
+
+	if err := o.StartRetentionRun(ctx, "repo-1"); err != nil {
+		t.Fatalf("StartRetentionRun: %v", err)
+	}
+
+	var forgetRun *model.Run
+	for _, r := range st.runs {
+		if r.Operation == model.OpForget {
+			forgetRun = r
+		}
+	}
+	if forgetRun == nil {
+		t.Fatal("no forget run was created")
+	}
+	var task model.ForgetTask
+	if err := json.Unmarshal([]byte(forgetRun.ProgressJSON), &task); err != nil {
+		t.Fatalf("unmarshal ForgetTask: %v", err)
+	}
+	if len(task.Tags) != 1 || task.Tags[0] != "plan:plan-1" {
+		t.Fatalf("retention must be scoped to the plan tag, got tags %v", task.Tags)
+	}
+	if task.Retention.KeepLast != 3 {
+		t.Fatalf("retention not carried over: %+v", task.Retention)
+	}
+}

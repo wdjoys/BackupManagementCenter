@@ -384,7 +384,12 @@ func forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 	if opts.Exe == "" {
 		return fmt.Errorf("restic exe not set")
 	}
-	args := []string{"forget", "--group-by", "host,tags"}
+	// --group-by 必须按 host，不能带 tags，也不能用 restic 的默认 host,paths：
+	// 每条快照都带本次运行唯一的 run:<uuid> 标签，staging 路径也每次不同，
+	// 于是每条快照自成一"组"，--keep-last/--keep-daily 对每组都成立，
+	// 保留策略会静默地一个也不删。标签过滤已由 --tag 限定在单个计划范围内，
+	// 按 host 分组即可让同一计划的快照进入同一组。
+	args := []string{"forget", "--group-by", "host"}
 	if prune {
 		args = append(args, "--prune")
 	}

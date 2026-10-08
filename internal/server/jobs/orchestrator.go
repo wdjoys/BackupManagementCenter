@@ -1181,6 +1181,10 @@ func (o *Orchestrator) StartRetentionRun(ctx context.Context, repositoryID strin
 	}
 	_, err = o.SystemRun(ctx, repo.AgentID, repositoryID, model.OpForget, model.ForgetTask{
 		PlanID: planID, Kind: kind, Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath}, Retention: retention,
+		// 必须带上计划标签：否则 restic forget 不带 --tag，会把保留策略应用到
+		// 整个仓库——删除其他计划的快照，并波及 restore-protection 保护快照
+		// （文档承诺保护快照不被保留策略认领）。
+		Tags: []string{"plan:" + planID},
 	}, 0)
 	return err
 }

@@ -711,3 +711,46 @@ func TestRunFilesystemRestorePreflightFailureReportsSafePhase(t *testing.T) {
 		t.Fatalf("phase = %q, want %q", payload.Phase, model.RestorePhaseFailed)
 	}
 }
+
+// 恢复任务解码失败发生在任何破坏性操作之前，同样必须上报安全阶段；
+// 否则服务端判为 manual_recovery_required 并阻塞整个来源仓库。
+func TestRunRestoreInvalidParamsReportsSafePhase(t *testing.T) {
+	deps := Deps{Exec: &protectionRestoreExecutor{}, Logf: func(string, string, ...any) {}}
+	_, err := runRestore(context.Background(), deps, t.TempDir(), []byte("{not json"), backup.SecretBundle{}, false)
+	if err == nil {
+		t.Fatal("malformed params must fail")
+	}
+	var pe *PipelineError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want PipelineError, got %T", err)
+	}
+	var payload struct {
+		Phase string `json:"phase"`
+	}
+	if len(pe.ResultJSON) == 0 {
+		t.Fatal("dispatch-layer failure must report a phase")
+	}
+	if err := json.Unmarshal(pe.ResultJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Phase != model.RestorePhaseFailed {
+		t.Fatalf("phase = %q, want %q", payload.Phase, model.RestorePhaseFailed)
+	}
+}
+
+// 反序列化成功但缺少恢复规格（filesystem/database 均为空）时，
+// 分发层同样不得把失败留给服务端做保守判定。
+func TestRunRestoreMissingSpecReportsSafePhase(t *testing.T) {
+	deps := Deps{Exec: &protectionRestoreExecutor{}, Logf: func(string, string, ...any) {}}
+	_, err := runRestore(context.Background(), deps, t.TempDir(), []byte(`{"kind":"filesystem"}`), backup.SecretBundle{}, false)
+	if err == nil {
+		t.Fatal("missing filesystem spec must fail")
+	}
+	var pe *PipelineError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want PipelineError, got %T", err)
+	}
+	if pe.Code != "invalid_params" || len(pe.ResultJSON) == 0 {
+		t.Fatalf("code=%q resultJSON=%q", pe.Code, string(pe.ResultJSON))
+	}
+}

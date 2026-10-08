@@ -239,6 +239,13 @@ func (a *MongoDBAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 	}
 	args := []string{"--archive=" + spec.ArtifactFile, "--gzip", "--config=" + c.config}
 	if !spec.TargetIsNew {
+		// 覆盖语义要求“完整替换目标内容”。mongorestore --drop 只会重建归档里
+		// 存在的集合，归档之外的集合会原样残留（实测：目标 pre-existing 的集合
+		// 在覆盖恢复后仍在），因此先整库删除——与 MySQL/PostgreSQL 适配器的
+		// DROP DATABASE 等价。
+		if err := c.runJS(ctx, spec, "db.dropDatabase();", nil); err != nil {
+			return fmt.Errorf("drop mongodb target database before overwrite: %w", err)
+		}
 		args = append(args, "--drop")
 	}
 	if spec.ArtifactDatabase != "" && spec.ArtifactDatabase != c.db.TargetDatabase {

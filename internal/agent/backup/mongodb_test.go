@@ -2,6 +2,8 @@ package backup
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -160,5 +162,69 @@ func TestMongoVerifyFailsClosedWhenOutputUnparsable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "could not read any namespace") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// 覆盖恢复必须“完整替换目标内容”。mongorestore --drop 只重建归档里存在的集合，
+// 归档之外的集合会残留（实测目标 pre-existing 集合在覆盖后仍在），因此必须先整库
+// 删除，与 MySQL/PostgreSQL 适配器的 DROP DATABASE 等价。
+func TestMongoImportDropsTargetBeforeOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	exec := &mongoExecutor{}
+	spec := &RestoreSpec{
+		Kind:         KindMongoDB,
+		StagingDir:   dir,
+		ArtifactFile: dir + "/a.archive",
+		Database: &model.DatabaseRestore{
+			TargetDatabase: "appdb", TargetHost: "127.0.0.1", TargetPort: 27017, TargetUsername: "bmc",
+		},
+		Secrets: SecretBundle{DBPassword: "pw"},
+		Logf:    func(string, string, ...any) {},
+		Exec:    exec,
+		TargetIsNew: false, // 覆盖已有目标
+	}
+	if err := (&MongoDBAdapter{}).Import(context.Background(), spec); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (drop then restore)", len(exec.calls))
+	}
+	if !strings.Contains(exec.calls[0].Exe, "mongosh") {
+		t.Fatalf("first call must drop the target via mongosh, got %q", exec.calls[0].Exe)
+	}
+	if !strings.Contains(exec.calls[1].Exe, "mongorestore") {
+		t.Fatalf("second call must be mongorestore, got %q", exec.calls[1].Exe)
+	}
+	// drop 脚本必须真的删库
+	js, err := os.ReadFile(filepath.Join(dir, "mongo-check.js"))
+	if err != nil {
+		t.Fatalf("read drop script: %v", err)
+	}
+	if !strings.Contains(string(js), "dropDatabase()") {
+		t.Fatalf("drop script must call dropDatabase, got %q", string(js))
+	}
+}
+
+// 目标为新建时不得先删库（该库由本次运行创建，且可能并不存在）。
+func TestMongoImportDoesNotDropNewTarget(t *testing.T) {
+	dir := t.TempDir()
+	exec := &mongoExecutor{}
+	spec := &RestoreSpec{
+		Kind:         KindMongoDB,
+		StagingDir:   dir,
+		ArtifactFile: dir + "/a.archive",
+		Database: &model.DatabaseRestore{
+			TargetDatabase: "appdb", TargetHost: "127.0.0.1", TargetPort: 27017, TargetUsername: "bmc",
+		},
+		Secrets: SecretBundle{DBPassword: "pw"},
+		Logf:    func(string, string, ...any) {},
+		Exec:    exec,
+		TargetIsNew: true,
+	}
+	if err := (&MongoDBAdapter{}).Import(context.Background(), spec); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if len(exec.calls) != 1 || !strings.Contains(exec.calls[0].Exe, "mongorestore") {
+		t.Fatalf("new target must only run mongorestore, got %d calls: %+v", len(exec.calls), exec.calls)
 	}
 }

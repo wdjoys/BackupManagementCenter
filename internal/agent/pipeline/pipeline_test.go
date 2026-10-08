@@ -616,3 +616,53 @@ func TestRunDatabaseRestorePreflightFailureReportsSafePhase(t *testing.T) {
 		t.Fatalf("phase = %q, want %q (failed = 目标未被修改)", payload.Phase, model.RestorePhaseFailed)
 	}
 }
+
+// failingRestoreExecutor 模拟 `restic restore` 失败（含被取消杀进程的情形）。
+type failingRestoreExecutor struct{}
+
+func (failingRestoreExecutor) Run(_ context.Context, cmd backup.Cmd, _, _ func(string)) (int, error) {
+	if len(cmd.Args) > 0 && cmd.Args[0] == "restore" {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+// 取消/失败发生在快照下载阶段时，目标尚未被触碰，必须上报安全阶段 failed，
+// 否则服务端会判为 manual_recovery_required 并阻塞整个仓库（实测该阻塞会让
+// 备份长期停在 queued、快照列表返回 504）。
+func TestRunDatabaseRestoreCancelBeforeTargetTouchIsSafe(t *testing.T) {
+	deps := Deps{
+		Exec:     failingRestoreExecutor{},
+		Logf:     func(string, string, ...any) {},
+		Progress: func(model.Progress) {},
+	}
+	task := model.RestoreTask{
+		RunID: "run-1",
+		Kind:  "mysql",
+		Database: &model.DatabaseRestore{
+			SnapshotID: "snap-1", TargetHost: "h", TargetPort: 3306,
+			TargetUsername: "u", TargetDatabase: "appdb",
+		},
+	}
+	_, err := runDatabaseRestore(context.Background(), deps, restic.Options{Exe: "restic"},
+		task, t.TempDir(), backup.SecretBundle{}, false)
+	if err == nil {
+		t.Fatal("snapshot download failure must abort the restore")
+	}
+	var pe *PipelineError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want PipelineError, got %T", err)
+	}
+	var payload struct {
+		Phase string `json:"phase"`
+	}
+	if len(pe.ResultJSON) == 0 {
+		t.Fatal("failure before touching the target must report a phase")
+	}
+	if err := json.Unmarshal(pe.ResultJSON, &payload); err != nil {
+		t.Fatalf("unmarshal result json: %v", err)
+	}
+	if payload.Phase != model.RestorePhaseFailed {
+		t.Fatalf("phase = %q, want %q", payload.Phase, model.RestorePhaseFailed)
+	}
+}

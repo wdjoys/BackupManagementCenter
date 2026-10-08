@@ -89,6 +89,12 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 		"--defaults-extra-file=" + cnfFile,
 		"--single-transaction", "--quick", "--routines", "--events", "--triggers",
 		"--hex-blob", "--no-tablespaces",
+		// 官方 MySQL 8.0 客户端默认开启 --column-statistics，会先查
+		// information_schema.COLUMN_STATISTICS。该表是 MySQL 8.0 专有的，
+		// MariaDB（以及 MySQL 5.x）没有，dump 会直接失败：
+		//   Unknown table 'COLUMN_STATISTICS' in information_schema (1109)
+		// 该统计仅用于优化器直方图，与备份内容无关，统一关闭。
+		"--column-statistics=0",
 		"--result-file=" + dumpFile,
 	}
 	if source.Database == "all" {

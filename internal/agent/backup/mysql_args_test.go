@@ -153,3 +153,35 @@ func TestExitErrorMessageHasSingleFailedWord(t *testing.T) {
 		t.Fatalf("must not repeat failed: %q", err.Error())
 	}
 }
+
+// 官方 MySQL 8.0 客户端默认开启 --column-statistics，会先查
+// information_schema.COLUMN_STATISTICS。该表是 MySQL 8.0 专有的，MariaDB 与
+// MySQL 5.x 都没有，dump 会以
+//   Unknown table 'COLUMN_STATISTICS' in information_schema (1109)
+// 失败（exit 2）。必须在参数中显式关闭。
+func TestMySQLBackupDisablesColumnStatistics(t *testing.T) {
+	rec := &argRecorder{}
+	rc := &RunContext{
+		Task:    mysqlBackupTask("appdb"),
+		Secrets: SecretBundle{DBPassword: "pw"},
+		TempDir: t.TempDir(),
+		Exec:    rec,
+		Logf:    func(string, string, ...any) {},
+	}
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	dump := rec.find("mysqldump")
+	if dump == nil {
+		t.Fatal("mysqldump was never invoked")
+	}
+	found := false
+	for _, a := range dump.Args {
+		if a == "--column-statistics=0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("mysqldump must disable column statistics, got %v", dump.Args)
+	}
+}

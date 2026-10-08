@@ -61,7 +61,11 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - **Agent 配置精简与已有卷升级**：推荐 Compose 模板已精简 `BMC_SERVER_TLS`、`BMC_AGENT_STATE_DIR`、`BMC_RESTIC_CACHE_DIR`、`BMC_AGENT_DATA_DIR`。Agent 状态目录由镜像默认固定为 `/var/lib/bmc-agent`，缓存（`/var/lib/bmc-agent/.cache/restic`）与暂存（`/var/lib/bmc-agent/scratch`）自动基于状态目录推导。升级时保留原 `bmc-agent-state` 卷即可无缝延续身份凭据与缓存；原 `bmc-agent-scratch` 卷不再使用，其内容为临时暂存文件，可安全删除。
 - **数据库客户端版本下限**：Agent 镜像内置的数据库客户端版本必须不低于目标服务端，且 MySQL 必须使用官方二进制而非 MariaDB 客户端。
   - MySQL：镜像内置官方 `mysql`/`mysqldump`。若误用 Debian 的 `mariadb-client`（`default-mysql-client` 的实体），dump 前会探测 `information_schema.columns.generation_expression`，而该列在 **MySQL 5.6 及更早**不存在，导致备份必然以 `Unknown column 'generation_expression' in 'field list' (1054)` 失败。
-  - PostgreSQL：`pg_dump` 要求客户端主版本 ≥ 服务端主版本，镜像内置较新的 PGDG 客户端以覆盖更旧的服务端。
+  - PostgreSQL：`pg_dump` 要求客户端主版本 ≥ 服务端主版本（不满足时直接 `aborting because of server version mismatch`）。Debian bookworm 自带 `postgresql-client-15`，只能备份 PG 15 及更旧的服务端；镜像改为从 PGDG 安装 `postgresql-client-${PG_CLIENT_MAJOR}`（默认 18），可覆盖更旧的服务端。构建参数 `PG_CLIENT_MAJOR`、`PGDG_BASE_URL`（默认阿里云 PGDG 镜像）可按目标环境调整。
+  - PostgreSQL 恢复的版本偏斜：`pg_dump`/`pg_restore` 自 17 起会在归档前置写入 `SET transaction_timeout = 0;`，该 GUC 在 **PG 16 及更早**不存在。恢复到旧服务端时这条语句会报 `unrecognized configuration parameter`，而 `pg_restore` 只要忽略过任何错误就以 exit 1 结束。BMC 因此不再使用 `--exit-on-error`，改为只放行这一条已知无害语句，其余错误照旧失败，正确性由恢复后的关系集合校验兜底。
+  - MongoDB：`mongodump`/`mongorestore` 来自官方 Database Tools，另外单独安装 `mongosh`（`MONGOSH_VERSION`）。恢复需要 `mongosh` 判断目标库是否存在并校验集合是否落地；缺失时适配器直接拒绝恢复，能力探测与恢复前置校验都会把 `mongosh` 列为必需工具。mongorestore 的 `--dryRun` 输出全部写在 stderr，校验必须同时收集 stderr，只读 stdout 会把每次恢复都判成失败。
+  - PostgreSQL 恢复校验口径：`pg_restore -l` 的 TOC 类型可能是多个词（`TABLE DATA`/`SEQUENCE OWNED BY`/`SEQUENCE SET`），schema/name/owner 恒为末尾三项；目标侧查询必须与归档口径一致——统计显式索引、排除约束（PK/UNIQUE）背后的隐式索引与 `pg_toast*` 自动结构，否则会误报 `missing`/`unexpected`。
+  - 构建期间对 GitHub/厂商 CDN 的下载（restic、rclone、MongoDB Database Tools、mongosh、MySQL 客户端）统一走 `fetch` 包装的重试逻辑，避免国内网络偶发连接重置导致整次构建失败。
 - **旧版 Agent 配置升级注意**：若旧部署 `.env.agent` 使用不带 scheme 的裸 `host:port` 并配合 `BMC_SERVER_TLS=0`，升级前必须先将 URL 改为 `http://host:port`（若此前为 `BMC_SERVER_TLS=1` 则改为 `https://host:port`）。由于新 Compose 不再透传 `BMC_SERVER_TLS`，未带 scheme 的地址默认启用 TLS，直接升级明文连接将导致握手失败。
 ## 3. 旧部署迁移
 
@@ -95,6 +99,7 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - **运行日志标识升级**：Server 启动时自动把 `run_logs` 主键从 `(run_id, seq)` 改为自增 `id`，并新增 `source`（`agent`/`server`）与 `source_seq` 两列及 `(run_id, source, source_seq)` 唯一索引。历史行按原 `seq` 升序保留并重新分配 `id`，其中 `seq >= 2^62` 的行（旧 dispatcher 的服务端诊断日志高位段）回填为 `source='server'`，其余为 `agent`；日志内容、时间戳与来源序号均不改写，重复启动不会重复迁移。REST 分页参数由 `before_seq` 改为 `before_id`（旧参数被接受但忽略），Agent 协议 `LogEntry` 新增可选 `source` 字段：未升级的 Agent 留空时按 `agent` 归类，因此**可以先升级 Server 再滚动升级 Agent**。如需回滚到旧版本 Server，必须恢复升级前的数据库备份。
 - **Agent 撤销与恢复**：Web「Agent」页面的「撤销」会立即断开该 Agent 的连接并拒绝其后续重连，但保留其身份与已有仓库、计划、运行记录引用。误操作时可在同页点击「恢复」（等价于 `POST /api/v1/agents/{id}/restore`），恢复后重启 Agent 进程即可用原身份重连，不会产生新的 Agent ID，也不需要重新注册。
 - **数据保留**：日常维护使用 `docker compose down` 停止容器，数据卷不会丢失；**严禁使用 `down -v`**，否则会永久销毁数据库及生成的本地主密钥。
+- **孤儿扫描退避（`0015_snapshot_cleanup_backoff.sql`）**：`snapshot_cleanup_state` 新增 `next_attempt_at` 列。此前孤儿扫描失败后状态表没有退避字段，`ClearSnapshotCleanupScan` 传入的退避时间被静默忽略，导致扫描持续失败的仓库在每个 scheduler tick（15 秒）重发一次 `snapshots`，7 天可累积数万 run 与数百万行日志，并最终因 restic/rclone 进程耗尽出现 `fork/exec ... resource temporarily unavailable`。升级后扫描失败按 1 小时退避重试，成功则清除退避并按 24 小时周期扫描。迁移为纯增量加列，可重复启动安全。
 
 ## 6. 跨 Agent 恢复与数据库恢复安全边界
 
@@ -102,6 +107,8 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 
 - **API 契约**：`POST /api/v1/restores` 与 `POST /api/v1/restores/dry-run` 新增可选 `target_agent_id`。缺省或空值沿用来源仓库所属 Agent（既有调用方行为不变），非空则把恢复 run 绑定到该 Agent。跨 Agent 恢复要求来源仓库 `status=ready`、目标 Agent 存在且在线未撤销。
 - **凭据边界**：仓库路径、rclone 配置与 restic 密码始终来自来源仓库（不重绑、不改仓库路径中的来源 ID），但会**传递给目标 Agent**执行；恢复向导会明确提示这一点。
+- **存储后端必须两端可达**：跨 Agent 恢复由目标 Agent 访问来源仓库，因此存储后端必须对两个 Agent 都可见。`rclone` 的 `local` 后端是**节点本地**的（路径解析在各自容器/主机上），只适合单 Agent；跨 Agent 请使用对象存储或共享文件系统（S3/WebDAV/SFTP，或把同一共享目录挂载到两个 Agent 的相同路径）。对 `local` 后端做跨 Agent 恢复会在目标 Agent 上以 `repository_missing`（restic exit 10）失败。
+- **本地仓库路径必须为绝对路径**：当存储目标的 rclone remote 是 `local` 类型时，`remote_path` 必须以 `/` 开头。rclone 的 local 后端按进程工作目录解析相对路径，相对 `remote_path` 会让仓库落在 Agent 运行时的临时目录下，表现为运行失败并报 `restic exit 10 (repository_missing) ... repository does not exist`。Server 会保留操作者填写的绝对路径（`<remote>:/abs/path/<instanceID>/<agentID>`）；对象存储类 remote 的桶路径（如 `bucket/path`）不带前导斜杠，行为不变。
 - **快照授权**：只能从服务端持久化的**已验证**快照列表/目录缓存中选取（来源 Agent 离线时同样适用），并核对快照指纹、存在性、未隐藏与 `kind:` 标签。缓存缺失、损坏、生成号变化或元数据查询失败一律返回 HTTP 409 `snapshot_list_refresh_required`，要求先刷新列表。
 - **能力授权**：目标 Agent 必须在其**当前连接**上报 `safe_database_restore=true`。连接尚未上报能力返回 409 `agent_capabilities_pending`；明确不支持返回 422 `agent_upgrade_required`，请先升级 Agent。持久化的能力仅用于展示，不作为执行授权。
 - **数据库范围**：整实例还原（`database=all`）同步返回 422 `unsupported_restore_manifest`；来源快照若包含多库或 globals（下载后才能判断），已返回 202 的请求会以 run 错误码 `unsupported_restore_manifest`、`phase=failed` 结束，且目标未被修改。

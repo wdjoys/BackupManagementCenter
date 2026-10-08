@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -109,5 +110,37 @@ func TestLogoutWithoutCSRF(t *testing.T) {
 		if c.Name == auth.CSRFCookie && c.MaxAge >= 0 && c.Value != "" {
 			t.Errorf("csrf cookie not cleared: %v", c)
 		}
+	}
+}
+
+// failingAdminStore 让管理员查询失败，用于验证登录把基础设施错误与凭据错误区分开。
+type failingAdminStore struct {
+	store.Store
+}
+
+func (failingAdminStore) GetAdminByUsername(context.Context, string) (*model.Admin, error) {
+	return nil, errors.New("simulated database outage")
+}
+
+// 数据库/会话故障必须返回 500，不能伪装成 401「用户名或密码错误」，
+// 否则运维会把基础设施故障误判为密码输错。
+func TestLoginStoreFailureReturnsInternalError(t *testing.T) {
+	s, st, cleanup := newTestServerWithAdmin(t)
+	defer cleanup()
+	s.ST = failingAdminStore{Store: st}
+
+	handler := New(s)
+	body, _ := json.Marshal(map[string]string{"username": "admin", "password": "AdminPassword123"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for store failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "invalid_credentials") {
+		t.Fatalf("store failure must not be reported as invalid credentials: %s", rec.Body.String())
 	}
 }

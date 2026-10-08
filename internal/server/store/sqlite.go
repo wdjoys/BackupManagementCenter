@@ -3065,13 +3065,13 @@ func (s *sqliteStore) RetrySnapshotDeletion(ctx context.Context, deletionID, err
 
 func (s *sqliteStore) GetSnapshotCleanupState(ctx context.Context, repositoryID string) (*model.SnapshotCleanupState, error) {
 	var (
-		scanRunID, lastStarted, lastCompleted sql.NullString
-		updated                               string
+		scanRunID, lastStarted, lastCompleted, nextAttempt sql.NullString
+		updated                                            string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT repository_id, scan_run_id, last_scan_started_at, last_scan_completed_at, updated_at
+		`SELECT repository_id, scan_run_id, last_scan_started_at, last_scan_completed_at, next_attempt_at, updated_at
 		 FROM snapshot_cleanup_state WHERE repository_id = ?`, repositoryID,
-	).Scan(&repositoryID, &scanRunID, &lastStarted, &lastCompleted, &updated)
+	).Scan(&repositoryID, &scanRunID, &lastStarted, &lastCompleted, &nextAttempt, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -3083,6 +3083,7 @@ func (s *sqliteStore) GetSnapshotCleanupState(ctx context.Context, repositoryID 
 		ScanRunID:           scanRunID.String,
 		LastScanStartedAt:   parseTimePtr(lastStarted),
 		LastScanCompletedAt: parseTimePtr(lastCompleted),
+		NextAttemptAt:       parseTimePtr(nextAttempt),
 		UpdatedAt:           parseTime(updated),
 	}, nil
 }
@@ -3163,10 +3164,10 @@ func (s *sqliteStore) FinishSnapshotCleanupScan(ctx context.Context, repositoryI
 		return err
 	}
 
-	// 写完成时间并清活跃扫描。
+	// 写完成时间并清活跃扫描（成功即清除退避，下次按 24h 周期正常扫描）。
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE snapshot_cleanup_state
-		 SET scan_run_id=NULL, last_scan_completed_at=?, updated_at=?
+		 SET scan_run_id=NULL, last_scan_completed_at=?, next_attempt_at=NULL, updated_at=?
 		 WHERE repository_id=?`,
 		completedStr, completedStr, repositoryID); err != nil {
 		return fmt.Errorf("finish cleanup scan complete: %w", err)
@@ -3194,11 +3195,12 @@ func (s *sqliteStore) StartSnapshotCleanupScan(ctx context.Context, repositoryID
 	startedStr := startedAt.UTC().Format(time.RFC3339)
 	// compare-and-set：首次无状态行时插入；仅当无活跃扫描或 run_id 相同（重启恢复）时更新。
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO snapshot_cleanup_state (repository_id, scan_run_id, last_scan_started_at, updated_at)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO snapshot_cleanup_state (repository_id, scan_run_id, last_scan_started_at, next_attempt_at, updated_at)
+		 VALUES (?, ?, ?, NULL, ?)
 		 ON CONFLICT(repository_id) DO UPDATE SET
 		   scan_run_id = excluded.scan_run_id,
 		   last_scan_started_at = excluded.last_scan_started_at,
+		   next_attempt_at = NULL,
 		   updated_at = excluded.updated_at
 		 WHERE snapshot_cleanup_state.scan_run_id IS NULL
 		    OR snapshot_cleanup_state.scan_run_id = excluded.scan_run_id`,
@@ -3247,12 +3249,13 @@ func (s *sqliteStore) ClearSnapshotCleanupScan(ctx context.Context, repositoryID
 		return ErrInvalidTransition
 	}
 
-	// 失败只清活跃扫描，保留候选原状态，不增加 seen_count。
+	// 失败只清活跃扫描，保留候选原状态，不增加 seen_count；同时写入退避时间，
+	// 否则下一次 scheduler tick 会立刻重发扫描（无上限重试）。
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE snapshot_cleanup_state
-		 SET scan_run_id=NULL, updated_at=?
+		 SET scan_run_id=NULL, next_attempt_at=?, updated_at=?
 		 WHERE repository_id=?`,
-		nowUTC().Format(time.RFC3339), repositoryID); err != nil {
+		nextAttemptAt.UTC().Format(time.RFC3339), nowUTC().Format(time.RFC3339), repositoryID); err != nil {
 		return fmt.Errorf("clear cleanup scan update: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

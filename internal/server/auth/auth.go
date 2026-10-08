@@ -154,7 +154,9 @@ var ErrSessionExpired = errors.New("auth: session expired")
 func Login(ctx context.Context, st SessionStore, getAdmin func(ctx context.Context, username string) (*model.Admin, error), updateLogin func(ctx context.Context, id string, at time.Time) error, username, password string) (token string, admin *model.Admin, err error) {
 	admin, err = getAdmin(ctx, username)
 	if err != nil {
-		return "", nil, ErrInvalidCredentials
+		// 调用方负责把“用户不存在”转换为 ErrInvalidCredentials；
+		// 其余错误（数据库/连接故障）必须原样上抛，不能被伪装成凭据错误。
+		return "", nil, err
 	}
 	if !VerifyPassword(password, admin.PasswordHash) {
 		return "", nil, ErrInvalidCredentials

@@ -555,12 +555,14 @@ func TestDeleteStorageTargetInUse(t *testing.T) {
 	}
 
 	// Create the agent first (FK).
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 
 	_ = ts.CreateRepository(ctx, repo)
 
@@ -580,12 +582,14 @@ func TestDeleteStorageTargetAfterUnbind(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	if err := ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -632,12 +636,14 @@ func TestRepository(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -716,12 +722,14 @@ func TestListRepositoriesNeedingCheck(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 
 	// Each repo needs its own storage target (UNIQUE constraint).
 	for i, name := range []string{"tgt-1", "tgt-2", "tgt-3", "tgt-4"} {
@@ -771,12 +779,14 @@ func TestPlan(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -921,12 +931,14 @@ func TestDeletePlanInUse(t *testing.T) {
 	ctx := context.Background()
 
 	// Build agent, target, repo, plan, run for plan-1.
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -1002,12 +1014,14 @@ func TestCreateRunDuplicateSlot(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -1455,12 +1469,14 @@ func TestCreateGetRun(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -1514,12 +1530,14 @@ func TestTransitionRunHappyPath(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -1584,12 +1602,14 @@ func TestTransitionRunInvalidPaths(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -1676,12 +1696,14 @@ func TestTransitionRunEarlyFailure(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateRun(ctx, &model.Run{
 		ID: "run-1", AgentID: "agent-1",
 		Operation: model.OpBackup, Status: model.RunQueued,
@@ -1782,12 +1804,14 @@ func TestFailStaleRuns(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -1975,6 +1999,57 @@ func TestRestoreRequest(t *testing.T) {
 	}
 }
 
+func TestCreateDatabaseRestoreRun(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	run := &model.Run{
+		ID: "run-db-1", AgentID: "agent-1",
+		Operation: model.OpRestore, Status: model.RunQueued,
+		QueuedAt: now, ProgressJSON: "{}",
+	}
+	rr := &model.RestoreRequest{
+		ID:          "rr-db-1",
+		RunID:       run.ID,
+		SnapshotID:  "snapshot-abc",
+		RestoreKind: model.KindPostgreSQL,
+		Target:      model.RestoreTarget{Host: "db", Port: 5432, Username: "u", Database: "appdb"},
+		TargetJSON:  targetJSON(),
+		Phase:       model.RestorePhaseQueued,
+		CreatedAt:   now,
+	}
+	// restore_requests.run_id 外键指向 runs(id)；数据库恢复在同一事务内落两行，
+	// 空 RunID 必须失败而不是静默写入。
+	if err := ts.CreateDatabaseRestoreRun(ctx, run, rr); err != nil {
+		t.Fatalf("CreateDatabaseRestoreRun: %v", err)
+	}
+	got, err := ts.GetRestoreRequestByRunID(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRestoreRequestByRunID: %v", err)
+	}
+	if got.ID != rr.ID || got.RestoreKind != model.KindPostgreSQL {
+		t.Fatalf("persisted request mismatch: %+v", got)
+	}
+
+	badRun := &model.Run{
+		ID: "run-db-2", AgentID: "agent-1",
+		Operation: model.OpRestore, Status: model.RunQueued,
+		QueuedAt: now, ProgressJSON: "{}",
+	}
+	badRR := &model.RestoreRequest{
+		ID:          "rr-db-2",
+		SnapshotID:  "snapshot-abc",
+		RestoreKind: model.KindPostgreSQL,
+		TargetJSON:  targetJSON(),
+		Phase:       model.RestorePhaseQueued,
+		CreatedAt:   now,
+	}
+	if err := ts.CreateDatabaseRestoreRun(ctx, badRun, badRR); err == nil {
+		t.Fatal("expected foreign key failure for empty run_id")
+	}
+}
+
 func TestAuditEvent(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)
@@ -2011,12 +2086,14 @@ func TestListRunsByStatus(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -2059,12 +2136,14 @@ func TestListRunsFilter(t *testing.T) {
 	defer ts.Close(t)
 	ctx := context.Background()
 
-	_ = ts.UpsertAgentOnConnect(ctx, &model.Agent{
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
 		ID: "agent-1", Name: "a", Hostname: "h",
 		OS: "linux", Version: "1.0", Status: model.AgentOffline,
 		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
 		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
-	})
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
 	_ = ts.CreateStorageTarget(ctx, &model.StorageTarget{
 		ID: "tgt-1", Name: "gdrive", Type: "rclone",
 		RemoteName: "gdrive", EncryptedConfig: []byte("x"),
@@ -2100,5 +2179,92 @@ func TestListRunsFilter(t *testing.T) {
 	runs, _ = ts.ListRuns(ctx, RunFilter{Statuses: []string{model.RunSucceeded}})
 	if len(runs) != 0 {
 		t.Fatal("no succeeded runs expected")
+	}
+}
+
+// 孤儿扫描失败的退避必须真正落库：ClearSnapshotCleanupScan 曾接收
+// nextAttemptAt 参数但状态表没有对应列，参数被静默忽略，导致扫描失败后
+// 每个 scheduler tick 立即重发，run/日志无上限增长。
+func TestSnapshotCleanupScanBackoffPersisted(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	if err := ts.CreateStorageTarget(ctx, &model.StorageTarget{
+		ID: "tgt-clean", Name: "t", Type: "rclone", RemoteName: "r", RemotePath: "/x",
+		EncryptedConfig: []byte("cfg"), CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateStorageTarget: %v", err)
+	}
+	// 仓库对 agents 有外键，先建 agent。
+	if err := ts.UpsertAgentOnConnect(ctx, &model.Agent{
+		ID: "agent-1", Name: "a", Hostname: "h",
+		OS: "linux", Version: "1.0", Status: model.AgentOffline,
+		LastSeenAt: &now, EnrolledAt: now, TokenHash: "sh",
+		Capabilities: []model.ToolInfo{}, CapabilitiesJSON: "[]",
+	}); err != nil {
+		t.Fatalf("UpsertAgentOnConnect: %v", err)
+	}
+	if err := ts.CreateRepository(ctx, &model.Repository{
+		ID: "repo-clean", AgentID: "agent-1", StorageTargetID: "tgt-clean",
+		RepositoryPath: "r:/x", EncryptedPassword: []byte("pw"), Status: "ready",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateRepository: %v", err)
+	}
+
+	sds, ok := ts.Store.(SnapshotDeletionStore)
+	if !ok {
+		t.Fatal("store does not implement SnapshotDeletionStore")
+	}
+
+	start := now
+	if err := sds.StartSnapshotCleanupScan(ctx, "repo-clean", "run-1", start); err != nil {
+		t.Fatalf("StartSnapshotCleanupScan: %v", err)
+	}
+	st, err := sds.GetSnapshotCleanupState(ctx, "repo-clean")
+	if err != nil {
+		t.Fatalf("GetSnapshotCleanupState: %v", err)
+	}
+	if st.ScanRunID != "run-1" || st.NextAttemptAt != nil {
+		t.Fatalf("after start: scan_run_id=%q next=%v", st.ScanRunID, st.NextAttemptAt)
+	}
+
+	// 失败：清活跃扫描并写入退避时间。
+	retryAt := start.Add(time.Hour)
+	if err := sds.ClearSnapshotCleanupScan(ctx, "repo-clean", "run-1", retryAt); err != nil {
+		t.Fatalf("ClearSnapshotCleanupScan: %v", err)
+	}
+	st, err = sds.GetSnapshotCleanupState(ctx, "repo-clean")
+	if err != nil {
+		t.Fatalf("GetSnapshotCleanupState: %v", err)
+	}
+	if st.ScanRunID != "" {
+		t.Fatalf("active scan must be cleared, got %q", st.ScanRunID)
+	}
+	if st.NextAttemptAt == nil || !st.NextAttemptAt.Equal(retryAt) {
+		t.Fatalf("backoff must be persisted, got %v want %v", st.NextAttemptAt, retryAt)
+	}
+
+	// 重新开始扫描：退避被清除，不会阻止本次扫描。
+	if err := sds.StartSnapshotCleanupScan(ctx, "repo-clean", "run-2", start.Add(2*time.Hour)); err != nil {
+		t.Fatalf("StartSnapshotCleanupScan(2): %v", err)
+	}
+	st, _ = sds.GetSnapshotCleanupState(ctx, "repo-clean")
+	if st.ScanRunID != "run-2" || st.NextAttemptAt != nil {
+		t.Fatalf("start must clear backoff: scan_run_id=%q next=%v", st.ScanRunID, st.NextAttemptAt)
+	}
+
+	// 成功：写完成时间并清除退避。
+	done := start.Add(3 * time.Hour)
+	if err := sds.FinishSnapshotCleanupScan(ctx, "repo-clean", "run-2", nil, done); err != nil {
+		t.Fatalf("FinishSnapshotCleanupScan: %v", err)
+	}
+	st, _ = sds.GetSnapshotCleanupState(ctx, "repo-clean")
+	if st.ScanRunID != "" || st.NextAttemptAt != nil {
+		t.Fatalf("finish must clear scan and backoff: %+v", st)
+	}
+	if st.LastScanCompletedAt == nil || !st.LastScanCompletedAt.Equal(done) {
+		t.Fatalf("last_scan_completed_at = %v want %v", st.LastScanCompletedAt, done)
 	}
 }

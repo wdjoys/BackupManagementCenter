@@ -476,7 +476,10 @@ type SnapshotCleanupState struct {
 	ScanRunID           string     `json:"scan_run_id,omitempty"`
 	LastScanStartedAt   *time.Time `json:"last_scan_started_at,omitempty"`
 	LastScanCompletedAt *time.Time `json:"last_scan_completed_at,omitempty"`
-	UpdatedAt           time.Time  `json:"updated_at"`
+	// NextAttemptAt 是扫描失败后的退避时间点；在此之前不再发起新的孤儿扫描，
+	// 避免失败扫描每 tick 重试造成无上限的 run/日志增长。
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // ServerInfo is reported to agents during handshake.

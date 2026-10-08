@@ -111,14 +111,28 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	token, admin, err := auth.Login(
 		r.Context(),
 		s.ST,
-		s.ST.GetAdminByUsername,
+		func(ctx context.Context, username string) (*model.Admin, error) {
+			admin, err := s.ST.GetAdminByUsername(ctx, username)
+			// 用户不存在等同于凭据错误（不泄露账号是否存在）；
+			// 其他错误（数据库故障等）原样上抛，由下方映射为 500。
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, auth.ErrInvalidCredentials
+			}
+			return admin, err
+		},
 		func(ctx context.Context, id string, at time.Time) error {
 			return s.ST.UpdateAdminLastLogin(ctx, id, at)
 		},
 		body.Username, body.Password,
 	)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "invalid_credentials", "wrong username or password")
+		// 凭据错误返回 401；会话/数据库等基础设施错误必须暴露为 500，
+		// 否则数据库故障会被伪装成“用户名或密码错误”，误导排障。
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			writeErr(w, http.StatusUnauthorized, "invalid_credentials", "wrong username or password")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	csrf := auth.SetCSRFCookie(w, r)

@@ -1360,6 +1360,10 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		DedupKey:     restoreRunDedupKey(repo.ID, targetAgentID, in.SnapshotID, in.RestoreKind, string(targetJSON), in.Overwrite, credentialFingerprint),
 	}
 	runPersisted := false
+	// restore_requests.run_id 有指向 runs(id) 的外键，插入前必须带上 runID。
+	// 数据库恢复分支把 run 与 request 放在同一事务内落库，因此这里必须先赋值，
+	// 否则写入空 runID 会以 FOREIGN KEY constraint failed 失败。
+	rr.RunID = run.ID
 	if isDatabaseKind(in.RestoreKind) {
 		// 数据库恢复在单事务内校验全局占用并落库，返回 409 而不是静默并行。
 		err = o.Store.CreateDatabaseRestoreRun(ctx, run, rr)
@@ -1368,7 +1372,6 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		err = o.Store.CreateRun(ctx, run)
 		if err == nil {
 			runPersisted = true
-			rr.RunID = run.ID
 			err = o.Store.CreateRestoreRequest(ctx, rr)
 		}
 	}
@@ -1400,7 +1403,6 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		}
 		return nil, nil, err
 	}
-	rr.RunID = run.ID
 
 	if in.TargetPassword != "" {
 		if rs, ok := o.Store.(interface {
@@ -2025,7 +2027,9 @@ func restoreRequiredTools(kind string) []string {
 	case model.KindMySQL:
 		return append(base, "mysqldump", "mysql")
 	case model.KindMongoDB:
-		return append(base, "mongodump", "mongorestore")
+		// mongosh 用于判断目标库是否存在并校验集合是否落地；缺失时适配器
+		// 直接拒绝恢复，这里必须一并声明，避免运行时才暴露依赖缺失。
+		return append(base, "mongodump", "mongorestore", "mongosh")
 	default:
 		// filesystem 与 sqlite（Go 实现，无 CLI 依赖）
 		return base
@@ -2053,9 +2057,22 @@ func (o *Orchestrator) checkRestoreTools(agent *model.Agent, kind string) error 
 
 // buildRepoPath produces <remote_name>:<remote_path>/<instanceID>/<agentID>
 // with remote_path slashes normalised.
+//
+// 绝对路径必须保留开头的 "/"：rclone 的 local 后端按进程工作目录解析相对
+// 路径，去掉前导斜杠会让仓库落到 agent 当前的临时目录下，表现为
+// "repository does not exist"。对象存储类后端（s3 等）本就不接受前导斜杠，
+// 因此仅在操作者显式提供绝对路径时保留。
 func buildRepoPath(target *model.StorageTarget, instanceID, agentID string) string {
+	absolute := strings.HasPrefix(target.RemotePath, "/")
 	rp := strings.Trim(target.RemotePath, "/")
-	return fmt.Sprintf("%s:%s/%s/%s", target.RemoteName, rp, instanceID, agentID)
+	prefix := ""
+	if absolute {
+		prefix = "/"
+	}
+	if rp == "" {
+		return fmt.Sprintf("%s:%s%s/%s", target.RemoteName, prefix, instanceID, agentID)
+	}
+	return fmt.Sprintf("%s:%s%s/%s/%s", target.RemoteName, prefix, rp, instanceID, agentID)
 }
 
 // Stash helpers for per-run rclone config (used by ValidateStorageRemote).
@@ -2450,13 +2467,24 @@ func (o *Orchestrator) maybeStartCleanupScan(ctx context.Context, sds SnapshotDe
 	if st != nil && st.ScanRunID != "" {
 		// 已有 active scan 或等待消费的 run。
 		run, rerr := o.Store.GetRun(ctx, st.ScanRunID)
-		if rerr == nil && (run.Status == model.RunQueued || run.Status == model.RunDispatched || run.Status == model.RunRunning) {
-			return nil
+		if rerr == nil {
+			switch run.Status {
+			case model.RunQueued, model.RunDispatched, model.RunRunning:
+				return nil
+			case model.RunSucceeded:
+				// 成功 run 尚未被消费；等 consume 处理。
+				return nil
+			case model.RunFailed, model.RunCancelled:
+				// 失败 run 由 consumeCleanupScan 负责清活跃扫描并写退避；
+				// 这里必须等它消费完，否则每 tick 都会重发一次扫描。
+				return nil
+			}
 		}
-		if rerr == nil && run.Status == model.RunSucceeded {
-			// 成功 run 尚未被消费；等 consume 处理。
-			return nil
-		}
+	}
+	// 失败退避：consumeCleanupScan 会写入 next_attempt_at，未到期不得重发，
+	// 否则扫描持续失败的仓库会被每 tick 重试，造成 run/日志无上限增长。
+	if st != nil && st.NextAttemptAt != nil && now.Before(*st.NextAttemptAt) {
+		return nil
 	}
 	if st != nil && st.LastScanCompletedAt != nil && now.Before(st.LastScanCompletedAt.Add(24*time.Hour)) {
 		return nil

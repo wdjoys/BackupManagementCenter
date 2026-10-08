@@ -33,6 +33,9 @@ type fakeStore struct {
 	restoreRequests map[string]*model.RestoreRequest
 	auditEvents     []model.AuditEvent
 
+	// snapshot cleanup scan state（孤儿扫描退避）
+	cleanupStates map[string]*model.SnapshotCleanupState
+
 	// snapshot cache + hidden state used by restore authorization
 	snapshotCache map[string]*store.SnapshotListCache
 	treeCache     map[string]*store.SnapshotTreeCache
@@ -52,6 +55,7 @@ func newFakeStore() *fakeStore {
 		targetsByName:   make(map[string]*model.StorageTarget),
 		runs:            make(map[string]*model.Run),
 		restoreRequests: make(map[string]*model.RestoreRequest),
+		cleanupStates:   make(map[string]*model.SnapshotCleanupState),
 		seenSlots:       make(map[string]bool),
 		snapshotCache:   make(map[string]*store.SnapshotListCache),
 		treeCache:       make(map[string]*store.SnapshotTreeCache),
@@ -499,15 +503,53 @@ func (s *fakeStore) RetrySnapshotDeletion(ctx context.Context, deletionID, error
 	return nil
 }
 func (s *fakeStore) GetSnapshotCleanupState(ctx context.Context, repositoryID string) (*model.SnapshotCleanupState, error) {
-	return nil, store.ErrNotFound
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.cleanupStates[repositoryID]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	cp := *st
+	return &cp, nil
 }
 func (s *fakeStore) StartSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, startedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.cleanupStates[repositoryID]
+	if st == nil {
+		st = &model.SnapshotCleanupState{RepositoryID: repositoryID}
+		s.cleanupStates[repositoryID] = st
+	}
+	st.ScanRunID = runID
+	t := startedAt
+	st.LastScanStartedAt = &t
+	st.NextAttemptAt = nil
 	return nil
 }
 func (s *fakeStore) FinishSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, snapshots []model.Snapshot, completedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.cleanupStates[repositoryID]
+	if st == nil {
+		st = &model.SnapshotCleanupState{RepositoryID: repositoryID}
+		s.cleanupStates[repositoryID] = st
+	}
+	st.ScanRunID = ""
+	t := completedAt
+	st.LastScanCompletedAt = &t
+	st.NextAttemptAt = nil
 	return nil
 }
 func (s *fakeStore) ClearSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, nextAttemptAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.cleanupStates[repositoryID]
+	if st == nil {
+		return store.ErrNotFound
+	}
+	st.ScanRunID = ""
+	t := nextAttemptAt
+	st.NextAttemptAt = &t
 	return nil
 }
 
@@ -594,7 +636,13 @@ func (s *fakeStore) ListStorageTargets(ctx context.Context) ([]model.StorageTarg
 	return nil, nil
 }
 func (s *fakeStore) ListRepositories(ctx context.Context) ([]model.Repository, error) {
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]model.Repository, 0, len(s.repos))
+	for _, r := range s.repos {
+		out = append(out, *r)
+	}
+	return out, nil
 }
 func (s *fakeStore) ListRepositoriesNeedingCheck(ctx context.Context, olderThan time.Time) ([]model.Repository, error) {
 	return nil, nil
@@ -1696,15 +1744,50 @@ func TestRequiredTools(t *testing.T) {
 	}
 }
 
-func TestBuildRepoPath(t *testing.T) {
-	target := &model.StorageTarget{
-		RemoteName: "gdrive",
-		RemotePath: "/bmc/backup/",
+func TestRestoreRequiredTools(t *testing.T) {
+	cases := map[string][]string{
+		model.KindFilesystem: {"restic", "rclone"},
+		model.KindPostgreSQL: {"restic", "rclone", "pg_dump", "pg_restore", "psql"},
+		model.KindMySQL:      {"restic", "rclone", "mysqldump", "mysql"},
+		// mongosh 缺失时 mongodb 适配器直接拒绝恢复，声明必须与之同步。
+		model.KindMongoDB: {"restic", "rclone", "mongodump", "mongorestore", "mongosh"},
+		model.KindSQLite:  {"restic", "rclone"},
 	}
-	got := buildRepoPath(target, "inst-1", "agent-1")
-	want := "gdrive:bmc/backup/inst-1/agent-1"
-	if got != want {
-		t.Fatalf("buildRepoPath = %q, want %q", got, want)
+	for kind, want := range cases {
+		got := restoreRequiredTools(kind)
+		if len(got) != len(want) {
+			t.Errorf("restoreRequiredTools(%s) = %v, want %v", kind, got, want)
+			continue
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("restoreRequiredTools(%s)[%d] = %s, want %s", kind, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+func TestBuildRepoPath(t *testing.T) {
+	cases := []struct {
+		name       string
+		remotePath string
+		want       string
+	}{
+		// 绝对路径必须保留前导 "/"：rclone 的 local 后端按进程工作目录解析
+		// 相对路径，丢失前导斜杠会让仓库落到 agent 的临时目录下。
+		{"absolute", "/bmc/backup/", "gdrive:/bmc/backup/inst-1/agent-1"},
+		{"absolute no trailing", "/bmc/backup", "gdrive:/bmc/backup/inst-1/agent-1"},
+		// 对象存储桶路径没有前导斜杠，保持原有相对语义。
+		{"relative bucket", "bmc/backup", "gdrive:bmc/backup/inst-1/agent-1"},
+		{"empty", "", "gdrive:inst-1/agent-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target := &model.StorageTarget{RemoteName: "gdrive", RemotePath: tc.remotePath}
+			if got := buildRepoPath(target, "inst-1", "agent-1"); got != tc.want {
+				t.Fatalf("buildRepoPath(%q) = %q, want %q", tc.remotePath, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1766,3 +1849,77 @@ func TestManualRunIsAlias(t *testing.T) {
 
 // Compile-time assertions.
 var _ dispatch.Dispatcher = (*fakeDispatcher)(nil)
+
+// 扫描失败的退避必须被遵守：否则持续失败的仓库会在每个 scheduler tick
+// （15s）重发一次孤儿扫描，造成 run/日志无上限增长与进程耗尽。
+func TestMaybeStartCleanupScanHonorsBackoff(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Now().UTC()
+	st := newFakeStore()
+	o, seal := newTestOrchestrator(st, newFakeDispatcher())
+
+	agent := &model.Agent{
+		ID: "agent-1", Name: "a", Hostname: "h", Status: model.AgentOnline,
+		EnrolledAt: t0, LastSeenAt: &t0,
+	}
+	st.agents[agent.ID] = agent
+	st.repos["repo-1"] = &model.Repository{
+		ID: "repo-1", AgentID: agent.ID, RepositoryPath: "r:/x", Status: "ready",
+		EncryptedPassword: []byte("pw"), CreatedAt: t0, UpdatedAt: t0,
+	}
+	_ = seal
+
+	runCount := func() int {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		n := 0
+		for _, r := range st.runs {
+			if r.Operation == model.OpSnapshots {
+				n++
+			}
+		}
+		return n
+	}
+
+	// 退避未到期：不得发起新扫描。
+	future := t0.Add(time.Hour)
+	st.cleanupStates["repo-1"] = &model.SnapshotCleanupState{
+		RepositoryID:  "repo-1",
+		NextAttemptAt: &future,
+	}
+	if err := o.TickSnapshotCleanup(ctx, t0); err != nil {
+		t.Fatalf("TickSnapshotCleanup: %v", err)
+	}
+	if n := runCount(); n != 0 {
+		t.Fatalf("backoff must suppress scan, got %d snapshots runs", n)
+	}
+
+	// 退避已过期：应当发起扫描。
+	past := t0.Add(-time.Minute)
+	st.cleanupStates["repo-1"] = &model.SnapshotCleanupState{
+		RepositoryID:  "repo-1",
+		NextAttemptAt: &past,
+	}
+	if err := o.TickSnapshotCleanup(ctx, t0); err != nil {
+		t.Fatalf("TickSnapshotCleanup: %v", err)
+	}
+	if n := runCount(); n != 1 {
+		t.Fatalf("expired backoff must allow one scan, got %d", n)
+	}
+
+	// 失败 run 尚未被 consume：同一 tick 内不得再发第二次扫描。
+	st.cleanupStates["repo-1"] = &model.SnapshotCleanupState{
+		RepositoryID: "repo-1", ScanRunID: "stale-run",
+	}
+	st.runs["stale-run"] = &model.Run{
+		ID: "stale-run", AgentID: agent.ID, Operation: model.OpSnapshots,
+		Status: model.RunFailed, QueuedAt: t0, ProgressJSON: "{}",
+	}
+	before := runCount()
+	if err := o.TickSnapshotCleanup(ctx, t0); err != nil {
+		t.Fatalf("TickSnapshotCleanup: %v", err)
+	}
+	if n := runCount(); n != before {
+		t.Fatalf("failed scan must wait for consume, got %d new runs", n-before)
+	}
+}

@@ -329,18 +329,26 @@ func runRestore(ctx context.Context, d Deps, tempDir string, params []byte, secr
 
 // runFilesystemRestore handles filesystem restore/dry-run.
 func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task model.RestoreTask, dryRun bool) (*Result, error) {
+	// 与数据库恢复同理：目标被触碰之前的失败必须显式上报安全阶段 failed，
+	// 否则服务端判为 manual_recovery_required 并阻塞整个仓库。
+	// 注意：restic restore 本身失败与 symlink 校验失败不在此列——文件可能已被
+	// 部分写入，必须保持保守判定。
+	safeFail := func(code, message string, cause error) error {
+		return &PipelineError{Code: code, Message: message, Cause: cause,
+			ResultJSON: restoreResultJSON(model.RestorePhaseFailed, "")}
+	}
 	fs := task.Filesystem
 	if fs == nil {
-		return nil, &PipelineError{Code: "invalid_params", Message: "missing filesystem restore spec"}
+		return nil, safeFail("invalid_params", "missing filesystem restore spec", nil)
 	}
 	execFS := *fs
 	mapped, err := mapPath(fs.TargetPath, d.RestorePathMappings, false)
 	if err != nil {
-		return nil, &PipelineError{Code: "path_not_allowed", Message: "restore target path mapping failed", Cause: err}
+		return nil, safeFail("path_not_allowed", "restore target path mapping failed", err)
 	}
 	execFS.TargetPath = mapped
 	if err := validateAllowedPaths([]string{execFS.TargetPath}, d.RestoreRoots, true); err != nil {
-		return nil, &PipelineError{Code: "path_not_allowed", Message: "restore target is outside configured allowlist", Cause: err}
+		return nil, safeFail("path_not_allowed", "restore target is outside configured allowlist", err)
 	}
 
 	if dryRun {
@@ -360,7 +368,7 @@ func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task
 
 	if execFS.OverwriteMode == "never" {
 		if entries, err := os.ReadDir(execFS.TargetPath); err == nil && len(entries) > 0 {
-			return nil, &PipelineError{Code: "restore_target_not_empty", Message: "target path not empty and overwrite_mode=never"}
+			return nil, safeFail("restore_target_not_empty", "target path not empty and overwrite_mode=never", nil)
 		}
 	}
 

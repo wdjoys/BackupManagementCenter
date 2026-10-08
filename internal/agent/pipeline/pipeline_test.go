@@ -666,3 +666,48 @@ func TestRunDatabaseRestoreCancelBeforeTargetTouchIsSafe(t *testing.T) {
 		t.Fatalf("phase = %q, want %q", payload.Phase, model.RestorePhaseFailed)
 	}
 }
+
+// 文件系统恢复的前置失败同样必须上报安全阶段：overwrite_mode=never 命中非空目标
+// 只是读目录判断，目标完全未被触碰，却曾被判为 manual_recovery_required 并阻塞
+// 整个仓库（实测：紧随其后的另一次恢复长期停在 queued）。
+func TestRunFilesystemRestorePreflightFailureReportsSafePhase(t *testing.T) {
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "existing.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := Deps{
+		Exec:     &protectionRestoreExecutor{},
+		Logf:     func(string, string, ...any) {},
+		Progress: func(model.Progress) {},
+	}
+	task := model.RestoreTask{
+		RunID: "run-1",
+		Kind:  "filesystem",
+		Filesystem: &model.FilesystemRestore{
+			SnapshotID: "snap-1", TargetPath: target, OverwriteMode: "never",
+		},
+	}
+	_, err := runFilesystemRestore(context.Background(), deps, restic.Options{Exe: "restic"}, task, false)
+	if err == nil {
+		t.Fatal("non-empty target with overwrite_mode=never must be rejected")
+	}
+	var pe *PipelineError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want PipelineError, got %T", err)
+	}
+	if pe.Code != "restore_target_not_empty" {
+		t.Fatalf("code = %q, want restore_target_not_empty", pe.Code)
+	}
+	var payload struct {
+		Phase string `json:"phase"`
+	}
+	if len(pe.ResultJSON) == 0 {
+		t.Fatal("preflight failure must report a phase; otherwise the whole repository is blocked")
+	}
+	if err := json.Unmarshal(pe.ResultJSON, &payload); err != nil {
+		t.Fatalf("unmarshal result json: %v", err)
+	}
+	if payload.Phase != model.RestorePhaseFailed {
+		t.Fatalf("phase = %q, want %q", payload.Phase, model.RestorePhaseFailed)
+	}
+}

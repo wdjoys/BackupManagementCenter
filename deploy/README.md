@@ -62,6 +62,10 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - **数据库客户端版本下限**：Agent 镜像内置的数据库客户端版本必须不低于目标服务端，且 MySQL 必须使用官方二进制而非 MariaDB 客户端。
   - MySQL：镜像内置官方 `mysql`/`mysqldump`。若误用 Debian 的 `mariadb-client`（`default-mysql-client` 的实体），dump 前会探测 `information_schema.columns.generation_expression`，而该列在 **MySQL 5.6 及更早**不存在，导致备份必然以 `Unknown column 'generation_expression' in 'field list' (1054)` 失败。
   - MariaDB：同样使用官方 MySQL 客户端，并且在参数中显式关闭 `--column-statistics`（`--column-statistics=0`）。官方 MySQL 8.0 客户端默认开启该选项，会先查 `information_schema.COLUMN_STATISTICS`，而该表是 MySQL 8.0 专有的，**MariaDB 与 MySQL 5.x 都没有**，dump 会以 `Unknown table 'COLUMN_STATISTICS' in information_schema (1109)`（exit 2）失败。因此镜像必须使用官方 MySQL 客户端：`mariadb-dump` 不支持该参数，无法同时兼容 MySQL 5.6 与 MariaDB。
+  - **已知限制：MySQL ≤5.7 上非 ASCII 库名无法备份。** MySQL ≤5.7 的 `character_set_server` 默认为 `latin1`。官方 8.0 客户端请求 `utf8mb4` 时，会因 8.0 的默认排序规则 `utf8mb4_0900_ai_ci` 在旧服务端不存在而**回退到 latin1**，于是库名被按 latin1 解释，服务端报 `Unknown database '<库名>'`（库实际存在），备份以 exit 2 失败。实测该问题在 MySQL 5.5/5.6/5.7 上复现，MariaDB 11 与 MySQL 8.0 正常。
+    - 客户端侧无可用修复：改用 `utf8mb3` 虽能正确解析标识符，但会**损坏 4 字节字符**（emoji 被写成 `?`），得不偿失；客户端也没有指定连接排序规则的选项。
+    - 处理方式：备份会输出可诊断提示（明确指出字符集回退而非库不存在）。解决需在服务端启用 `--character-set-server=utf8mb4`，或改用 ASCII 库名。
+    - 普通 ASCII 库名 + 非 ASCII **数据**不受影响：实测中文/emoji 数据在 latin1 连接下仍能完整备份与还原。
   - PostgreSQL：`pg_dump` 要求客户端主版本 ≥ 服务端主版本（不满足时直接 `aborting because of server version mismatch`）。Debian bookworm 自带 `postgresql-client-15`，只能备份 PG 15 及更旧的服务端；镜像改为从 PGDG 安装 `postgresql-client-${PG_CLIENT_MAJOR}`（默认 18），可覆盖更旧的服务端。构建参数 `PG_CLIENT_MAJOR`、`PGDG_BASE_URL`（默认阿里云 PGDG 镜像）可按目标环境调整。
   - PostgreSQL 恢复的版本偏斜：`pg_dump`/`pg_restore` 自 17 起会在归档前置写入 `SET transaction_timeout = 0;`，该 GUC 在 **PG 16 及更早**不存在。恢复到旧服务端时这条语句会报 `unrecognized configuration parameter`，而 `pg_restore` 只要忽略过任何错误就以 exit 1 结束。BMC 因此不再使用 `--exit-on-error`，改为只放行这一条已知无害语句，其余错误照旧失败，正确性由恢复后的关系集合校验兜底。
   - MongoDB：`mongodump`/`mongorestore` 来自官方 Database Tools，另外单独安装 `mongosh`（`MONGOSH_VERSION`）。恢复需要 `mongosh` 判断目标库是否存在并校验集合是否落地；缺失时适配器直接拒绝恢复，能力探测与恢复前置校验都会把 `mongosh` 列为必需工具。mongorestore 的 `--dryRun` 输出全部写在 stderr，校验必须同时收集 stderr，只读 stdout 会把每次恢复都判成失败。

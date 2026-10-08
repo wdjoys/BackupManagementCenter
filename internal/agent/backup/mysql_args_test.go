@@ -185,3 +185,29 @@ func TestMySQLBackupDisablesColumnStatistics(t *testing.T) {
 		t.Fatalf("mysqldump must disable column statistics, got %v", dump.Args)
 	}
 }
+
+// MySQL ≤5.7 默认 character_set_server=latin1，官方 8.0 客户端请求 utf8mb4 时因
+// utf8mb4_0900_ai_ci 在旧服务端不存在而回退 latin1，非 ASCII 库名被错误解释，
+// 服务端报 "Unknown database"（库其实存在）。必须给出可诊断提示，避免运维误判。
+func TestMySQLDumpNameCharsetHint(t *testing.T) {
+	unknown := []string{"mysqldump: Got error: 1049: Unknown database '测试库-1' when selecting the database"}
+
+	if got := mysqlDumpNameCharsetHint("测试库-1", unknown); got == "" {
+		t.Fatal("non-ASCII database with Unknown database must produce a hint")
+	} else if !strings.Contains(got, "测试库-1") || !strings.Contains(got, "utf8mb4") {
+		t.Fatalf("hint must name the database and the charset remedy, got %q", got)
+	}
+
+	// ASCII 库名不受该字符集回退影响，不应给出误导性提示。
+	if got := mysqlDumpNameCharsetHint("legacy57", unknown); got != "" {
+		t.Fatalf("ASCII database must not produce a charset hint, got %q", got)
+	}
+	// 非 ASCII 库名但错误不是 1049（例如权限/网络）时也不该归因到字符集。
+	if got := mysqlDumpNameCharsetHint("测试库-1", []string{"Access denied for user 'root'@'%'"}); got != "" {
+		t.Fatalf("unrelated failure must not produce a charset hint, got %q", got)
+	}
+	// all 范围不涉及单个库名。
+	if got := mysqlDumpNameCharsetHint("all", unknown); got != "" {
+		t.Fatalf("all scope must not produce a charset hint, got %q", got)
+	}
+}

@@ -104,8 +104,26 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 	args = append(args, source.ExtraArgs...)
 
-	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, logLine)
+	// 收集 stderr：MySQL ≤5.7 默认 character_set_server=latin1，官方 8.0 客户端
+	// 请求 utf8mb4 时会因排序规则 utf8mb4_0900_ai_ci 不存在而回退 latin1，导致
+	// 非 ASCII 库名被按 latin1 解释、报 "Unknown database"（库其实存在）。
+	// 该场景无法在客户端修复（utf8mb3 会损坏 4 字节字符），因此把误导性的
+	// "库不存在" 转成可诊断的错误。
+	var stderrTail []string
+	captureStderr := func(line string) {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			stderrTail = append(stderrTail, trimmed)
+			if len(stderrTail) > 20 {
+				stderrTail = stderrTail[len(stderrTail)-20:]
+			}
+		}
+		logLine(line)
+	}
+	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, captureStderr)
 	if err != nil || exitCode != 0 {
+		if hint := mysqlDumpNameCharsetHint(source.Database, stderrTail); hint != "" {
+			rc.Logf("warn", "%s", hint)
+		}
 		return nil, exitError("mysqldump", exitCode, err)
 	}
 	toolVersions["mysqldump"] = getToolVersion(ctx, rc.Exec, mysqldumpPath, nil)
@@ -147,6 +165,42 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 
 func mysqlOptionValue(v string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(v, `\`, `\\`), `"`, `\"`), "\n", `\n`)
+}
+
+// mysqlDumpNameCharsetHint 在"库名含非 ASCII 字符"且 mysqldump 报 1049 时给出
+// 可诊断提示。MySQL ≤5.7 的 character_set_server 默认为 latin1，官方 8.0 客户端
+// 请求 utf8mb4 会因 utf8mb4_0900_ai_ci 排序规则不存在而回退 latin1，于是库名被
+// 按 latin1 解释，服务端报 "Unknown database"——库其实存在，直接照字面理解会
+// 让运维误判。客户端侧无可用修复（改用 utf8mb3 会损坏 4 字节字符），因此只做提示。
+func mysqlDumpNameCharsetHint(database string, stderrTail []string) string {
+	if database == "" || database == "all" || isASCII(database) {
+		return ""
+	}
+	unknownDB := false
+	for _, line := range stderrTail {
+		if strings.Contains(line, "Unknown database") {
+			unknownDB = true
+			break
+		}
+	}
+	if !unknownDB {
+		return ""
+	}
+	return fmt.Sprintf("数据库名 %q 含非 ASCII 字符，而目标 MySQL 服务端字符集为 latin1（MySQL ≤5.7 的默认值）："+
+		"官方 8.0 客户端请求 utf8mb4 时因排序规则 utf8mb4_0900_ai_ci 在旧服务端不存在而回退 latin1，"+
+		"库名被错误解释，服务端因此报 \"Unknown database\"（库实际存在）。"+
+		"请将该服务端/库改为 utf8mb4（如启动参数 --character-set-server=utf8mb4），或改用 ASCII 库名。"+
+		"不要改用 utf8mb3 规避：它会损坏 4 字节字符（如 emoji）。", database)
+}
+
+// isASCII 报告 s 是否只含 ASCII 字符。
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // mysqlCtx groups the target connection details a restore needs.

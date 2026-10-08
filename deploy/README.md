@@ -123,6 +123,8 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - **数据库范围**：整实例还原（`database=all`）同步返回 422 `unsupported_restore_manifest`；来源快照若包含多库或 globals（下载后才能判断），已返回 202 的请求会以 run 错误码 `unsupported_restore_manifest`、`phase=failed` 结束，且目标未被修改。
 - **每种数据库 kind 默认禁用**：数据库恢复会覆盖数据，必须先在**真实隔离实例**上验证预备份与回滚，再通过 `BMC_DATABASE_RESTORE_KINDS=postgresql,mysql,mongodb,sqlite` 逐项启用；未启用的 kind 返回 503 `database_restore_disabled`。`sqlite`（Go 实现）不需要数据库客户端。
 - **全局串行**：同一时间只允许一个数据库恢复（占用从 queued 持续到明确的安全终态）。其他数据库恢复返回 409 `database_restore_busy`；相同参数提交会复用已有任务。`rollback_failed`/`manual_recovery_required` 不释放占用，Server 重启后从持久化状态恢复占用并阻塞对应来源仓库的后续命令。
+  - **阶段语义与阻塞范围**：安全终态为 `succeeded` / `failed` / `pre_backup_failed` / `rolled_back` / `new_target_cleaned`；其中 **`failed` 的语义是"执行失败且已确认目标未被修改"**，因此**目标被触碰之前**的失败（清单范围校验、适配器不匹配、快照下载失败、目标已存在且未开启覆盖等）都归入该阶段，不占用仓库、无需人工介入。`rollback_failed` / `manual_recovery_required` 表示"无法证明目标未被修改"，会阻塞该来源仓库的**全部**后续任务（含备份与快照列表浏览），必须由 `/api/v1/restores/{id}/resolve` 人工确认后解除。
+  - 排查提示：若某仓库的备份长期停在 `queued`、快照列表接口返回 504，先查是否存在 `rollback_failed` / `manual_recovery_required` 的恢复记录——这正是该仓库被阻塞的表现。
 - **保护快照**：覆盖已有目标前，先把目标现状导出并上传到**来源仓库**，仅打 `restore-protection:<runID>` 与 `kind:<kind>` 标签（不含 `plan:`/`run:`）。该快照不会被删除请求移除（即使尚无 ID 引用），也不被保留策略与孤儿扫描认领，用于人工定位回滚点。
 - **维护要求（运维前提）**：
   - 网络数据库：恢复期间必须**隔离外部写入**；导入失败会自动回滚，进程/主机突然中断则记录 `manual_recovery_required`，不承诺跨重启自动回滚。

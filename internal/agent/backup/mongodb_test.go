@@ -12,11 +12,12 @@ import (
 type mongoExecutor struct {
 	calls  []Cmd
 	stdout []string // 每次调用要回放的 stdout 行
+	stderr []string // 每次调用要回放的 stderr 行
 	exits  []int    // 每次调用的退出码（缺省 0）
 	n      int
 }
 
-func (e *mongoExecutor) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (int, error) {
+func (e *mongoExecutor) Run(_ context.Context, c Cmd, onStdout, onStderr func(string)) (int, error) {
 	idx := e.n
 	e.n++
 	e.calls = append(e.calls, c)
@@ -27,7 +28,40 @@ func (e *mongoExecutor) Run(_ context.Context, c Cmd, onStdout, _ func(string)) 
 	if idx < len(e.stdout) && onStdout != nil {
 		onStdout(e.stdout[idx])
 	}
+	if idx < len(e.stderr) && onStderr != nil {
+		onStderr(e.stderr[idx])
+	}
 	return code, nil
+}
+
+// mongorestore 把 "found collection ..." / "archive prelude ..." 全写到 stderr，
+// 只收集 stdout 会让每次恢复都判成 "could not read any namespace"。
+func TestMongoVerifyReadsNamespacesFromStderr(t *testing.T) {
+	dir := t.TempDir()
+	exec := &mongoExecutor{
+		stderr: []string{
+			"2026-09-30T13:21:48.738+0000\tarchive prelude appdb.orders\n" +
+				"2026-09-30T13:21:48.738+0000\tfound collection appdb.orders bson to restore to appdb.orders\n" +
+				"2026-09-30T13:21:48.738+0000\tfound collection metadata from appdb.orders to restore to appdb.orders\n" +
+				"2026-09-30T13:21:48.738+0000\tdry run completed\n",
+			"orders\n",
+		},
+	}
+	spec := &RestoreSpec{
+		Kind:         KindMongoDB,
+		StagingDir:   dir,
+		ArtifactFile: dir + "/a.archive",
+		Database: &model.DatabaseRestore{
+			TargetDatabase: "appdb", TargetHost: "127.0.0.1", TargetPort: 27017, TargetUsername: "bmc",
+		},
+		Secrets: SecretBundle{DBPassword: "pw"},
+		Logf:    func(string, string, ...any) {},
+		Exec:    exec,
+	}
+	err := (&MongoDBAdapter{}).VerifyRestored(context.Background(), spec)
+	if err != nil && strings.Contains(err.Error(), "could not read any namespace") {
+		t.Fatalf("stderr output must be parsed, got: %v", err)
+	}
 }
 
 // mongodump 的 --config 必须是 Database Tools 认可的 uri+password 结构。

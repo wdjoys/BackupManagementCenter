@@ -265,9 +265,12 @@ func (a *MongoDBAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) 
 	}
 	namespaces := map[string]map[string]struct{}{}
 	var out strings.Builder
+	// mongorestore 把 "found collection ..." 与 "archive prelude ..." 全部写到
+	// stderr，只收集 stdout 会得到空输出并把每次恢复都判成失败。
+	collect := func(line string) { out.WriteString(line); out.WriteString("\n") }
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: toolPath("mongorestore"),
 		Args: []string{"--archive=" + spec.ArtifactFile, "--gzip", "--config=" + c.config, "--dryRun", "--verbose"}},
-		func(line string) { out.WriteString(line); out.WriteString("\n") }, c.logf)
+		collect, func(line string) { collect(line); c.logf(line) })
 	if err != nil || exit != 0 {
 		return exitError("mongorestore dry run", exit, err)
 	}

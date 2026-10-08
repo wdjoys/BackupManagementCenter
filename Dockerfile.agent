@@ -18,6 +18,9 @@ ARG DEBIAN_MIRROR=mirrors.aliyun.com
 ARG RESTIC_VERSION=0.18.0
 ARG RCLONE_VERSION=1.69.0
 ARG MONGODB_TOOLS_VERSION=100.12.2
+# MongoDB 恢复的校验（判断目标库是否存在、集合是否落地）依赖 mongosh；
+# 官方 Database Tools 包不含它，需单独从 MongoDB 官方分发地址安装。
+ARG MONGOSH_VERSION=2.3.9
 # MySQL 客户端必须是官方 mysql 二进制：Debian 的 mariadb-client
 # （default-mysql-client 的实体）在 dump 前会探测
 # information_schema.columns.generation_expression，该列在 MySQL 5.6 及更早
@@ -30,8 +33,8 @@ ARG MYSQL_BASE_URL=https://dev.mysql.com/get/Downloads/MySQL-8.0
 # abort（"server version mismatch"）。Debian bookworm 自带 15，无法备份
 # PG 16+；改用 PGDG 提供的最新客户端，可备份所有更旧的服务端。
 ARG PG_CLIENT_MAJOR=18
-ARG PGDG_BASE_URL=https://apt.postgresql.org/pub/repos/apt
-ARG PGDG_KEY_URL=https://www.postgresql.org/media/keys/ACCC4CF8.asc
+# 直连 apt.postgresql.org 在国内经常超时；默认走阿里云镜像。
+ARG PGDG_BASE_URL=https://mirrors.aliyun.com/postgresql/repos/apt
 ARG RESTIC_BASE_URL=https://gh-proxy.com/https://github.com/restic/restic/releases/download
 ARG RCLONE_BASE_URL=https://gh-proxy.com/https://github.com/rclone/rclone/releases/download
 # fetch 带重试的下载：国内到 GitHub/厂商 CDN 的连接时常被重置，
@@ -53,8 +56,7 @@ RUN sed -i "s|deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g; s|security.debian
     rm -rf /var/lib/apt/lists/*
 
 # PostgreSQL 客户端从 PGDG 安装（bookworm 自带 15 无法备份 PG 16+）。
-RUN fetch "${PGDG_KEY_URL}" /tmp/pgdg.asc && gpg --dearmor -o /usr/share/keyrings/pgdg.gpg /tmp/pgdg.asc && rm -f /tmp/pgdg.asc && \
-    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] ${PGDG_BASE_URL} bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+RUN echo "deb [trusted=yes] ${PGDG_BASE_URL} bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
     apt-get update && apt-get install -y --no-install-recommends "postgresql-client-${PG_CLIENT_MAJOR}" && \
     rm -rf /var/lib/apt/lists/*
 
@@ -71,6 +73,12 @@ RUN fetch "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-debian12-x
     install -m 0755 /tmp/mongodb-tools/bin/mongodump /usr/local/bin/mongodump && \
     install -m 0755 /tmp/mongodb-tools/bin/mongorestore /usr/local/bin/mongorestore && \
     rm -rf /tmp/mongodb-tools /tmp/mongodb-tools.tgz
+
+# mongosh 是 MongoDB 恢复校验的硬依赖（缺失时适配器拒绝恢复）。
+RUN fetch "https://downloads.mongodb.com/compass/mongosh-${MONGOSH_VERSION}-linux-x64.tgz" /tmp/mongosh.tgz && \
+    mkdir -p /tmp/mongosh && tar -xzf /tmp/mongosh.tgz -C /tmp/mongosh --strip-components=1 && \
+    install -m 0755 /tmp/mongosh/bin/mongosh /usr/local/bin/mongosh && \
+    rm -rf /tmp/mongosh /tmp/mongosh.tgz
 
 RUN fetch "${MYSQL_BASE_URL}/mysql-${MYSQL_CLIENT_VERSION}-linux-glibc2.28-x86_64.tar.xz" /tmp/mysql-client.tar.xz && \
     mkdir -p /tmp/mysql-client && tar -xJf /tmp/mysql-client.tar.xz -C /tmp/mysql-client --strip-components=1 && \

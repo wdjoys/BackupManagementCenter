@@ -302,14 +302,34 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 	if spec.ArtifactFile == "" {
 		return errors.New("postgresql restore artifact is missing")
 	}
+	// 不加 --exit-on-error：pg_restore ≥17 生成的归档前置语句
+	// "SET transaction_timeout = 0;" 在 PG ≤16 上是未知 GUC，属于版本偏斜
+	// 噪声。pg_restore 只要忽略过任何错误就以 exit 1 结束，因此这里显式收集
+	// stderr，仅在"全部错误都是已知版本偏斜语句"时放行；其余错误照旧失败。
+	// 真正的正确性仍由 VerifyRestored 对比关系集合兜底。
 	args := []string{
-		"--exit-on-error", "--no-owner",
+		"--no-owner",
 		"--dbname=" + c.db.TargetDatabase,
 		"-h", c.db.TargetHost, "-p", strconv.Itoa(c.db.TargetPort), "-U", c.db.TargetUsername,
 		spec.ArtifactFile,
 	}
-	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.pgRest, Args: args, Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
+	var stderrLines []string
+	onStderr := func(line string) {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			stderrLines = append(stderrLines, trimmed)
+		}
+		c.logf(line)
+	}
+	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.pgRest, Args: args, Env: c.env}, c.logf, onStderr)
+	if err != nil {
 		return exitError("pg_restore", exit, err)
+	}
+	if exit != 0 {
+		if nurr := pgIgnorableRestoreErrors(stderrLines); nurr > 0 && pgOnlyIgnorableRestoreErrors(stderrLines) {
+			spec.Logf("warn", "pg_restore 报告 %d 处版本偏斜错误（目标服务端低于归档客户端），已忽略；由恢复校验兜底", nurr)
+		} else {
+			return exitError("pg_restore", exit, nil)
+		}
 	}
 	return nil
 }
@@ -334,8 +354,15 @@ func (a *PostgreSQLAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpe
 	}
 	targetObjects := map[string]struct{}{}
 	var got strings.Builder
+	// relkind 必须覆盖索引（'i'/'I'）：pg_restore -l 会列出 INDEX 条目，
+	// 而这里若不统计索引，每次带索引的恢复都会被判成 missing。
+	// 但约束（PK/UNIQUE/FK）背后的隐式索引在归档里以 CONSTRAINT 行出现，
+	// 不在 INDEX 条目里，因此要把它们排除，只比较显式索引。
+	// pg_toast* 是服务端自动创建的存储结构，pg_dump 同样不列出。
 	query := "SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
-		"WHERE c.relkind IN ('r','p','v','m','S') AND n.nspname NOT IN ('pg_catalog','information_schema') ORDER BY 1"
+		"WHERE c.relkind IN ('r','p','v','m','S','i','I') " +
+		"AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = c.oid) " +
+		"AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' ORDER BY 1"
 	exit, err = spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.targetQuery(query), Env: c.env},
 		func(line string) { got.WriteString(strings.TrimSpace(line)); got.WriteString("\n") }, c.logf)
 	if err != nil || exit != 0 {
@@ -375,8 +402,63 @@ func (a *PostgreSQLAdapter) RemoveTarget(ctx context.Context, spec *RestoreSpec)
 	return nil
 }
 
+// pgVersionSkewStatements 列出"归档由更高版本客户端生成、目标服务端不认识"的
+// 无害前置语句。只放行这些，其他错误一律视为真实失败。
+var pgVersionSkewStatements = []string{
+	"SET transaction_timeout = 0;",
+}
+
+// pgIgnorableRestoreErrors 统计 stderr 中属于已知版本偏斜的错误数。
+func pgIgnorableRestoreErrors(lines []string) int {
+	n := 0
+	for _, line := range lines {
+		if isPgVersionSkewCommand(line) {
+			n++
+		}
+	}
+	return n
+}
+
+// pgOnlyIgnorableRestoreErrors 判断 stderr 里的错误是否**只有**已知版本偏斜。
+// 任意一条非版本偏斜的 error/fatal 行都会让它返回 false，交由调用方报错。
+func pgOnlyIgnorableRestoreErrors(lines []string) bool {
+	sawSkew := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "pg_restore: error:") && !strings.HasPrefix(trimmed, "pg_restore: fatal:") {
+			continue
+		}
+		if !strings.Contains(trimmed, "unrecognized configuration parameter") {
+			return false
+		}
+		// pg_restore 在该 error 行之后输出 "Command was: <stmt>"；仅当该语句
+		// 属于已知版本偏斜语句时才认定为无害。
+		if i+1 >= len(lines) || !isPgVersionSkewCommand(lines[i+1]) {
+			return false
+		}
+		sawSkew = true
+	}
+	return sawSkew
+}
+
+// isPgVersionSkewCommand 判断一行 stderr 是否为已知版本偏斜语句。
+func isPgVersionSkewCommand(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "Command was:"))
+	for _, stmt := range pgVersionSkewStatements {
+		if strings.EqualFold(trimmed, stmt) {
+			return true
+		}
+	}
+	return false
+}
+
 // pgDumpRelationNames extracts relation identifiers from `pg_restore -l` output.
-// Format: "<dumpId>; <oid> <oid> <TYPE> <schema> <name> <owner>".
+//
+// 每行形如 "<dumpId>; <oid> <oid> <TYPE...> <schema> <name> <owner>"。TYPE 可能
+// 是多个词（"TABLE DATA"、"SEQUENCE OWNED BY"、"SEQUENCE SET"、
+// "MATERIALIZED VIEW"），因此不能按固定下标取字段：schema/name/owner 恒为
+// 末尾三项，类型是中间的全部词。只保留真正代表关系对象的类型，跳过
+// DATA/OWNED BY/SET 这类附属条目（它们指向的关系已由 TYPE/SEQUENCE 行覆盖）。
 func pgDumpRelationNames(list string) map[string]struct{} {
 	names := map[string]struct{}{}
 	for _, line := range strings.Split(list, "\n") {
@@ -384,13 +466,10 @@ func pgDumpRelationNames(list string) map[string]struct{} {
 		if len(fields) < 6 || !strings.HasSuffix(fields[0], ";") {
 			continue
 		}
-		switch fields[3] {
-		case "TABLE", "SEQUENCE", "VIEW", "INDEX":
-			names[fields[4]+"."+fields[5]] = struct{}{}
-		case "MATERIALIZED":
-			if len(fields) >= 7 {
-				names[fields[5]+"."+fields[6]] = struct{}{}
-			}
+		typ := strings.Join(fields[3:len(fields)-3], " ")
+		switch typ {
+		case "TABLE", "SEQUENCE", "VIEW", "INDEX", "MATERIALIZED VIEW", "FOREIGN TABLE":
+			names[fields[len(fields)-3]+"."+fields[len(fields)-2]] = struct{}{}
 		}
 	}
 	return names

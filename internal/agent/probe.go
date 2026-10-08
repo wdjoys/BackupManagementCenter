@@ -48,6 +48,7 @@ var toolNames = []string{
 	"mysql",
 	"mongodump",
 	"mongorestore",
+	"mongosh",
 	"sqlite3",
 }
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -56,15 +57,24 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 
 	// Write defaults-extra-file (0600)
-	cnfContent := fmt.Sprintf("[client]\nuser=%s\npassword=\"%s\"\nhost=\"%s\"\nport=%d\n", mysqlOptionValue(source.Username), mysqlOptionValue(rc.Secrets.DBPassword), mysqlOptionValue(source.Host), source.Port)
+	// 显式指定连接字符集：客户端默认字符集由镜像 locale 推导（agent 镜像无 UTF-8
+	// locale，会退到 latin1），非 ASCII 标识符与数据都会受影响。
+	cnfContent := fmt.Sprintf("[client]\nuser=%s\npassword=\"%s\"\nhost=\"%s\"\nport=%d\ndefault-character-set=utf8mb4\n", mysqlOptionValue(source.Username), mysqlOptionValue(rc.Secrets.DBPassword), mysqlOptionValue(source.Host), source.Port)
 	cnfFile, err := writeSecretFile(rc.TempDir, "my.cnf", cnfContent)
 	if err != nil {
 		return nil, fmt.Errorf("write my.cnf: %w", err)
 	}
 
 	toolVersions := make(map[string]string)
-	mysqldumpPath := toolPath("mysqldump")
 	logLine := func(l string) { rc.Logf("info", "%s", l) }
+	// 官方 8.0 客户端在 MySQL ≤5.7 上会把连接字符集回退到 latin1（8.0 专有的
+	// 默认排序规则 utf8mb4_0900_ai_ci 在旧服务端不存在），导致非 ASCII 标识符
+	// 无法解析；MariaDB 与旧服务端改用 5.7 客户端。
+	tools := selectMySQLTools(ctx, rc.Exec, nil, cnfFile)
+	mysqldumpPath := tools.dump
+	if tools.legacy {
+		rc.Logf("info", "使用 MySQL 5.7 客户端连接旧版服务端/MariaDB（避免 utf8mb4 排序规则回退）")
+	}
 	// Non-transactional tables are not protected by --single-transaction and
 	// can change while the dump is running. Surface the count before starting
 	// the backup so operators can schedule a maintenance window if needed.
@@ -73,7 +83,7 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 		nonTransactionalQuery += " AND table_schema = '" + strings.ReplaceAll(source.Database, "'", "''") + "'"
 	}
 	var nonTransactional string
-	if _, checkErr := rc.Exec.Run(ctx, Cmd{Exe: toolPath("mysql"), Args: append([]string{"--defaults-extra-file=" + cnfFile}, "-N", "-s", "-e", nonTransactionalQuery)}, func(line string) {
+	if _, checkErr := rc.Exec.Run(ctx, Cmd{Exe: tools.client, Args: append([]string{"--defaults-extra-file=" + cnfFile}, "-N", "-s", "-e", nonTransactionalQuery)}, func(line string) {
 		nonTransactional = strings.TrimSpace(line)
 	}, logLine); checkErr == nil {
 		if count, parseErr := strconv.Atoi(nonTransactional); parseErr == nil && count > 0 {
@@ -89,14 +99,17 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 		"--defaults-extra-file=" + cnfFile,
 		"--single-transaction", "--quick", "--routines", "--events", "--triggers",
 		"--hex-blob", "--no-tablespaces",
+	}
+	if tools.modern {
 		// 官方 MySQL 8.0 客户端默认开启 --column-statistics，会先查
 		// information_schema.COLUMN_STATISTICS。该表是 MySQL 8.0 专有的，
 		// MariaDB（以及 MySQL 5.x）没有，dump 会直接失败：
 		//   Unknown table 'COLUMN_STATISTICS' in information_schema (1109)
 		// 该统计仅用于优化器直方图，与备份内容无关，统一关闭。
-		"--column-statistics=0",
-		"--result-file=" + dumpFile,
+		// 5.7 客户端不认识该参数，因此仅在 8.0 客户端上添加。
+		args = append(args, "--column-statistics=0")
 	}
+	args = append(args, "--result-file="+dumpFile)
 	if source.Database == "all" {
 		args = append(args, "--all-databases")
 	} else {
@@ -167,6 +180,75 @@ func mysqlOptionValue(v string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(v, `\`, `\\`), `"`, `\"`), "\n", `\n`)
 }
 
+// mysqlToolSet 是一次备份/恢复所用的 MySQL 客户端路径。
+type mysqlToolSet struct {
+	dump   string // mysqldump 可执行文件
+	client string // mysql 可执行文件
+	// modern 表示使用官方 8.0 客户端（支持 --column-statistics，
+	// 且对 MySQL >=8.0 服务端不会发生 utf8mb4 排序规则回退）。
+	modern bool
+	// legacy 表示退回到镜像内的 5.7 客户端（供旧服务端/MariaDB 使用）。
+	legacy bool
+}
+
+// selectMySQLTools 探测服务端版本并选择客户端。
+//
+// 官方 8.0 客户端请求 utf8mb4 时会带上 8.0 专有的默认排序规则
+// utf8mb4_0900_ai_ci；MySQL ≤5.7 不认识该排序规则，连接字符集被回退到
+// latin1，非 ASCII 标识符（库名/表名）随即无法解析、备份失败。MariaDB 与
+// MySQL <8.0 改用 5.7 客户端可避免该回退（且不会探测 COLUMN_STATISTICS）。
+// MySQL >=8.0 仍用 8.0 客户端，避免旧客户端漏掉 8.0 的新对象类型。
+//
+// 探测失败或镜像未提供 5.7 客户端时保持既有行为（8.0 客户端），不阻断备份。
+func selectMySQLTools(ctx context.Context, exec Executor, env []string, cnfFile string) mysqlToolSet {
+	modern := mysqlToolSet{dump: toolPath("mysqldump"), client: toolPath("mysql"), modern: true}
+	dump57, dumpErr := osexec.LookPath("mysqldump57")
+	client57, clientErr := osexec.LookPath("mysql57")
+	if dumpErr != nil || clientErr != nil {
+		return modern
+	}
+	var version string
+	if _, err := exec.Run(ctx, Cmd{Exe: modern.client, Args: []string{"--defaults-extra-file=" + cnfFile, "-N", "-s", "-e", "SELECT VERSION()"}, Env: env},
+		func(line string) {
+			if v := strings.TrimSpace(line); v != "" && version == "" {
+				version = v
+			}
+		}, nil); err != nil || version == "" {
+		return modern
+	}
+	if mysqlNeedsLegacyClient(version) {
+		return mysqlToolSet{dump: dump57, client: client57, legacy: true}
+	}
+	return modern
+}
+
+// mysqlNeedsLegacyClient 判断某服务端版本是否必须使用 5.7 客户端。
+// MariaDB 与 MySQL <8.0 都会在 8.0 客户端上触发 utf8mb4 排序规则回退。
+func mysqlNeedsLegacyClient(version string) bool {
+	return isMariaDBVersion(version) || mysqlMajorVersion(version) < 8
+}
+
+// isMariaDBVersion 判断版本串是否来自 MariaDB（形如 5.5.5-10.6.16-MariaDB）。
+func isMariaDBVersion(version string) bool {
+	return strings.Contains(strings.ToLower(version), "mariadb")
+}
+
+// mysqlMajorVersion 取版本串的主版本号；无法解析时返回 0。
+func mysqlMajorVersion(version string) int {
+	i := 0
+	for i < len(version) && version[i] >= '0' && version[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(version[:i])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // mysqlDumpNameCharsetHint 在"库名含非 ASCII 字符"且 mysqldump 报 1049 时给出
 // 可诊断提示。MySQL ≤5.7 的 character_set_server 默认为 latin1，官方 8.0 客户端
 // 请求 utf8mb4 会因 utf8mb4_0900_ai_ci 排序规则不存在而回退 latin1，于是库名被
@@ -225,16 +307,21 @@ func mysqlPrepare(spec *RestoreSpec) (*mysqlCtx, error) {
 	if mysqlSystemSchemas[strings.ToLower(db.TargetDatabase)] {
 		return nil, fmt.Errorf("refusing to restore into system schema %q", db.TargetDatabase)
 	}
-	cnfContent := fmt.Sprintf("[client]\nuser=%s\npassword=\"%s\"\nhost=\"%s\"\nport=%d\n",
+	// 同备份：显式指定 utf8mb4，否则建库/校验语句中的非 ASCII 库名会被按
+	// latin1 解释（客户端默认字符集由 locale 推导）。
+	cnfContent := fmt.Sprintf("[client]\nuser=%s\npassword=\"%s\"\nhost=\"%s\"\nport=%d\ndefault-character-set=utf8mb4\n",
 		mysqlOptionValue(db.TargetUsername), mysqlOptionValue(spec.Secrets.DBPassword), mysqlOptionValue(db.TargetHost), db.TargetPort)
 	cnfFile, err := writeSecretFile(spec.StagingDir, "my.cnf", cnfContent)
 	if err != nil {
 		return nil, fmt.Errorf("write my.cnf: %w", err)
 	}
+	// 恢复同样按目标服务端版本选择客户端：旧服务端/MariaDB 上用 8.0 客户端会因
+	// utf8mb4 排序规则回退 latin1，非 ASCII 库名/表名的导入与校验都会失败。
+	tools := selectMySQLTools(context.Background(), spec.Exec, nil, cnfFile)
 	return &mysqlCtx{
 		db:    db,
 		cnf:   cnfFile,
-		mysql: toolPath("mysql"),
+		mysql: tools.client,
 		logf:  func(l string) { spec.Logf("info", "%s", l) },
 	}, nil
 }

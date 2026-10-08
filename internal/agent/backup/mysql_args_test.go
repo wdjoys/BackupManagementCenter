@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -209,5 +210,82 @@ func TestMySQLDumpNameCharsetHint(t *testing.T) {
 	// all 范围不涉及单个库名。
 	if got := mysqlDumpNameCharsetHint("all", unknown); got != "" {
 		t.Fatalf("all scope must not produce a charset hint, got %q", got)
+	}
+}
+
+// 客户端选择必须按服务端版本区分：MariaDB 与 MySQL <8.0 需要 5.7 客户端，
+// 否则官方 8.0 客户端会把连接字符集回退到 latin1，非 ASCII 标识符无法解析。
+func TestMySQLNeedsLegacyClient(t *testing.T) {
+	cases := []struct {
+		version string
+		want    bool
+	}{
+		{"5.5.62", true},
+		{"5.6.51-log", true},
+		{"5.7.44", true},
+		{"8.0.40", false},
+		{"8.4.0", false},
+		{"11.8.9-MariaDB-ubu2404", true},
+		{"5.5.5-10.6.16-MariaDB", true},
+		{"", true}, // 无法解析时按旧服务端处理（更安全）
+	}
+	for _, tc := range cases {
+		if got := mysqlNeedsLegacyClient(tc.version); got != tc.want {
+			t.Errorf("mysqlNeedsLegacyClient(%q) = %v, want %v", tc.version, got, tc.want)
+		}
+	}
+}
+
+func TestMySQLMajorVersion(t *testing.T) {
+	cases := map[string]int{
+		"5.7.44": 5, "8.0.40": 8, "11.8.9-MariaDB": 11,
+		"5.5.5-10.6.16-MariaDB": 5, "": 0, "abc": 0,
+	}
+	for in, want := range cases {
+		if got := mysqlMajorVersion(in); got != want {
+			t.Errorf("mysqlMajorVersion(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// 连接字符集必须显式写入 cnf：客户端默认字符集由镜像 locale 推导，agent 镜像
+// 没有 UTF-8 locale，会退到 latin1，非 ASCII 标识符（库名/表名）在恢复的建库与
+// 校验语句里会被错误解释。
+func TestMySQLCnfSetsUTF8MB4(t *testing.T) {
+	dir := t.TempDir()
+	rec := &argRecorder{}
+	rc := &RunContext{
+		Task:    mysqlBackupTask("appdb"),
+		Secrets: SecretBundle{DBPassword: "pw"},
+		TempDir: dir,
+		Exec:    rec,
+		Logf:    func(string, string, ...any) {},
+	}
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	backupCnf, err := os.ReadFile(filepath.Join(dir, "my.cnf"))
+	if err != nil {
+		t.Fatalf("read backup my.cnf: %v", err)
+	}
+	if !strings.Contains(string(backupCnf), "default-character-set=utf8mb4") {
+		t.Fatalf("backup my.cnf must set utf8mb4, got %q", string(backupCnf))
+	}
+
+	rspec := pgRestoreSpec(t)
+	rspec.Kind = KindMySQL
+	rspec.Database = &model.DatabaseRestore{
+		TargetHost: "db", TargetPort: 3306, TargetUsername: "bmc", TargetDatabase: "appdb",
+	}
+	rspec.Exec = rec
+	if _, err := mysqlPrepare(rspec); err != nil {
+		t.Fatalf("mysqlPrepare: %v", err)
+	}
+	restoreCnf, err := os.ReadFile(filepath.Join(rspec.StagingDir, "my.cnf"))
+	if err != nil {
+		t.Fatalf("read restore my.cnf: %v", err)
+	}
+	if !strings.Contains(string(restoreCnf), "default-character-set=utf8mb4") {
+		t.Fatalf("restore my.cnf must set utf8mb4, got %q", string(restoreCnf))
 	}
 }

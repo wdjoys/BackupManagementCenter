@@ -29,6 +29,14 @@ ARG MONGOSH_VERSION=2.3.9
 # 官方 APT 源的签名密钥已过期（EXPKEYSIG），因此改用 tarball 提取客户端。
 ARG MYSQL_CLIENT_VERSION=8.0.40
 ARG MYSQL_BASE_URL=https://dev.mysql.com/get/Downloads/MySQL-8.0
+# 另装一份 MySQL 5.7 客户端：官方 8.0 客户端请求 utf8mb4 时会带上 8.0 专有的
+# 默认排序规则 utf8mb4_0900_ai_ci，MySQL ≤5.7 不认识而回退 latin1，导致
+# 非 ASCII 标识符（库名/表名）被错误解释、备份失败。5.7 客户端在旧服务端与
+# MariaDB 上不存在该回退（且不探测 COLUMN_STATISTICS / generation_expression）。
+# 适配器按服务端主版本选择：<8.0 与 MariaDB 用 5.7 客户端，>=8.0 用 8.0 客户端
+# （避免旧客户端漏掉 8.0 的新对象类型）。
+ARG MYSQL57_CLIENT_VERSION=5.7.44
+ARG MYSQL57_BASE_URL=https://dev.mysql.com/get/Downloads/MySQL-5.7
 # PostgreSQL 客户端主版本必须 >= 目标服务端主版本，否则 pg_dump 直接
 # abort（"server version mismatch"）。Debian bookworm 自带 15，无法备份
 # PG 16+；改用 PGDG 提供的最新客户端，可备份所有更旧的服务端。
@@ -85,6 +93,19 @@ RUN fetch "${MYSQL_BASE_URL}/mysql-${MYSQL_CLIENT_VERSION}-linux-glibc2.28-x86_6
     install -m 0755 /tmp/mysql-client/bin/mysql /usr/local/bin/mysql && \
     install -m 0755 /tmp/mysql-client/bin/mysqldump /usr/local/bin/mysqldump && \
     rm -rf /tmp/mysql-client /tmp/mysql-client.tar.xz
+
+# MySQL 5.7 客户端（mysql57/mysqldump57）：供 <8.0 与 MariaDB 服务端使用，
+# 见上方 ARG 注释。只取这两个二进制，tarball 解包后即删。
+RUN fetch "${MYSQL57_BASE_URL}/mysql-${MYSQL57_CLIENT_VERSION}-linux-glibc2.12-x86_64.tar.gz" /tmp/mysql57.tar.gz && \
+    mkdir -p /tmp/mysql57 && tar -xzf /tmp/mysql57.tar.gz -C /tmp/mysql57 --strip-components=1 && \
+    install -m 0755 /tmp/mysql57/bin/mysql /usr/local/bin/mysql57 && \
+    install -m 0755 /tmp/mysql57/bin/mysqldump /usr/local/bin/mysqldump57 && \
+    rm -rf /tmp/mysql57 /tmp/mysql57.tar.gz
+
+# MySQL 5.7 的 mysql 客户端链接 libncurses.so.5（bookworm 默认只带 .so.6）。
+# 单独一层安装，避免使上面已缓存的 MySQL 客户端大包下载层失效。
+RUN apt-get update && apt-get install -y --no-install-recommends libncurses5 && \
+    rm -rf /var/lib/apt/lists/*
 COPY --from=go-build /out/backup-center-agent /usr/local/bin/backup-center-agent
 # 固定 UID/GID 65532，并让持久 scratch/restore 卷由非 root 用户使用。
 RUN groupadd --system --gid 65532 bmc-agent && \

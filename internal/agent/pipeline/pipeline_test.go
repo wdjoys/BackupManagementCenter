@@ -547,3 +547,72 @@ func TestRollbackReimportsProtectionArtifact(t *testing.T) {
 		t.Fatalf("rollback must not re-import the original artifact, got %q", got)
 	}
 }
+
+// multiDBManifestExecutor 模拟 `restic restore`：把包含多个库的清单写到 target。
+type multiDBManifestExecutor struct{ manifest string }
+
+func (e *multiDBManifestExecutor) Run(_ context.Context, cmd backup.Cmd, _, _ func(string)) (int, error) {
+	if len(cmd.Args) > 0 && cmd.Args[0] == "restore" {
+		target := ""
+		for i, a := range cmd.Args {
+			if a == "--target" && i+1 < len(cmd.Args) {
+				target = cmd.Args[i+1]
+			}
+		}
+		if target != "" {
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return 1, err
+			}
+			if err := os.WriteFile(filepath.Join(target, "manifest.json"), []byte(e.manifest), 0o600); err != nil {
+				return 1, err
+			}
+		}
+	}
+	return 0, nil
+}
+
+// 目标被触碰之前的失败（例：快照含多库、单库恢复不支持）必须上报安全阶段
+// failed。否则服务端只能保守判为 manual_recovery_required，进而阻塞该仓库
+// 的所有后继任务（实测：一次 unsupported_restore_manifest 让 8 个备份 + 快照
+// 浏览全部卡在 queued，直到人工解决）。
+func TestRunDatabaseRestorePreflightFailureReportsSafePhase(t *testing.T) {
+	manifest := `{"adapter":"mysql","databases":[{"database":"a","file":"a.sql","format":"sql"},{"database":"b","file":"b.sql","format":"sql"}]}`
+	exec := &multiDBManifestExecutor{manifest: manifest}
+	deps := Deps{
+		Exec:     exec,
+		Logf:     func(string, string, ...any) {},
+		Progress: func(model.Progress) {},
+	}
+	task := model.RestoreTask{
+		RunID: "run-1",
+		Kind:  "mysql",
+		Database: &model.DatabaseRestore{
+			SnapshotID: "snap-1", TargetHost: "h", TargetPort: 3306,
+			TargetUsername: "u", TargetDatabase: "appdb",
+		},
+	}
+	_, err := runDatabaseRestore(context.Background(), deps, restic.Options{Exe: "restic"},
+		task, t.TempDir(), backup.SecretBundle{}, false)
+	if err == nil {
+		t.Fatal("multi-database manifest must be rejected")
+	}
+	var pe *PipelineError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want PipelineError, got %T", err)
+	}
+	if pe.Code != model.ErrUnsupportedRestoreManifest {
+		t.Fatalf("code = %q, want %q", pe.Code, model.ErrUnsupportedRestoreManifest)
+	}
+	if len(pe.ResultJSON) == 0 {
+		t.Fatal("preflight failure must report a phase; otherwise the server blocks the whole repository")
+	}
+	var payload struct {
+		Phase string `json:"phase"`
+	}
+	if err := json.Unmarshal(pe.ResultJSON, &payload); err != nil {
+		t.Fatalf("unmarshal result json: %v", err)
+	}
+	if payload.Phase != model.RestorePhaseFailed {
+		t.Fatalf("phase = %q, want %q (failed = 目标未被修改)", payload.Phase, model.RestorePhaseFailed)
+	}
+}

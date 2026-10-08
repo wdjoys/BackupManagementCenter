@@ -398,57 +398,65 @@ func databaseRestoreLock(ctx context.Context) (func(), error) {
 // validated before the local restore mutex is taken, and no destructive step
 // runs before the pre-restore protection snapshot is safely uploaded.
 func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task model.RestoreTask, tempDir string, secrets backup.SecretBundle, dryRun bool) (*Result, error) {
+	// 目标被触碰之前的失败必须显式上报安全阶段 failed（语义：失败且已确认目标
+	// 未被修改）。否则服务端只能保守地判为 manual_recovery_required，进而阻塞
+	// 该来源仓库的所有后继任务（含快照浏览），要求人工介入——即便这次失败发生在
+	// 任何破坏性操作之前（清单范围校验、适配器不匹配、目标占用等）。
+	safeFail := func(code, message string, cause error) error {
+		return &PipelineError{Code: code, Message: message, Cause: cause,
+			ResultJSON: restoreResultJSON(model.RestorePhaseFailed, "")}
+	}
 	db := task.Database
 	if db == nil {
-		return nil, &PipelineError{Code: "invalid_params", Message: "missing database restore spec"}
+		return nil, safeFail("invalid_params", "missing database restore spec", nil)
 	}
 	execDB := *db
 	if task.Kind == "sqlite" {
 		mapped, err := mapPath(db.TargetDatabase, d.RestorePathMappings, false)
 		if err != nil {
-			return nil, &PipelineError{Code: "path_not_allowed", Message: "sqlite restore target path mapping failed", Cause: err}
+			return nil, safeFail("path_not_allowed", "sqlite restore target path mapping failed", err)
 		}
 		execDB.TargetDatabase = mapped
 		if err := validateAllowedPaths([]string{execDB.TargetDatabase}, d.RestoreRoots, true); err != nil {
-			return nil, &PipelineError{Code: "path_not_allowed", Message: "sqlite restore target is outside configured allowlist", Cause: err}
+			return nil, safeFail("path_not_allowed", "sqlite restore target is outside configured allowlist", err)
 		}
 	}
 	adapter, ok := backup.For(task.Kind)
 	if !ok {
-		return nil, &PipelineError{Code: "invalid_plan", Message: "unknown kind: " + task.Kind}
+		return nil, safeFail("invalid_plan", "unknown kind: "+task.Kind, nil)
 	}
 	engine, ok := adapter.(backup.DatabaseRestorer)
 	if !ok {
-		return nil, &PipelineError{Code: "invalid_plan", Message: "adapter does not support database restore: " + task.Kind}
+		return nil, safeFail("invalid_plan", "adapter does not support database restore: "+task.Kind, nil)
 	}
 
 	stagingDir := filepath.Join(tempDir, "restore_staging")
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
-		return nil, &PipelineError{Code: "internal", Message: "mkdir staging", Cause: err}
+		return nil, safeFail("internal", "mkdir staging", err)
 	}
 	if err := restic.Restore(ctx, d.Exec, opts, execDB.SnapshotID, stagingDir, nil); err != nil {
-		return nil, &PipelineError{Code: "restore_failed", Message: "restic restore snapshot failed", Cause: err}
+		return nil, safeFail("restore_failed", "restic restore snapshot failed", err)
 	}
 
 	manifestPath, artifactRoot, err := findRestoredManifest(stagingDir)
 	if err != nil {
-		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "locate manifest failed", Cause: err}
+		return nil, safeFail(model.ErrRestoreVerification, "locate manifest failed", err)
 	}
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "read manifest failed", Cause: err}
+		return nil, safeFail(model.ErrRestoreVerification, "read manifest failed", err)
 	}
 	var manifest backup.Manifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "unmarshal manifest", Cause: err}
+		return nil, safeFail(model.ErrRestoreVerification, "unmarshal manifest", err)
 	}
 	if manifest.Adapter != task.Kind {
-		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "manifest adapter mismatch: " + manifest.Adapter}
+		return nil, safeFail(model.ErrRestoreVerification, "manifest adapter mismatch: "+manifest.Adapter, nil)
 	}
 	// 单库范围：多库、globals 与 all 快照在这里被拒绝，目标尚未被触碰。
 	artifact, err := singleDatabaseArtifact(&manifest, artifactRoot)
 	if err != nil {
-		return nil, &PipelineError{Code: model.ErrUnsupportedRestoreManifest, Message: err.Error(), Cause: err}
+		return nil, safeFail(model.ErrUnsupportedRestoreManifest, err.Error(), err)
 	}
 
 	if dryRun {
@@ -460,12 +468,12 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	}
 
 	if task.RunID == "" {
-		return nil, &PipelineError{Code: "invalid_params", Message: "restore task is missing its run id"}
+		return nil, safeFail("invalid_params", "restore task is missing its run id", nil)
 	}
 
 	unlock, err := databaseRestoreLock(ctx)
 	if err != nil {
-		return nil, &PipelineError{Code: model.ErrCancelled, Message: "database restore cancelled while waiting for the local mutex", Cause: err}
+		return nil, safeFail(model.ErrCancelled, "database restore cancelled while waiting for the local mutex", err)
 	}
 	defer unlock()
 
@@ -488,10 +496,10 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	// 存在性判断：权限/连接错误必须失败，不能被当作“目标不存在”。
 	exists, err := engine.TargetExists(ctx, spec)
 	if err != nil {
-		return nil, &PipelineError{Code: model.ErrRestoreVerification, Message: "cannot determine whether the target exists", Cause: err}
+		return nil, safeFail(model.ErrRestoreVerification, "cannot determine whether the target exists", err)
 	}
 	if exists && !execDB.ReplaceExisting {
-		return nil, &PipelineError{Code: model.ErrRestoreTargetNotEmpty, Message: "target already exists and overwrite is not enabled"}
+		return nil, safeFail(model.ErrRestoreTargetNotEmpty, "target already exists and overwrite is not enabled", nil)
 	}
 	spec.TargetIsNew = !exists
 

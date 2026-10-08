@@ -228,3 +228,27 @@ func TestMongoImportDoesNotDropNewTarget(t *testing.T) {
 		t.Fatalf("new target must only run mongorestore, got %d calls: %+v", len(exec.calls), exec.calls)
 	}
 }
+
+// mongodump 限制：--oplog 只能用于整实例 dump，配单库时以
+// "bad option: --oplog mode only supported on full dumps" 失败。
+// 必须在 Validate 阶段拒绝，否则该计划每次备份都失败。
+func TestMongoValidateRejectsOplogWithSingleDatabase(t *testing.T) {
+	a := &MongoDBAdapter{}
+	base := PlanSpec{Kind: KindMongoDB, Source: model.PlanSource{
+		Host: "h", Port: 27017, Username: "bmc", EstimatedDumpBytes: 1 << 20,
+	}}
+
+	bad := base
+	bad.Source.Database = "appdb"
+	bad.Source.CaptureOplog = true
+	if err := a.Validate(context.Background(), bad); err == nil {
+		t.Fatal("capture_oplog with a single database must be rejected")
+	}
+
+	ok := base
+	ok.Source.Database = "all"
+	ok.Source.CaptureOplog = true
+	if err := a.Validate(context.Background(), ok); err != nil {
+		t.Fatalf("capture_oplog with all scope must be accepted: %v", err)
+	}
+}

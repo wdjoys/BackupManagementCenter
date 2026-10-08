@@ -38,6 +38,11 @@ func (a *MongoDBAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.Database == "" {
 		return errors.New("database is required (single name or 'all')")
 	}
+	// mongodump 限制：--oplog 仅支持整实例 dump，配单库时必然以
+	// "bad option: --oplog mode only supported on full dumps" 失败，故在此拒绝。
+	if s.CaptureOplog && !strings.EqualFold(s.Database, "all") {
+		return errors.New("capture_oplog requires a full instance dump (database must be \"all\")")
+	}
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
 	}

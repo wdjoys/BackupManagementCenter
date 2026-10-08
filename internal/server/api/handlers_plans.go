@@ -212,6 +212,11 @@ func validateDatabaseEstimate(kind string, src model.PlanSource) string {
 		// SQLite size is read from the source file by the agent; a user-supplied
 		// estimate is still accepted for scratch sizing when present.
 	}
+	if kind == model.KindMongoDB && src.CaptureOplog && !strings.EqualFold(src.Database, "all") {
+		// mongodump 限制：--oplog 只能用于整实例 dump，配单库时必然失败
+		// （bad option: --oplog mode only supported on full dumps）。
+		return "capture_oplog requires a full instance dump (database must be \"all\")"
+	}
 	if src.EstimatedDumpBytes > 100<<30 {
 		return "logical backup exceeds 100 GiB; physical_backup_required"
 	}

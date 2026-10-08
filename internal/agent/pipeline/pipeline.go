@@ -705,12 +705,30 @@ func rollbackDatabaseRestore(d Deps, opts restic.Options, tempDir string, engine
 	if err := restic.Restore(ctx, d.Exec, opts, protectionSnapshotID, rollbackDir, nil); err != nil {
 		return model.RestorePhaseRollbackFailed, fmt.Errorf("restore protection snapshot: %w", err)
 	}
-	_, artifactRoot, err := findRestoredManifest(rollbackDir)
+	rollbackManifestPath, rollbackArtifactRoot, err := findRestoredManifest(rollbackDir)
 	if err != nil {
 		return model.RestorePhaseRollbackFailed, fmt.Errorf("locate protection manifest: %w", err)
 	}
+	// 必须从保护清单重新解析产物：只改 StagingDir 会让 spec 仍指向原始（失败）
+	// 的产物，回滚实际会重复导入同一份坏数据。此前即因此回滚必然失败——目标被
+	// 覆盖后无法恢复，只能转入人工处理。
+	rollbackManifestData, err := os.ReadFile(rollbackManifestPath)
+	if err != nil {
+		return model.RestorePhaseRollbackFailed, fmt.Errorf("read protection manifest: %w", err)
+	}
+	var rollbackManifest backup.Manifest
+	if err := json.Unmarshal(rollbackManifestData, &rollbackManifest); err != nil {
+		return model.RestorePhaseRollbackFailed, fmt.Errorf("unmarshal protection manifest: %w", err)
+	}
+	rollbackArtifact, err := singleDatabaseArtifact(&rollbackManifest, rollbackArtifactRoot)
+	if err != nil {
+		return model.RestorePhaseRollbackFailed, fmt.Errorf("resolve protection artifact: %w", err)
+	}
 	restoreSpec := *spec
-	restoreSpec.StagingDir = artifactRoot
+	restoreSpec.StagingDir = rollbackArtifactRoot
+	restoreSpec.ArtifactFile = rollbackArtifact.file
+	restoreSpec.ArtifactDatabase = rollbackArtifact.database
+	restoreSpec.ArtifactFormat = rollbackArtifact.format
 	restoreSpec.TargetIsNew = false
 	if err := engine.Import(ctx, &restoreSpec); err != nil {
 		return model.RestorePhaseRollbackFailed, fmt.Errorf("re-import protection data: %w", err)

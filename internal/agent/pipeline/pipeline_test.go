@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"backupmanagementcenter/internal/agent/backup"
+	"backupmanagementcenter/internal/agent/restic"
 	"backupmanagementcenter/internal/model"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
@@ -295,18 +296,26 @@ func TestMapBackupSourceMapsSQLitePath(t *testing.T) {
 }
 
 func TestMapPathReverseLongestBoundaryAndUnmapped(t *testing.T) {
-    host := filepath.Join(t.TempDir(), "host")
-    runtime := filepath.Join(t.TempDir(), "runtime")
-    childHost := filepath.Join(host, "app")
-    childRuntime := filepath.Join(runtime, "app")
-    mappings := []model.PathMapping{{HostPath: host, RuntimePath: runtime}, {HostPath: childHost, RuntimePath: childRuntime}}
-    got, err := mapPath(filepath.Join(childRuntime, "data"), mappings, true)
-    if err != nil { t.Fatal(err) }
-    want := filepath.Join(childHost, "data")
-    if got != want { t.Fatalf("reverse = %q, want %q", got, want) }
-    outsideRuntime := runtime + "-application"
-    if got, err := mapPath(filepath.Join(outsideRuntime, "x"), mappings, true); err != nil || got != filepath.Join(outsideRuntime, "x") { t.Fatalf("boundary/unmapped = %q, %v", got, err) }
-    if _, err := mapPath(filepath.Join(host, "outside2"), []model.PathMapping{{HostPath: childHost, RuntimePath: childRuntime}}, false); err == nil { t.Fatal("expected unmapped error") }
+	host := filepath.Join(t.TempDir(), "host")
+	runtime := filepath.Join(t.TempDir(), "runtime")
+	childHost := filepath.Join(host, "app")
+	childRuntime := filepath.Join(runtime, "app")
+	mappings := []model.PathMapping{{HostPath: host, RuntimePath: runtime}, {HostPath: childHost, RuntimePath: childRuntime}}
+	got, err := mapPath(filepath.Join(childRuntime, "data"), mappings, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(childHost, "data")
+	if got != want {
+		t.Fatalf("reverse = %q, want %q", got, want)
+	}
+	outsideRuntime := runtime + "-application"
+	if got, err := mapPath(filepath.Join(outsideRuntime, "x"), mappings, true); err != nil || got != filepath.Join(outsideRuntime, "x") {
+		t.Fatalf("boundary/unmapped = %q, %v", got, err)
+	}
+	if _, err := mapPath(filepath.Join(host, "outside2"), []model.PathMapping{{HostPath: childHost, RuntimePath: childRuntime}}, false); err == nil {
+		t.Fatal("expected unmapped error")
+	}
 }
 
 func TestMapBackupSourceMirrorsHostPathsIntoSourceRoot(t *testing.T) {
@@ -448,4 +457,93 @@ func TestRunBackupReportsSnapshotProgressAndLogs(t *testing.T) {
 		}
 	}
 	_ = progress
+}
+
+// protectionRestoreExecutor 在收到 `restic restore` 时把预置的保护快照内容写到
+// --target 指定目录（模拟 restic 还原保护快照）。
+type protectionRestoreExecutor struct {
+	manifest string
+	dumpName string
+}
+
+func (e *protectionRestoreExecutor) Run(_ context.Context, cmd backup.Cmd, _, _ func(string)) (int, error) {
+	if len(cmd.Args) > 0 && cmd.Args[0] == "restore" {
+		target := ""
+		for i, a := range cmd.Args {
+			if a == "--target" && i+1 < len(cmd.Args) {
+				target = cmd.Args[i+1]
+			}
+		}
+		if target == "" {
+			return 1, nil
+		}
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			return 1, err
+		}
+		if err := os.WriteFile(filepath.Join(target, "manifest.json"), []byte(e.manifest), 0o600); err != nil {
+			return 1, err
+		}
+		if err := os.WriteFile(filepath.Join(target, e.dumpName), []byte("PROTECTION"), 0o600); err != nil {
+			return 1, err
+		}
+	}
+	return 0, nil
+}
+
+// recordingRestorer 记录回滚的 Import 收到的产物路径。
+type recordingRestorer struct {
+	importedFiles []string
+}
+
+func (r *recordingRestorer) TargetExists(context.Context, *backup.RestoreSpec) (bool, error) {
+	return true, nil
+}
+func (r *recordingRestorer) Import(_ context.Context, spec *backup.RestoreSpec) error {
+	r.importedFiles = append(r.importedFiles, spec.ArtifactFile)
+	return nil
+}
+func (r *recordingRestorer) VerifyRestored(context.Context, *backup.RestoreSpec) error { return nil }
+func (r *recordingRestorer) RemoveTarget(context.Context, *backup.RestoreSpec) error   { return nil }
+
+// 回滚必须从保护清单重新解析产物：只改 StagingDir 会让 spec 仍指向原始（失败的）
+// 产物，回滚会重复导入同一份坏数据，目标被覆盖后无法恢复。
+func TestRollbackReimportsProtectionArtifact(t *testing.T) {
+	tempDir := t.TempDir()
+	manifest := `{"adapter":"mysql","databases":[{"database":"appdb","file":"protection.sql","format":"sql"}]}`
+	exec := &protectionRestoreExecutor{manifest: manifest, dumpName: "protection.sql"}
+	restorer := &recordingRestorer{}
+
+	spec := &backup.RestoreSpec{
+		Kind:             "mysql",
+		StagingDir:       "/staging-from-snapshot",
+		ArtifactFile:     "/staging-from-snapshot/original.sql",
+		ArtifactDatabase: "appdb",
+		ArtifactFormat:   "sql",
+		TargetIsNew:      false,
+		Logf:             func(string, string, ...any) {},
+		Progress:         func(model.Progress) {},
+		Exec:             exec,
+	}
+	deps := Deps{
+		Exec:     exec,
+		Logf:     func(string, string, ...any) {},
+		Progress: func(model.Progress) {},
+	}
+	phase, err := rollbackDatabaseRestore(deps, restic.Options{Exe: "restic"}, tempDir, restorer, spec, "prot-snap-id")
+	if err != nil {
+		t.Fatalf("rollbackDatabaseRestore: %v", err)
+	}
+	if phase != model.RestorePhaseRolledBack {
+		t.Fatalf("phase = %q, want %q", phase, model.RestorePhaseRolledBack)
+	}
+	if len(restorer.importedFiles) != 1 {
+		t.Fatalf("Import calls = %d, want 1", len(restorer.importedFiles))
+	}
+	got := restorer.importedFiles[0]
+	if !strings.HasSuffix(got, "protection.sql") {
+		t.Fatalf("rollback must import the protection artifact, got %q", got)
+	}
+	if strings.Contains(got, "original.sql") {
+		t.Fatalf("rollback must not re-import the original artifact, got %q", got)
+	}
 }

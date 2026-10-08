@@ -69,6 +69,7 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
     - 若镜像未提供 5.7 客户端或版本探测失败，则退回 8.0 客户端并保持既有行为，不阻断备份；此时遇到上述错误会额外输出可诊断告警（指明字符集回退而非库不存在）。
     - 不要用 `utf8mb3` 规避：它虽能解析标识符，但会损坏 4 字节字符（emoji 被写成 `?`）。
     - 普通 ASCII 标识符 + 非 ASCII **数据**不受影响：中文/emoji 数据在 latin1 连接下仍能完整备份与还原。
+    - **跨版本恢复不受支持（MySQL 自身限制）**：由 MySQL 8.0 备份出的 dump 内嵌 `utf8mb4_0900_ai_ci` 等 8.0 专有排序规则，导入 MySQL ≤5.7 会以 `ERROR 1273 Unknown collation` 失败。此类失败会自动回滚到修改前状态（见下），并按需人工处理。恢复请使用与服务端主版本匹配的 dump。
   - PostgreSQL：`pg_dump` 要求客户端主版本 ≥ 服务端主版本（不满足时直接 `aborting because of server version mismatch`）。Debian bookworm 自带 `postgresql-client-15`，只能备份 PG 15 及更旧的服务端；镜像改为从 PGDG 安装 `postgresql-client-${PG_CLIENT_MAJOR}`（默认 18），可覆盖更旧的服务端。构建参数 `PG_CLIENT_MAJOR`、`PGDG_BASE_URL`（默认阿里云 PGDG 镜像）可按目标环境调整。
   - PostgreSQL 恢复的版本偏斜：`pg_dump`/`pg_restore` 自 17 起会在归档前置写入 `SET transaction_timeout = 0;`，该 GUC 在 **PG 16 及更早**不存在。恢复到旧服务端时这条语句会报 `unrecognized configuration parameter`，而 `pg_restore` 只要忽略过任何错误就以 exit 1 结束。BMC 因此不再使用 `--exit-on-error`，改为只放行这一条已知无害语句，其余错误照旧失败，正确性由恢复后的关系集合校验兜底。
   - MongoDB：`mongodump`/`mongorestore` 来自官方 Database Tools，另外单独安装 `mongosh`（`MONGOSH_VERSION`）。恢复需要 `mongosh` 判断目标库是否存在并校验集合是否落地；缺失时适配器直接拒绝恢复，能力探测与恢复前置校验都会把 `mongosh` 列为必需工具。mongorestore 的 `--dryRun` 输出全部写在 stderr，校验必须同时收集 stderr，只读 stdout 会把每次恢复都判成失败。

@@ -485,3 +485,49 @@ func TestForgetGroupsByHostOnly(t *testing.T) {
 		}
 	}
 }
+
+// dryRunLineExecutor 逐行回放到 stdout（真实 OSExecutor 也按行切分）。
+type dryRunLineExecutor struct{ lines []string }
+
+func (e *dryRunLineExecutor) Run(_ context.Context, _ backup.Cmd, onStdout, _ func(string)) (int, error) {
+	if onStdout != nil {
+		for _, l := range e.lines {
+			onStdout(l)
+		}
+	}
+	return 0, nil
+}
+
+// restic 0.18 的 --dry-run --verbose=2 逐文件动词是 restored / updated /
+// unchanged（Summary 行只给总数）。旧实现匹配 new/added/changed/skipped，
+// 在逐文件行里根本不存在，导致预演恒报 add=0、changed=0，误导“无变化”。
+func TestRestoreDryRunParsesResticVerbLines(t *testing.T) {
+	lines := []string{
+		"restoring snapshot 68980ca7 of [/backup-sources/fsdemo] at 2026-10-08 10:17:52 to /tmp/dr-target",
+		"unchanged /backup-sources/fsdemo/a.txt with size 6 B",
+		"restored  /backup-sources/fsdemo/blob.bin with size 19.531 KiB",
+		"updated   /backup-sources/fsdemo/sub/b.txt with size 5 B",
+		"restored  /backup-sources/fsdemo/sub",
+		"restored  /backup-sources/fsdemo",
+		"restored  /backup-sources",
+		"Summary: Restored 5 files/dirs (19.536 KiB) in 0:00, skipped 1 files/dirs 6 B",
+	}
+	exec := &dryRunLineExecutor{lines: lines}
+	progress, err := RestoreDryRunWithOverwrite(context.Background(), exec,
+		Options{Exe: "restic", RepoPath: "repo"}, "snap", "/target", nil, "always")
+	if err != nil {
+		t.Fatalf("RestoreDryRunWithOverwrite: %v", err)
+	}
+	if progress.FilesAdded != 4 {
+		t.Errorf("FilesAdded = %d, want 4", progress.FilesAdded)
+	}
+	if progress.FilesChanged != 1 {
+		t.Errorf("FilesChanged = %d, want 1", progress.FilesChanged)
+	}
+	if progress.FilesSkipped != 1 {
+		t.Errorf("FilesSkipped = %d, want 1", progress.FilesSkipped)
+	}
+	if len(progress.Sample) != 5 {
+		t.Errorf("Sample = %d lines, want 5 (only changing entries)", len(progress.Sample))
+	}
+}

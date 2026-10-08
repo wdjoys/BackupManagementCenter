@@ -259,51 +259,34 @@ func RestoreDryRunWithOverwrite(ctx context.Context, exec backup.Executor, opts 
 	var filesAdded, filesChanged, filesSkipped, filesDeleted int
 	var exampleLines []string
 
-	// Regex for restic verbose dry-run output
-	reSummary := regexp.MustCompile(`(?i)\b(new|added|changed|unmodified|skipped|deleted|removed)\b[^0-9]*(\d+)`)
+	// restic 0.18 的 --dry-run --verbose=2 逐文件动词是 restored / updated /
+	// unchanged，Summary 行只给总数；旧实现匹配的 new/added/changed/skipped 在
+	// 逐文件行里根本不存在，导致 add/changed 恒为 0（预演误报“无变化”）。
+	reFile := regexp.MustCompile(`^(restored|updated|unchanged)\s+(\S+)`)
+	// 处理大量文件时 Sample 不能无上限增长。
+	const maxSampleLines = 50
 
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
 		func(line string) {
-			// Parse verbose output for stats
-			if m := reSummary.FindStringSubmatch(line); m != nil {
-				switch strings.ToLower(m[1]) {
-				case "new", "added":
-					if n, err := strconv.Atoi(m[2]); err == nil {
-						filesAdded = n
-					}
-				case "changed":
-					if n, err := strconv.Atoi(m[2]); err == nil {
-						filesChanged = n
-					}
-				case "unmodified", "skipped":
-					if n, err := strconv.Atoi(m[2]); err == nil {
-						filesSkipped = n
-					}
-				case "deleted", "removed":
-					if n, err := strconv.Atoi(m[2]); err == nil {
-						filesDeleted = n
-					}
-				}
+			m := reFile.FindStringSubmatch(line)
+			if m == nil {
+				return
 			}
-			// Capture example lines
-			if strings.Contains(line, "would be") || strings.Contains(line, "would restore") {
+			switch m[1] {
+			case "restored":
+				filesAdded++
+			case "updated":
+				filesChanged++
+			case "unchanged":
+				filesSkipped++
+			}
+			// Sample 只保留真正会变动的内容，供 UI 提示。
+			if m[1] != "unchanged" && len(exampleLines) < maxSampleLines {
 				exampleLines = append(exampleLines, strings.TrimSpace(line))
 			}
 		}, func(string) {})
 	if err != nil || exitCode != 0 {
 		return nil, mapResticError(exitCode, err)
-	}
-
-	// Fallback: count lines if regex didn't catch
-	if filesAdded == 0 && filesChanged == 0 {
-		// Rough estimation from example lines
-		for _, l := range exampleLines {
-			if strings.Contains(l, "added") {
-				filesAdded++
-			} else if strings.Contains(l, "changed") {
-				filesChanged++
-			}
-		}
 	}
 
 	return &model.Progress{

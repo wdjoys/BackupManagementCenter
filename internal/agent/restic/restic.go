@@ -366,18 +366,50 @@ func ForgetOnly(ctx context.Context, exec backup.Executor, opts Options, retenti
 	return forget(ctx, exec, opts, retention, tags, false)
 }
 
-// DeleteByTags 删除匹配标签的全部快照，并清理不再引用的数据。
+// DeleteByTags 删除匹配全部给定标签的快照，并清理不再引用的数据。
+//
+// 不能用 restic 的 forget 策略表达"全部删除"：--keep-last 0（以及 keep-daily
+// 等全为 0）会被 restic 判定为"未指定策略"并直接失败：
+//
+//	Fatal: no policy was specified, no snapshots will be removed
+//
+// 因此改为先枚举匹配的快照 ID，再按 ID 删除——与手动删除快照走同一条已验证路径。
 func DeleteByTags(ctx context.Context, exec backup.Executor, opts Options, tags []string) error {
 	if opts.Exe == "" {
 		return fmt.Errorf("restic exe not set")
 	}
-	args := []string{"forget", "--group-by", "host,tags", "--prune"}
-	args = append(args, resticRepositoryArgs(opts)...)
-	for _, tag := range tags {
-		args = append(args, "--tag", tag)
+	if len(tags) == 0 {
+		// 无标签过滤会匹配整个仓库；拒绝而不是误删全部快照。
+		return fmt.Errorf("no tags provided")
 	}
-	args = append(args, "--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json")
-	return runDelete(ctx, exec, opts, args)
+	snaps, err := Snapshots(ctx, exec, opts)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for _, s := range snaps {
+		if snapshotHasAllTags(s, tags) {
+			ids = append(ids, s.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return DeleteSnapshots(ctx, exec, opts, ids, true)
+}
+
+// snapshotHasAllTags 报告快照是否带有全部给定标签。
+func snapshotHasAllTags(s Snapshot, tags []string) bool {
+	have := make(map[string]struct{}, len(s.Tags))
+	for _, t := range s.Tags {
+		have[t] = struct{}{}
+	}
+	for _, want := range tags {
+		if _, ok := have[want]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func forget(ctx context.Context, exec backup.Executor, opts Options, retention model.Retention, tags []string, prune bool) error {

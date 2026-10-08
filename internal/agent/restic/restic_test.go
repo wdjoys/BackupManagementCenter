@@ -305,22 +305,69 @@ func TestBackupLogsReadableSourceErrors(t *testing.T) {
 	}
 }
 
-func TestDeleteByTagsDeletesSnapshotsAndPrunes(t *testing.T) {
-	var cmd backup.Cmd
-	err := DeleteByTags(context.Background(), checkExecutor{cmd: &cmd}, Options{
+// stdoutExecutor 记录命令并把预设 stdout 逐次回放（Snapshots 读 stdout）。
+type stdoutExecutor struct {
+	stdout []string
+	cmds   []backup.Cmd
+}
+
+func (e *stdoutExecutor) Run(_ context.Context, cmd backup.Cmd, onStdout, _ func(string)) (int, error) {
+	e.cmds = append(e.cmds, cmd)
+	if onStdout != nil && len(e.cmds) <= len(e.stdout) && e.stdout[len(e.cmds)-1] != "" {
+		onStdout(e.stdout[len(e.cmds)-1])
+	}
+	return 0, nil
+}
+
+// DeleteByTags 不能用 forget 策略表达"全删"：--keep-last 0 会被 restic 判为
+// "未指定策略"并失败（Fatal: no policy was specified）。必须改为先枚举匹配的
+// 快照 ID，再按 ID 删除，且只删匹配全部给定标签的那些。
+func TestDeleteByTagsForgetsMatchingSnapshotIDs(t *testing.T) {
+	list := `[{"id":"aaaa1111","time":"2026-10-08T00:00:00Z","host":"h1","tags":["plan:plan-1","kind:mysql","run:r1"]},` +
+		`{"id":"bbbb2222","time":"2026-10-08T00:00:01Z","host":"h1","tags":["plan:plan-2","kind:mysql","run:r2"]}]`
+	exec := &stdoutExecutor{stdout: []string{list, ""}}
+	if err := DeleteByTags(context.Background(), exec, Options{
 		Exe: "restic", RepoPath: "rclone:remote:/repo", CacheDir: "/cache/restic",
-	}, []string{"plan:plan-1"})
-	if err != nil {
+	}, []string{"plan:plan-1"}); err != nil {
 		t.Fatalf("DeleteByTags: %v", err)
 	}
-	want := []string{"forget", "--group-by", "host,tags", "--prune", "--repo", "rclone:remote:/repo", "--cache-dir", "/cache/restic", "--tag", "plan:plan-1", "--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json"}
-	if len(cmd.Args) != len(want) {
-		t.Fatalf("args = %q, want %q", cmd.Args, want)
+	if len(exec.cmds) != 2 {
+		t.Fatalf("command count = %d, want 2 (snapshots then forget)", len(exec.cmds))
+	}
+	if exec.cmds[0].Args[0] != "snapshots" {
+		t.Fatalf("first command must be snapshots, got %q", exec.cmds[0].Args)
+	}
+	want := []string{"forget", "aaaa1111", "--prune", "--repo", "rclone:remote:/repo", "--cache-dir", "/cache/restic", "--json"}
+	got := exec.cmds[1].Args
+	if len(got) != len(want) {
+		t.Fatalf("forget args = %q, want %q", got, want)
 	}
 	for i := range want {
-		if cmd.Args[i] != want[i] {
-			t.Fatalf("args = %q, want %q", cmd.Args, want)
+		if got[i] != want[i] {
+			t.Fatalf("forget args = %q, want %q", got, want)
 		}
+	}
+}
+
+// 无标签时必须拒绝，避免匹配整个仓库造成误删。
+func TestDeleteByTagsRefusesEmptyTags(t *testing.T) {
+	exec := &stdoutExecutor{}
+	if err := DeleteByTags(context.Background(), exec, Options{Exe: "restic"}, nil); err == nil {
+		t.Fatal("empty tags must be refused")
+	}
+	if len(exec.cmds) != 0 {
+		t.Fatalf("no command should run, got %d", len(exec.cmds))
+	}
+}
+
+// 没有匹配快照时不应执行任何删除。
+func TestDeleteByTagsNoMatchIsNoop(t *testing.T) {
+	exec := &stdoutExecutor{stdout: []string{`[{"id":"aaaa1111","tags":["plan:other"]}]`}}
+	if err := DeleteByTags(context.Background(), exec, Options{Exe: "restic"}, []string{"plan:plan-1"}); err != nil {
+		t.Fatalf("DeleteByTags: %v", err)
+	}
+	if len(exec.cmds) != 1 {
+		t.Fatalf("only the listing should run, got %d commands", len(exec.cmds))
 	}
 }
 

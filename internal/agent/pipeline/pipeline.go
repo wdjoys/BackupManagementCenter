@@ -1305,10 +1305,20 @@ func runVerifyRemote(ctx context.Context, d Deps, tempDir string, params []byte,
 		}
 	}
 	if !found {
-		return nil, &PipelineError{Code: "storage_remote_unreachable", Message: "remote not found: " + task.RemoteName}
+		// 这是配置问题（remote 未在提供的 rclone 配置里定义），不是"远程不可达"：
+		// 此前两者同码，运维无法据此判断该改配置还是查网络。
+		return nil, &PipelineError{Code: model.ErrStorageRemoteNotFound,
+			Message: "remote " + task.RemoteName + " is not defined in the provided rclone config"}
 	}
 	entries, err := rclone.Lsd(ctx, d.Exec, confPath, task.RemoteName)
 	if err != nil {
+		// 端点黑洞时 rclone 会持续重试且 stderr 只有 provider NOTICE，运维看不出
+		// 到底发生了什么；到点被杀（verifyDeadline）时补一句可行动的说明。
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, &PipelineError{Code: "storage_remote_unreachable",
+				Message: fmt.Sprintf("rclone lsd timed out after %s; the endpoint may be unreachable or black-holing", verifyDeadline),
+				Cause:   err}
+		}
 		return nil, &PipelineError{Code: "storage_remote_unreachable", Message: "lsd failed", Cause: err}
 	}
 	resultJSON, _ := json.Marshal(map[string]any{"remote_type": remoteType, "entries": len(entries)})

@@ -37,19 +37,22 @@ import (
 const snapshotBrowseWait = 2 * time.Minute
 
 var (
-	ErrForbidden         = errors.New("forbidden")
-	ErrNotFound          = errors.New("not found")
-	ErrWaitTimeout       = errors.New("wait timeout")
-	ErrPlanInvalid       = errors.New("invalid plan")
-	ErrAgentRevoked      = errors.New("agent revoked")
-	ErrAgentOffline      = errors.New("agent offline")
-	ErrMissingTools      = errors.New("missing_tools")
-	ErrPathInvalid       = errors.New("path_validation_failed")
-	ErrRepoPassword      = errors.New("wrong_repository_password")
-	ErrRepoLocked        = errors.New("repository_locked")
-	ErrRepoMissing       = errors.New("repository_missing")
-	ErrStorageRemote     = errors.New("storage_remote_unreachable")
-	ErrStorageTargetName = errors.New("storage target name required")
+	ErrForbidden     = errors.New("forbidden")
+	ErrNotFound      = errors.New("not found")
+	ErrWaitTimeout   = errors.New("wait timeout")
+	ErrPlanInvalid   = errors.New("invalid plan")
+	ErrAgentRevoked  = errors.New("agent revoked")
+	ErrAgentOffline  = errors.New("agent offline")
+	ErrMissingTools  = errors.New("missing_tools")
+	ErrPathInvalid   = errors.New("path_validation_failed")
+	ErrRepoPassword  = errors.New("wrong_repository_password")
+	ErrRepoLocked    = errors.New("repository_locked")
+	ErrRepoMissing   = errors.New("repository_missing")
+	ErrStorageRemote = errors.New("storage_remote_unreachable")
+	// ErrStorageRemoteNotFound 表示 rclone 配置里没有该 remote（配置问题），
+	// 与"远程不可达"区分。
+	ErrStorageRemoteNotFound = errors.New(model.ErrStorageRemoteNotFound)
+	ErrStorageTargetName     = errors.New("storage target name required")
 
 	// ErrRestoreBusy 表示已有未安全终结的数据库恢复占用全局互斥。
 	ErrRestoreBusy = errors.New(model.ErrDatabaseRestoreBusy)
@@ -101,8 +104,8 @@ type RestoreInput struct {
 
 // VerifyResult is the parsed payload of a VERIFY_STORAGE_REMOTE run.
 type VerifyResult struct {
-	RemoteType string
-	Entries    int
+	RemoteType string `json:"remote_type"`
+	Entries    int    `json:"entries"`
 }
 
 // DryRunStats is the parsed payload of a RESTORE_DRY_RUN run.
@@ -881,6 +884,12 @@ func (o *Orchestrator) ValidateStorageRemote(ctx context.Context, confContent, r
 		return nil, err
 	}
 	if term.Status == model.RunFailed {
+		if term.ErrorCode == model.ErrStorageRemoteNotFound {
+			if detail := strings.TrimSpace(term.ErrorMessage); detail != "" {
+				return nil, fmt.Errorf("%w: %s", ErrStorageRemoteNotFound, detail)
+			}
+			return nil, ErrStorageRemoteNotFound
+		}
 		if term.ErrorCode == model.ErrStorageRemoteUnreachable {
 			// Surface the agent-side reason (rclone stderr) instead of the
 			// bare stable code; errorCode() still matches by substring.

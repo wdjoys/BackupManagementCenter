@@ -23,6 +23,7 @@ var stableCodes = []string{
 	model.ErrRestoreTargetNotEmpty,
 	model.ErrRestoreVerification,
 	model.ErrStorageRemoteUnreachable,
+	model.ErrStorageRemoteNotFound,
 	model.ErrTimeout,
 	model.ErrAgentDisconnected,
 	model.ErrPreRestoreBackupFailed,

@@ -103,7 +103,10 @@ const (
 	ErrPathValidation          = "path_validation_failed"
 	// ErrForbidden 表示被刻意拒绝的请求（如数据库覆盖恢复的确认值不匹配）。
 	// 响应文案保持简短：调用方不应据其区分是哪个目标字段有问题。
-	ErrForbidden             = "forbidden"
+	ErrForbidden = "forbidden"
+	// ErrStorageRemoteNotFound 表示 rclone 配置里没有该 remote（配置问题，与
+	// "远程不可达"区分）。
+	ErrStorageRemoteNotFound = "storage_remote_not_found"
 	ErrRestoreTargetNotEmpty = "restore_target_not_empty"
 	// ErrRestoreTargetExists 表示数据库目标已存在且未开启覆盖（与"目标非空"区分：
 	// 数据库恢复对已存在目标会 DROP+CREATE，空库同样需要显式覆盖）。

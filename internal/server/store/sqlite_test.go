@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -2266,5 +2267,34 @@ func TestSnapshotCleanupScanBackoffPersisted(t *testing.T) {
 	}
 	if st.LastScanCompletedAt == nil || !st.LastScanCompletedAt.Equal(done) {
 		t.Fatalf("last_scan_completed_at = %v want %v", st.LastScanCompletedAt, done)
+	}
+}
+
+// 升级前的安全备份是完整数据库副本，必须仅属主可读：容器默认 umask 0022 会让
+// VACUUM INTO 产出 0644（systemd 的 UMask=0077 掩盖了这个问题），因此代码显式
+// 收紧为 0600。Windows 无 POSIX 权限位，跳过。
+func TestBackupSQLiteIsOwnerReadableOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("posix permissions are not meaningful on windows")
+	}
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "bmc.db")
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(dir, "bmc.db.pre-migration-test.bak")
+	if err := BackupSQLite(context.Background(), dbPath, backupPath); err != nil {
+		t.Fatalf("BackupSQLite: %v", err)
+	}
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("backup permissions = %04o, want 0600", perm)
 	}
 }

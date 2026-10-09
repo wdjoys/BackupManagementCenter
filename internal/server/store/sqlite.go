@@ -35,6 +35,10 @@ type sqliteStore struct {
 // BackupSQLite creates a consistent point-in-time copy using SQLite's online
 // backup primitive. It is used before migrations or secret-format upgrades so
 // an operator always has a recoverable copy of the control database.
+//
+// VACUUM INTO 的目标文件权限取自进程 umask：systemd 单元设置了 UMask=0077 时为
+// 0600，但容器默认 umask 0022 会得到 0644。该文件是完整数据库副本（含口令哈希
+// 与密封配置），必须与 bmc.db 一样仅属主可读，因此这里显式收紧为 0600。
 func BackupSQLite(ctx context.Context, dbPath, backupPath string) error {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -43,6 +47,9 @@ func BackupSQLite(ctx context.Context, dbPath, backupPath string) error {
 	defer db.Close()
 	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", backupPath); err != nil {
 		return fmt.Errorf("sqlite online backup: %w", err)
+	}
+	if err := os.Chmod(backupPath, 0o600); err != nil {
+		return fmt.Errorf("restrict sqlite backup permissions: %w", err)
 	}
 	return nil
 }

@@ -771,3 +771,27 @@ func TestRestoreFailureCodeDistinguishesImportFromVerification(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateAllowedPathsDistinguishesMissingFromOutside 确认"路径不存在"与
+// "超出源根"给出可区分的原因：前者不得被归因为白名单问题（否则运维会去查
+// 配置而不是路径本身）。
+func TestValidateAllowedPathsDistinguishesMissingFromOutside(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "inside")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+
+	err := validateAllowedPaths([]string{filepath.Join(root, "missing")}, []string{root}, false)
+	if err == nil || !strings.Contains(err.Error(), "not accessible") || strings.Contains(err.Error(), "outside configured roots") {
+		t.Fatalf("missing path must be reported as inaccessible, got %v", err)
+	}
+	err = validateAllowedPaths([]string{outside}, []string{root}, false)
+	if err == nil || !strings.Contains(err.Error(), "outside configured roots") {
+		t.Fatalf("path outside the root must be reported as outside configured roots, got %v", err)
+	}
+	if err := validateAllowedPaths([]string{inside}, []string{root}, false); err != nil {
+		t.Fatalf("path inside the root must pass, got %v", err)
+	}
+}

@@ -159,6 +159,12 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal backup task", Cause: err}
 	}
+	// 源路径映射会把"宿主机路径"改写成"源根 + 路径"，失败信息里带上运维
+	// 实际填写的路径，否则只能看到一个自己没写过的路径。
+	requested := strings.Join(task.Source.Paths, ", ")
+	if task.Kind == "sqlite" {
+		requested = task.Source.Path
+	}
 	if err := mapBackupSource(&task, d.SourcePathMappings, d.SourceRoots); err != nil {
 		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path mapping failed", Cause: err}
 	}
@@ -178,12 +184,12 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 			paths = []string{task.Source.Path}
 		}
 		if err := validateAllowedPaths(paths, d.SourceRoots, false); err != nil {
-			return nil, &PipelineError{Code: "path_not_allowed", Message: "source path is outside configured allowlist", Cause: err}
+			return nil, &PipelineError{Code: "path_not_allowed", Message: "source path validation failed", Cause: fmt.Errorf("requested %s: %w", requested, err)}
 		}
 	}
 	spec := backup.PlanSpec{Kind: task.Kind, Source: task.Source, AgentID: ""}
 	if err := adapter.Validate(ctx, spec); err != nil {
-		return nil, &PipelineError{Code: "invalid_plan", Message: "validation failed", Cause: err}
+		return nil, &PipelineError{Code: "invalid_plan", Message: "validation failed", Cause: fmt.Errorf("requested %s: %w", requested, err)}
 	}
 	d.logf("info", "源校验通过")
 
@@ -1003,7 +1009,9 @@ func validateAllowedPaths(paths, roots []string, allowMissing bool) error {
 		}
 		resolved, err := resolvePathForCheck(abs, allowMissing)
 		if err != nil {
-			return err
+			// 路径不可访问（不存在或无法解析）与"超出白名单"是两回事，
+			// 这里带上原始路径，避免调用方把原因笼统归到白名单上。
+			return fmt.Errorf("path %q not accessible: %w", p, err)
 		}
 		abs = resolved
 		if abs == filepath.VolumeName(abs)+string(filepath.Separator) {
@@ -1298,19 +1306,22 @@ func runValidatePaths(ctx context.Context, d Deps, tempDir string, params []byte
 	if err := json.Unmarshal(params, &task); err != nil {
 		return nil, &PipelineError{Code: "invalid_params", Message: "unmarshal validate paths task", Cause: err}
 	}
+	// 源路径映射会把"宿主机路径"改写成"源根 + 路径"，失败信息里带上运维
+	// 实际填写的路径，否则只能看到一个自己没写过的路径。
+	requested := strings.Join(task.Paths, ", ")
 	backupTask := model.BackupTask{Kind: model.KindFilesystem, Source: model.PlanSource{Paths: task.Paths, Excludes: task.Excludes}}
 	if err := mapBackupSource(&backupTask, d.SourcePathMappings, d.SourceRoots); err != nil {
 		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path mapping failed", Cause: err}
 	}
 	if err := validateAllowedPaths(backupTask.Source.Paths, d.SourceRoots, false); err != nil {
-		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path is outside configured allowlist", Cause: err}
+		return nil, &PipelineError{Code: "path_not_allowed", Message: "source path validation failed", Cause: fmt.Errorf("requested %s: %w", requested, err)}
 	}
 	adapter, ok := backup.For(model.KindFilesystem)
 	if !ok {
 		return nil, &PipelineError{Code: "invalid_plan", Message: "filesystem adapter not found"}
 	}
 	if err := adapter.Validate(ctx, backup.PlanSpec{Kind: model.KindFilesystem, Source: backupTask.Source}); err != nil {
-		return nil, &PipelineError{Code: "path_validation_failed", Message: "path validation failed", Cause: err}
+		return nil, &PipelineError{Code: "path_validation_failed", Message: "path validation failed", Cause: fmt.Errorf("requested %s: %w", requested, err)}
 	}
 	return &Result{}, nil
 }

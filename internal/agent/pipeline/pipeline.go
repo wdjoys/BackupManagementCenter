@@ -371,6 +371,14 @@ func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task
 		return nil, restoreSafeFail("path_not_allowed", "restore target is outside configured allowlist", err)
 	}
 
+	// 非空目标 + never 的校验必须在 dry-run 之前：否则预演会给出"将成功"的
+	// 统计，而真实恢复立刻失败（restore_target_not_empty），预演结果不可信。
+	if execFS.OverwriteMode == "never" {
+		if entries, err := os.ReadDir(execFS.TargetPath); err == nil && len(entries) > 0 {
+			return nil, restoreSafeFail("restore_target_not_empty", "target path not empty and overwrite_mode=never", nil)
+		}
+	}
+
 	if dryRun {
 		prog, err := restic.RestoreDryRunWithOverwrite(ctx, d.Exec, opts, execFS.SnapshotID, execFS.TargetPath, execFS.IncludePaths, execFS.OverwriteMode)
 		if err != nil {
@@ -384,12 +392,6 @@ func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task
 			"sample":  prog.Sample,
 		})
 		return &Result{ResultJSON: resultJSON}, nil
-	}
-
-	if execFS.OverwriteMode == "never" {
-		if entries, err := os.ReadDir(execFS.TargetPath); err == nil && len(entries) > 0 {
-			return nil, restoreSafeFail("restore_target_not_empty", "target path not empty and overwrite_mode=never", nil)
-		}
 	}
 
 	if err := restic.RestoreWithOverwrite(ctx, d.Exec, opts, execFS.SnapshotID, execFS.TargetPath, execFS.IncludePaths, execFS.OverwriteMode); err != nil {

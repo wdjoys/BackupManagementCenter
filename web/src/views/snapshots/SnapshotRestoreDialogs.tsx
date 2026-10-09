@@ -226,6 +226,7 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
                       </label>
                     </div>
                   </RadioGroup>
+                  <p className="text-[11px] text-muted-foreground">{t('snapshots.restoreDialog.overwriteModeHint')}</p>
                 </div>
               </>
             ) : (

@@ -755,6 +755,7 @@ export default {
       "absolutePathRequired": "Enter an absolute host target path.",
       "pathOutsideAllowedRoots": "The target path must be within an available host restore directory.",
       "overwriteMode": "Overwrite Mode",
+      "overwriteModeHint": "Overwrite is decided by size + modification time: content changes that keep both unchanged are not overwritten — use \"Always overwrite\" for those.",
       "never": "Never",
       "ifChanged": "If Changed",
       "always": "Always",

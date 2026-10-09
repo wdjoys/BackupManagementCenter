@@ -755,6 +755,7 @@ export default {
       "absolutePathRequired": "请输入绝对宿主机目标路径。",
       "pathOutsideAllowedRoots": "目标路径必须位于可恢复的宿主机目录内。",
       "overwriteMode": "覆盖模式",
+      "overwriteModeHint": "按「大小 + 修改时间」判定是否覆盖：内容变了但这两者未变时不会覆盖，需选「总是覆盖」。",
       "never": "从不覆盖",
       "ifChanged": "有变化时覆盖",
       "always": "总是覆盖",

@@ -292,6 +292,8 @@ var (
 	ErrDatabaseRestoreBusy = errors.New("store: database restore busy")
 	// ErrRestoreConflict 表示已有不同的确认结果，不能覆盖。
 	ErrRestoreConflict = errors.New("store: restore result conflict")
+	// ErrRestoreTargetBusy 表示同一目标路径上已有未终结的文件系统恢复。
+	ErrRestoreTargetBusy = errors.New("store: restore target busy")
 )
 
 // FinishRestoreRunInput 描述一次恢复 run 的原子终结。

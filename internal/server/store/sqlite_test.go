@@ -2398,3 +2398,52 @@ func TestAppendRunLogsWaitsForStoreWriteLock(t *testing.T) {
 		t.Fatal("AppendRunLogs did not complete after the write lock was released")
 	}
 }
+
+// 文件系统恢复直接写共享目录：同一 Agent 同一目标路径上不得有另一个未终结的文件系统
+// 恢复（两个并发恢复写同一目录会产生非确定结果，并可能同时通过 overwrite_mode=never
+// 的"目标为空"前置检查）。数据库恢复由全局占用保护，这里锚定文件系统的目标级保护。
+func TestCreateRestoreRequestRejectsBusyFilesystemTarget(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	mkRun := func(id string) {
+		if err := ts.Store.CreateRun(ctx, &model.Run{
+			ID: id, AgentID: "a1", Operation: model.OpRestore, Status: model.RunQueued, QueuedAt: now,
+		}); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+	}
+	mk := func(id, runID, kind, targetPath, phase string) error {
+		mkRun(runID)
+		target, _ := json.Marshal(map[string]string{"target_path": targetPath})
+		return ts.Store.CreateRestoreRequest(ctx, &model.RestoreRequest{
+			ID: id, RunID: runID, SnapshotID: "snap", RestoreKind: kind,
+			TargetJSON: string(target), Phase: phase, CreatedAt: now,
+		})
+	}
+
+	if err := mk("rr-1", "run-1", model.KindFilesystem, "/restore/a", model.RestorePhaseQueued); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	// 同一目标路径、仍在进行中 → 拒绝
+	if err := mk("rr-2", "run-2", model.KindFilesystem, "/restore/a", model.RestorePhaseRestoring); !errors.Is(err, ErrRestoreTargetBusy) {
+		t.Fatalf("same target must be rejected, got %v", err)
+	}
+	// 不同目标路径 → 允许
+	if err := mk("rr-3", "run-3", model.KindFilesystem, "/restore/b", model.RestorePhaseQueued); err != nil {
+		t.Fatalf("different target must be allowed: %v", err)
+	}
+	// 数据库恢复不受该目标级保护影响（由全局占用保护）
+	if err := mk("rr-4", "run-4", model.KindMySQL, "/restore/a", model.RestorePhaseQueued); err != nil {
+		t.Fatalf("database restore must not be affected: %v", err)
+	}
+	// 已终结的文件系统恢复不占用目标：先落一条 failed，再在同路径上开新的进行中恢复
+	if err := mk("rr-5", "run-5", model.KindFilesystem, "/restore/c", model.RestorePhaseFailed); err != nil {
+		t.Fatalf("terminal request insert: %v", err)
+	}
+	if err := mk("rr-6", "run-6", model.KindFilesystem, "/restore/c", model.RestorePhaseQueued); err != nil {
+		t.Fatalf("terminal request must not block the target: %v", err)
+	}
+}

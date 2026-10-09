@@ -68,6 +68,9 @@ const (
 	ErrDatabaseRestoreBusy = "database_restore_busy"
 	// ErrAgentCapabilitiesPending 表示目标 Agent 的当前连接尚未完成能力上报。
 	ErrAgentCapabilitiesPending = "agent_capabilities_pending"
+	// ErrRestoreTargetBusy 表示同一目标路径上已有未终结的文件系统恢复：两个恢复
+	// 同时写入同一目录会产生非确定结果，并可能绕过 overwrite_mode=never 的前置检查。
+	ErrRestoreTargetBusy = "restore_target_busy"
 	// ErrSnapshotListRefreshRequired 表示缺少可用的已验证快照列表缓存。
 	ErrSnapshotListRefreshRequired = "snapshot_list_refresh_required"
 	// ErrUnsupportedRestoreManifest 表示来源快照的 manifest 不满足单库恢复范围。

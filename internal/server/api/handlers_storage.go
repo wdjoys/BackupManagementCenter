@@ -432,6 +432,10 @@ func (s *Server) jobsErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, model.ErrDatabaseRestoreBusy, "another database restore is in progress; wait for it to finish")
 		return
 	}
+	if errors.Is(err, store.ErrRestoreTargetBusy) {
+		writeErr(w, http.StatusConflict, model.ErrRestoreTargetBusy, "another restore is already writing to this target path; wait for it to finish")
+		return
+	}
 	if errors.Is(err, jobs.ErrRestoreConflict) || errors.Is(err, store.ErrRestoreConflict) {
 		writeErr(w, http.StatusConflict, "restore_conflict", "restore request is not in a state that can be resolved")
 		return

@@ -1615,7 +1615,30 @@ func normalizeProcessLogLimit(limit int) int {
 // ---------------------------------------------------------------------------
 
 func (s *sqliteStore) CreateRestoreRequest(ctx context.Context, rr *model.RestoreRequest) error {
-	_, err := s.db.ExecContext(ctx,
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create restore request begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 文件系统恢复直接写入共享目录：同一 Agent、同一目标路径上不得存在另一个未终结的
+	// 文件系统恢复。两个并发恢复写同一目录会产生非确定结果，并可能同时通过
+	// overwrite_mode=never 的"目标为空"前置检查。数据库恢复由
+	// CreateDatabaseRestoreRun 的全局占用在同一事务内保护，这里对文件系统做同样的
+	// 目标级保护（校验与插入同事务，避免 TOCTOU）。
+	if rr.RestoreKind == model.KindFilesystem {
+		busy, err := filesystemTargetBusy(ctx, tx, rr)
+		if err != nil {
+			return err
+		}
+		if busy {
+			return ErrRestoreTargetBusy
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO restore_requests (id, run_id, snapshot_id, restore_kind,
 		       target_json, overwrite, confirmation_hash, pre_restore_run_id,
 		       rollback_snapshot_id, phase, created_at)
@@ -1624,11 +1647,60 @@ func (s *sqliteStore) CreateRestoreRequest(ctx context.Context, rr *model.Restor
 		rr.TargetJSON, boolInt(rr.Overwrite), rr.ConfirmationHash, rr.PreRestoreRunID,
 		rr.RollbackSnapshotID, rr.Phase,
 		rr.CreatedAt.Format(time.RFC3339),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("create restore request: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create restore request commit: %w", err)
+	}
 	return nil
+}
+
+// activeRestorePhases 是"恢复请求尚未终结"的阶段集合（其余阶段一律视为已终结）。
+var activeRestorePhases = []string{
+	model.RestorePhaseQueued, model.RestorePhasePreBackup, model.RestorePhaseRestoring,
+	model.RestorePhaseRollingBack, model.RestorePhaseCancelling,
+}
+
+// filesystemTargetBusy 判断同一 Agent 是否已有未终结的文件系统恢复指向同一目标路径。
+// 目标路径从 target_json 解析（该列无独立索引，故在 Go 侧比较；活跃请求数量很小）。
+func filesystemTargetBusy(ctx context.Context, tx *sql.Tx, rr *model.RestoreRequest) (bool, error) {
+	var want struct {
+		TargetPath string `json:"target_path"`
+	}
+	if err := json.Unmarshal([]byte(rr.TargetJSON), &want); err != nil || want.TargetPath == "" {
+		return false, nil
+	}
+	placeholders := make([]string, len(activeRestorePhases))
+	args := []any{model.KindFilesystem}
+	for i, ph := range activeRestorePhases {
+		placeholders[i] = "?"
+		args = append(args, ph)
+	}
+	args = append(args, rr.RunID)
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(
+		`SELECT rr.target_json FROM restore_requests rr
+		 JOIN runs r ON r.id = rr.run_id
+		 WHERE rr.restore_kind = ? AND rr.phase IN (%s)
+		   AND r.agent_id = (SELECT agent_id FROM runs WHERE id = ?)`,
+		strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return false, fmt.Errorf("check busy restore target: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var targetJSON string
+		if err := rows.Scan(&targetJSON); err != nil {
+			return false, fmt.Errorf("scan busy restore target: %w", err)
+		}
+		var other struct {
+			TargetPath string `json:"target_path"`
+		}
+		if json.Unmarshal([]byte(targetJSON), &other) == nil && other.TargetPath == want.TargetPath {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (s *sqliteStore) GetRestoreRequest(ctx context.Context, id string) (*model.RestoreRequest, error) {

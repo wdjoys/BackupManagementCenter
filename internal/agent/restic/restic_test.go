@@ -574,3 +574,49 @@ func TestInitFailureSurfacesStderr(t *testing.T) {
 		t.Fatal("init stderr must be logged")
 	}
 }
+
+// 与 RestoreWithOverwrite 同类的三处调用点（预演 / 仓库文件列举 / 读取仓库配置）
+// 此前也丢弃 stderr 且不做 enriched 包装：失败时运行只显示 "restic exit N"，
+// 日志中无任何 agent 侧信息。这里逐个锚定 stderr 必须进入错误与日志。
+func TestSiblingCallSitesSurfaceStderr(t *testing.T) {
+	mk := func(out string) *scriptedExecutor {
+		return &scriptedExecutor{steps: []struct {
+			code int
+			err  error
+			out  string
+		}{{code: 1, out: out}}}
+	}
+	opts := func(logged *[]string) Options {
+		return Options{Exe: "restic", RepoPath: "repo", Logf: func(l string) { *logged = append(*logged, l) }}
+	}
+	t.Run("恢复预演", func(t *testing.T) {
+		var logged []string
+		_, err := RestoreDryRunWithOverwrite(context.Background(), mk("Fatal: unable to open repository"), opts(&logged), "snap1", "/tmp/t", nil, "always")
+		if err == nil || !strings.Contains(err.Error(), "unable to open repository") {
+			t.Fatalf("dry-run error must carry restic stderr, got %v", err)
+		}
+		if len(logged) == 0 {
+			t.Fatal("dry-run stderr must be logged")
+		}
+	})
+	t.Run("列举仓库文件", func(t *testing.T) {
+		var logged []string
+		_, err := Ls(context.Background(), mk("Fatal: snapshot not found"), opts(&logged), "snap1", "/")
+		if err == nil || !strings.Contains(err.Error(), "snapshot not found") {
+			t.Fatalf("ls error must carry restic stderr, got %v", err)
+		}
+		if len(logged) == 0 {
+			t.Fatal("ls stderr must be logged")
+		}
+	})
+	t.Run("读取仓库配置", func(t *testing.T) {
+		var logged []string
+		err := CatConfig(context.Background(), mk("Fatal: wrong password"), opts(&logged))
+		if err == nil || !strings.Contains(err.Error(), "wrong password") {
+			t.Fatalf("cat-config error must carry restic stderr, got %v", err)
+		}
+		if len(logged) == 0 {
+			t.Fatal("cat-config stderr must be logged")
+		}
+	})
+}

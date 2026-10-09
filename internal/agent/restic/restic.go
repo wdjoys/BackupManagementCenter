@@ -164,9 +164,15 @@ func CatConfig(ctx context.Context, exec backup.Executor, opts Options) error {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
 
-	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(string) {})
+	var stderrTail strings.Builder
+	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) {
+		stderrTail.WriteString(line + "\n")
+		if opts.Logf != nil {
+			opts.Logf(line)
+		}
+	})
 	if err != nil || exitCode != 0 {
-		return mapResticError(exitCode, err)
+		return enriched(mapResticError(exitCode, err), stderrTail.String())
 	}
 	return nil
 }
@@ -265,6 +271,7 @@ func RestoreDryRunWithOverwrite(ctx context.Context, exec backup.Executor, opts 
 	reFile := regexp.MustCompile(`^(restored|updated|unchanged)\s+(\S+)`)
 	// 处理大量文件时 Sample 不能无上限增长。
 	const maxSampleLines = 50
+	var stderrTail strings.Builder
 
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
 		func(line string) {
@@ -284,9 +291,14 @@ func RestoreDryRunWithOverwrite(ctx context.Context, exec backup.Executor, opts 
 			if m[1] != "unchanged" && len(exampleLines) < maxSampleLines {
 				exampleLines = append(exampleLines, strings.TrimSpace(line))
 			}
-		}, func(string) {})
+		}, func(line string) {
+			stderrTail.WriteString(line + "\n")
+			if opts.Logf != nil {
+				opts.Logf(line)
+			}
+		})
 	if err != nil || exitCode != 0 {
-		return nil, mapResticError(exitCode, err)
+		return nil, enriched(mapResticError(exitCode, err), stderrTail.String())
 	}
 
 	return &model.Progress{
@@ -601,6 +613,7 @@ func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID, sna
 
 	env := buildEnv(opts)
 	var entries []SnapshotEntry
+	var stderrTail strings.Builder
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
 		func(line string) {
 			var node struct {
@@ -614,9 +627,14 @@ func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID, sna
 				return
 			}
 			entries = append(entries, SnapshotEntry{Name: node.Name, Type: node.Type, Path: node.Path, Size: node.Size, Mtime: node.Mtime})
-		}, func(string) {})
+		}, func(line string) {
+			stderrTail.WriteString(line + "\n")
+			if opts.Logf != nil {
+				opts.Logf(line)
+			}
+		})
 	if exitCode != 0 {
-		return nil, mapResticError(exitCode, err)
+		return nil, enriched(mapResticError(exitCode, err), stderrTail.String())
 	}
 	return entries, nil
 }

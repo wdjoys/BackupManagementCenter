@@ -1970,3 +1970,53 @@ func TestStartRetentionRunScopesToPlan(t *testing.T) {
 		t.Fatalf("retention not carried over: %+v", task.Retention)
 	}
 }
+
+// 同一仓库的多个计划必须各自按自己的保留策略裁剪：此前只取第一个启用计划，
+// 其余计划的快照永不裁剪、无界累积（实测某仓库 41 个计划中仅 1 个被裁剪）。
+func TestStartRetentionRunCoversEveryEnabledPlan(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+	o, _ := newTestOrchestrator(st, newFakeDispatcher())
+
+	st.agents["agent-1"] = &model.Agent{ID: "agent-1", Name: "a", Hostname: "h", Status: model.AgentOnline, EnrolledAt: time.Now().UTC()}
+	st.repos["repo-1"] = &model.Repository{ID: "repo-1", AgentID: "agent-1", RepositoryPath: "r:/x", Status: "ready"}
+	st.plans["plan-1"] = &model.Plan{ID: "plan-1", Name: "p1", AgentID: "agent-1", Kind: model.KindMySQL,
+		Enabled: true, RepositoryID: "repo-1", Retention: model.Retention{KeepLast: 1}}
+	st.plans["plan-2"] = &model.Plan{ID: "plan-2", Name: "p2", AgentID: "agent-1", Kind: model.KindPostgreSQL,
+		Enabled: true, RepositoryID: "repo-1", Retention: model.Retention{KeepLast: 5, KeepDaily: 7}}
+	st.plans["plan-3-disabled"] = &model.Plan{ID: "plan-3-disabled", Name: "p3", AgentID: "agent-1", Kind: model.KindMySQL,
+		Enabled: false, RepositoryID: "repo-1", Retention: model.Retention{KeepLast: 9}}
+	st.plans["plan-4-nopolicy"] = &model.Plan{ID: "plan-4-nopolicy", Name: "p4", AgentID: "agent-1", Kind: model.KindMySQL,
+		Enabled: true, RepositoryID: "repo-1", Retention: model.Retention{}}
+
+	if err := o.StartRetentionRun(ctx, "repo-1"); err != nil {
+		t.Fatalf("StartRetentionRun: %v", err)
+	}
+
+	byPlan := map[string]model.ForgetTask{}
+	for _, r := range st.runs {
+		if r.Operation != model.OpForget {
+			continue
+		}
+		var task model.ForgetTask
+		if err := json.Unmarshal([]byte(r.ProgressJSON), &task); err != nil {
+			t.Fatalf("unmarshal ForgetTask: %v", err)
+		}
+		byPlan[task.PlanID] = task
+	}
+	if len(byPlan) != 2 {
+		t.Fatalf("want one forget run per enabled plan with a policy (2), got %d: %v", len(byPlan), byPlan)
+	}
+	if task, ok := byPlan["plan-1"]; !ok || task.Retention.KeepLast != 1 || len(task.Tags) != 1 || task.Tags[0] != "plan:plan-1" {
+		t.Fatalf("plan-1 forget task wrong: %+v", byPlan["plan-1"])
+	}
+	if task, ok := byPlan["plan-2"]; !ok || task.Retention.KeepLast != 5 || task.Retention.KeepDaily != 7 || task.Tags[0] != "plan:plan-2" {
+		t.Fatalf("plan-2 forget task wrong: %+v", byPlan["plan-2"])
+	}
+	if _, ok := byPlan["plan-3-disabled"]; ok {
+		t.Fatal("disabled plan must not be dispatched")
+	}
+	if _, ok := byPlan["plan-4-nopolicy"]; ok {
+		t.Fatal("plan without a retention policy must not be dispatched")
+	}
+}

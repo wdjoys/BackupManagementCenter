@@ -19,8 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	posixpath "path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1168,25 +1168,38 @@ func (o *Orchestrator) StartRetentionRun(ctx context.Context, repositoryID strin
 	if err != nil {
 		return err
 	}
-	var retention model.Retention
-	var planID, kind string
+	// 每个启用计划各自派发一次 forget：restic forget 一次只能带一个策略，
+	// 且必须用 --tag 限定到该计划（否则会删掉同仓库其他计划的快照，并波及
+	// restore-protection 保护快照）。此前只取"第一个启用计划"，导致同一仓库里
+	// 其余计划的快照永远不会被保留策略裁剪、无界累积。
+	var firstErr error
+	scheduled := 0
 	for _, plan := range plans {
-		if plan.RepositoryID == repositoryID && plan.Enabled {
-			retention, planID, kind = plan.Retention, plan.ID, plan.Kind
-			break
+		if plan.RepositoryID != repositoryID || !plan.Enabled {
+			continue
 		}
+		r := plan.Retention
+		if r.KeepLast+r.KeepDaily+r.KeepWeekly+r.KeepMonthly == 0 {
+			continue
+		}
+		if _, err := o.SystemRun(ctx, repo.AgentID, repositoryID, model.OpForget, model.ForgetTask{
+			PlanID:     plan.ID,
+			Kind:       plan.Kind,
+			Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath},
+			Retention:  r,
+			Tags:       []string{"plan:" + plan.ID},
+		}, 0); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("plan %s: %w", plan.ID, err)
+			}
+			continue
+		}
+		scheduled++
 	}
-	if retention.KeepLast+retention.KeepDaily+retention.KeepWeekly+retention.KeepMonthly == 0 {
-		return nil
+	if firstErr != nil {
+		return fmt.Errorf("retention: %d plan(s) failed, %d scheduled: %w", len(plans)-scheduled, scheduled, firstErr)
 	}
-	_, err = o.SystemRun(ctx, repo.AgentID, repositoryID, model.OpForget, model.ForgetTask{
-		PlanID: planID, Kind: kind, Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath}, Retention: retention,
-		// 必须带上计划标签：否则 restic forget 不带 --tag，会把保留策略应用到
-		// 整个仓库——删除其他计划的快照，并波及 restore-protection 保护快照
-		// （文档承诺保护快照不被保留策略认领）。
-		Tags: []string{"plan:" + planID},
-	}, 0)
-	return err
+	return nil
 }
 
 // DeletePlanBackups 删除计划标签下的全部快照及其无引用数据。

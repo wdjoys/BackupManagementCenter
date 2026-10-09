@@ -662,7 +662,8 @@ func TestForgetLogsRetentionSummary(t *testing.T) {
 	var cmd backup.Cmd
 	var logs []string
 	err := ForgetOnly(context.Background(),
-		checkExecutor{stdout: `{"groups":[{"keep":["a","b"],"remove":["c","d","e"]}]}`, cmd: &cmd},
+		// 真实结构：restic 0.18 的 forget --json 是顶层数组（非 {"groups":[…]}）。
+		checkExecutor{stdout: `[{"host":"h","keep":[{"short_id":"a"},{"short_id":"b"}],"remove":[{"short_id":"c"},{"short_id":"d"},{"short_id":"e"}]}]`, cmd: &cmd},
 		Options{Exe: "restic", RepoPath: "rclone:remote:/repo", Logf: func(l string) { logs = append(logs, l) }},
 		model.Retention{KeepLast: 2}, []string{"plan:p1"})
 	if err != nil {

@@ -467,22 +467,24 @@ func logRetentionResult(opts Options, tags []string, stdout string) {
 	if opts.Logf == nil {
 		return
 	}
-	var doc struct {
-		Groups []struct {
-			Remove []string `json:"remove"`
-			Keep   []string `json:"keep"`
-		} `json:"groups"`
+	// restic 0.18 的 forget --json 输出是**顶层数组**（每个元素是一组，含
+	// keep/remove 的完整快照对象），不是 {"groups":[...]}；按后者解析会直接失败，
+	// 摘要行也就永远不会出现（实测：修复前 retention 运行日志里只有 3 行通用信息）。
+	// keep/remove 的元素是**完整快照对象**（不是 ID 字符串），只需计数。
+	var groups []struct {
+		Remove []json.RawMessage `json:"remove"`
+		Keep   []json.RawMessage `json:"keep"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc); err != nil || len(doc.Groups) == 0 {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &groups); err != nil || len(groups) == 0 {
 		return
 	}
 	removed, kept := 0, 0
-	for _, g := range doc.Groups {
+	for _, g := range groups {
 		removed += len(g.Remove)
 		kept += len(g.Keep)
 	}
 	opts.Logf(fmt.Sprintf("保留策略：删除 %d 个快照，保留 %d 个（分组数 %d，标签 %s）",
-		removed, kept, len(doc.Groups), strings.Join(tags, ",")))
+		removed, kept, len(groups), strings.Join(tags, ",")))
 }
 
 // DeleteSnapshots 删除指定 snapshot ID 的快照，并可选 prune 回收空间。

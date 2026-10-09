@@ -178,6 +178,11 @@ func main() {
 		OfflineThreshold:         90 * time.Second,
 	}, notifier, orch.WarmSnapshotCache)
 	svc.SetMetrics(met)
+	// 离线检测循环：把超过 OfflineThreshold 未上报心跳的 Agent 标记为 offline。
+	// 此前只接了 Stop 而漏了 Start，导致控制流异常中断（未走干净关闭）的 Agent
+	// 永久显示 online —— 指标 bmc_agents_online 只统计活跃流，会与之矛盾，运维
+	// 也可能误以为该主机的备份仍在正常工作。
+	svc.Start()
 
 	// Restart recovery: retry idempotent work left in-flight, but fail
 	// destructive operations because their external side effects are unknown.

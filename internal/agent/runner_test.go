@@ -470,3 +470,58 @@ func TestRunner_MaxConcurrencyCapsParallelExecutions(t *testing.T) {
 		t.Fatalf("expected the cap to be reached (%d), peaked at %d — parallel capacity may be broken", cap, peak)
 	}
 }
+
+// MaxConcurrency=0（或负）按实现表示"不限制并发"（slots 为 nil）。该语义此前未文档化，
+// 用测试锚定，避免将来被误改成"一个都不执行"。与上限用例同构，仅输入不同。
+func TestRunner_MaxConcurrencyZeroMeansUnlimited(t *testing.T) {
+	const total = 6
+	ident := &Identity{
+		AgentID:   "test-agent",
+		SecretHex: "aabbccddee0011223344556677889900aabbccddee0011223344556677889900",
+	}
+	deps := pipeline.Deps{Tools: make(map[string]backup.ToolInfo), Exec: &OSExecutor{}} // MaxConcurrency 缺省为 0
+	runner := NewRunner(deps, t.TempDir(), ident)
+
+	finished := make(chan struct{}, total)
+	var mu sync.Mutex
+	cur, peak := 0, 0
+	runner.executeFn = func(context.Context, pipeline.Deps, string, bmcv1.ExecuteCommand_Operation, []byte, backup.SecretBundle) (*pipeline.Result, error) {
+		mu.Lock()
+		cur++
+		if cur > peak {
+			peak = cur
+		}
+		mu.Unlock()
+		time.Sleep(40 * time.Millisecond)
+		mu.Lock()
+		cur--
+		mu.Unlock()
+		finished <- struct{}{}
+		return &pipeline.Result{}, nil
+	}
+
+	stream := &fakeStream{}
+	for i := 0; i < total; i++ {
+		runner.Execute(context.Background(), stream, &bmcv1.ExecuteCommand{
+			CommandId:  fmt.Sprintf("ul-cmd-%d", i),
+			RunId:      fmt.Sprintf("ul-run-%d", i),
+			Operation:  bmcv1.ExecuteCommand_BACKUP,
+			ParamsJson: []byte("{}"),
+		})
+	}
+	deadline := time.After(10 * time.Second)
+	done := 0
+	for done < total {
+		select {
+		case <-finished:
+			done++
+		case <-deadline:
+			t.Fatalf("only %d/%d executions completed", done, total)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if peak != total {
+		t.Fatalf("MaxConcurrency=0 must not serialize: peak=%d, want %d", peak, total)
+	}
+}

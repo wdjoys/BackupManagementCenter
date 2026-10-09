@@ -46,7 +46,7 @@ func (a *MongoDBAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
 	}
-	if err := ValidateExtraArgs(KindMongoDB, s.ExtraArgs); err != nil {
+	if err := model.ValidateExtraArgs(model.KindMongoDB, s.ExtraArgs); err != nil {
 		return err
 	}
 	return nil
@@ -147,6 +147,11 @@ func mongoPrepare(spec *RestoreSpec) (*mongoCtx, error) {
 	}
 	if db.TargetDatabase == "" || db.TargetDatabase == "all" {
 		return nil, errors.New("mongodb restore requires a single target database")
+	}
+	// admin 存放用户与角色，local/config 存放副本集与分片元数据：恢复进去会
+	// 覆盖它们。此前 mongodb 侧没有这层守卫，仅靠目标已存在时的 pre-check 兜底。
+	if model.IsSystemDatabase(model.KindMongoDB, db.TargetDatabase) {
+		return nil, fmt.Errorf("refusing to restore into system database %q", db.TargetDatabase)
 	}
 	authSource := db.TargetAuthSource
 	if authSource == "" {

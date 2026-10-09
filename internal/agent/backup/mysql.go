@@ -42,7 +42,7 @@ func (a *MySQLAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
 	}
-	if err := ValidateExtraArgs(KindMySQL, s.ExtraArgs); err != nil {
+	if err := model.ValidateExtraArgs(model.KindMySQL, s.ExtraArgs); err != nil {
 		return err
 	}
 	return nil
@@ -137,7 +137,10 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, captureStderr)
 	if err != nil || exitCode != 0 {
-		if hint := mysqlDumpNameCharsetHint(source.Database, stderrTail); hint != "" {
+		// 单引号库名的原因更具体，优先给出（含单引号且非 ASCII 时避免被字符集提示误导）。
+		if hint := mysqlDumpQuoteNameHint(source.Database, stderrTail); hint != "" {
+			rc.Logf("warn", "%s", hint)
+		} else if hint := mysqlDumpNameCharsetHint(source.Database, stderrTail); hint != "" {
 			rc.Logf("warn", "%s", hint)
 		}
 		return nil, exitError("mysqldump", exitCode, err)
@@ -252,6 +255,31 @@ func mysqlMajorVersion(version string) int {
 	return n
 }
 
+// mysqlDumpQuoteNameHint 在"库名含单引号"且 mysqldump 报 1049 时给出可诊断提示。
+// mysqldump 的 --routines 会把库名里的单引号转义成反斜杠形式（形如 use `a\'b`，反引号内本不需要转义），
+// 转义单引号），属上游缺陷；BMC 默认传 --routines，因此这类库目前无法直接备份。
+// 规避：在 extra_args 中加 "--skip-routines"（后置参数覆盖默认的 --routines），
+// 代价是本次备份不含存储过程/函数；彻底解决需重命名数据库（去掉单引号）。
+func mysqlDumpQuoteNameHint(database string, stderrTail []string) string {
+	if database == "" || database == "all" || !strings.Contains(database, "'") {
+		return ""
+	}
+	unknownDB := false
+	for _, line := range stderrTail {
+		if strings.Contains(line, "Unknown database") {
+			unknownDB = true
+			break
+		}
+	}
+	if !unknownDB {
+		return ""
+	}
+	return fmt.Sprintf("数据库名 %q 含单引号：mysqldump 在 --routines 下把它错误转义成 use `a\\'b`，"+
+		"服务端因此报 \"Unknown database\"（库实际存在），属 mysqldump 上游缺陷。"+
+		"规避：在该计划 extra_args 中加入 \"--skip-routines\"（后置参数覆盖默认的 --routines），"+
+		"代价是本次备份不含存储过程/函数；彻底解决需重命名数据库去掉单引号。", database)
+}
+
 // mysqlDumpNameCharsetHint 在"库名含非 ASCII 字符"且 mysqldump 报 1049 时给出
 // 可诊断提示。MySQL ≤5.7 的 character_set_server 默认为 latin1，官方 8.0 客户端
 // 请求 utf8mb4 会因 utf8mb4_0900_ai_ci 排序规则不存在而回退 latin1，于是库名被
@@ -307,7 +335,7 @@ func mysqlPrepare(spec *RestoreSpec) (*mysqlCtx, error) {
 	if db.TargetDatabase == "" || db.TargetDatabase == "all" {
 		return nil, errors.New("mysql restore requires a single target database")
 	}
-	if mysqlSystemSchemas[strings.ToLower(db.TargetDatabase)] {
+	if model.IsSystemDatabase(model.KindMySQL, db.TargetDatabase) {
 		return nil, fmt.Errorf("refusing to restore into system schema %q", db.TargetDatabase)
 	}
 	// 同备份：显式指定 utf8mb4，否则建库/校验语句中的非 ASCII 库名会被按
@@ -329,11 +357,6 @@ func mysqlPrepare(spec *RestoreSpec) (*mysqlCtx, error) {
 	}, nil
 }
 
-// mysqlSystemSchemas 是绝不允许作为恢复目标的系统库。
-var mysqlSystemSchemas = map[string]bool{
-	"mysql": true, "information_schema": true, "performance_schema": true, "sys": true,
-}
-
 // args 构造 mysql 客户端参数：-e 执行语句，或 stdin 导入 dump。
 // --defaults-extra-file 必须是第一个参数，否则客户端报 unknown variable。
 func (c *mysqlCtx) args(query string) []string {
@@ -341,6 +364,9 @@ func (c *mysqlCtx) args(query string) []string {
 		"--defaults-extra-file=" + c.cnf,
 		"--binary-mode",
 		"-h", c.db.TargetHost, "-P", strconv.Itoa(c.db.TargetPort), "-u", c.db.TargetUsername,
+		// -N 去掉列头：有结果行时 mysql 会先打印 TABLE_NAME 头，被 scan 计入
+		// present 后，校验日志的计数会恒为 N+1。
+		"-N",
 		"-e", query,
 	}
 }
@@ -457,7 +483,7 @@ func (a *MySQLAdapter) RemoveTarget(ctx context.Context, spec *RestoreSpec) erro
 }
 
 // mysqlDumpTableNames 从 mysqldump 输出里抽取 CREATE TABLE 的表名。
-// 表名用反引号包围，且名字内部的反引号以 `` 形式转义（合法表名可以含反引号），
+// 表名用反引号包围，且名字内部的反引号用两个反引号转义（合法表名可以含反引号），
 // 因此不能简单地"取第一个反引号前的内容"，必须按转义规则扫描到真正的结束反引号。
 func mysqlDumpTableNames(path string) (map[string]struct{}, error) {
 	f, err := os.Open(path)
@@ -490,7 +516,7 @@ func mysqlDumpTableNames(path string) (map[string]struct{}, error) {
 }
 
 // mysqlUnquoteIdentifier 读取 s 开头（已去掉起始反引号）的反引号标识符，
-// 把 `` 还原为单个反引号，返回名字与是否找到结束反引号。
+// 把两个连续反引号还原为单个反引号，返回名字与是否找到结束反引号。
 func mysqlUnquoteIdentifier(s string) (string, bool) {
 	var sb strings.Builder
 	for i := 0; i < len(s); i++ {

@@ -135,7 +135,9 @@ type planBody struct {
 	// Password 只用于拒绝误用：数据库口令只从 source.password 或
 	// credentials.password 读取，顶层 password 会被静默丢弃，导致"计划建好了
 	// 但口令为空"、备份报 Access denied (using password: NO)。
-	Password       *string         `json:"password,omitempty"`
+	Password *string `json:"password,omitempty"`
+	// ExtraArgs 同样只用于拒绝误用：extra_args 属于 source，放顶层会被静默丢弃。
+	ExtraArgs      *[]string       `json:"extra_args,omitempty"`
 	RepositoryID   string          `json:"repository_id"`
 	Retention      model.Retention `json:"retention"`
 	TimeoutSeconds int             `json:"timeout_seconds"`
@@ -146,6 +148,9 @@ func (b *planBody) validate() (string, bool) {
 	// 匹配分支，放在里面会被其它分支跳过）。
 	if b.Password != nil {
 		return "password must be nested: use credentials.password (or source.password)", false
+	}
+	if b.ExtraArgs != nil {
+		return "extra_args must be nested inside source (source.extra_args)", false
 	}
 	switch {
 	case len(b.Name) < 1 || len(b.Name) > 200:
@@ -229,15 +234,8 @@ func validateDatabaseEstimate(kind string, src model.PlanSource) string {
 	if src.EstimatedDumpBytes > 100<<30 {
 		return "logical backup exceeds 100 GiB; physical_backup_required"
 	}
-	allowed := map[string]map[string]bool{
-		model.KindPostgreSQL: map[string]bool{"--no-owner": true, "--no-privileges": true, "--no-acl": true, "--blobs": true, "--no-comments": true, "--no-publications": true, "--no-subscriptions": true, "--no-security-labels": true, "--inserts": true},
-		model.KindMySQL:      map[string]bool{"--single-transaction": true, "--quick": true, "--routines": true, "--events": true, "--triggers": true, "--hex-blob": true, "--skip-lock-tables": true},
-		model.KindMongoDB:    map[string]bool{}, model.KindSQLite: map[string]bool{},
-	}
-	for _, arg := range src.ExtraArgs {
-		if !allowed[kind][arg] {
-			return "extra_args contains a disallowed option"
-		}
+	if err := model.ValidateExtraArgs(kind, src.ExtraArgs); err != nil {
+		return err.Error()
 	}
 	return ""
 }

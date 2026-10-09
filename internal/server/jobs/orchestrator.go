@@ -1294,6 +1294,11 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		if strings.EqualFold(strings.TrimSpace(in.Target.Database), "all") {
 			return nil, nil, fmt.Errorf("%w: restoring every database in the snapshot is not supported", ErrUnsupportedManifest)
 		}
+		// 系统库绝不允许作为恢复目标。必须在受理阶段拒绝：等到 agent 侧拒绝时
+		// 阶段机已经推进，一个安全的策略拒绝会变成"回滚失败/需人工确认"的运行。
+		if model.IsSystemDatabase(in.RestoreKind, in.Target.Database) {
+			return nil, nil, fmt.Errorf("%w: refusing to restore into system database %q", ErrPathInvalid, in.Target.Database)
+		}
 		// Check the destructive confirmation before validating connection
 		// details.  A caller with a stale/incorrect confirmation must receive
 		// the same forbidden response regardless of which target fields are

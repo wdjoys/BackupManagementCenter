@@ -43,8 +43,16 @@ func TestPlanBodyRejectsTopLevelPassword(t *testing.T) {
 	if msg, ok := body.validate(); ok || !strings.Contains(msg, "credentials.password") {
 		t.Fatalf("top-level password must be rejected with a hint, got ok=%v msg=%q", ok, msg)
 	}
-	// 去掉误用字段后同一请求必须通过，确认拒绝范围没有扩大。
+	// extra_args 属于 source，放顶层同样会被静默丢弃（同 password 一类误用）。
+	args := []string{"--skip-routines"}
 	body.Password = nil
+	body.ExtraArgs = &args
+	if msg, ok := body.validate(); ok || !strings.Contains(msg, "source.extra_args") {
+		t.Fatalf("top-level extra_args must be rejected with a hint, got ok=%v msg=%q", ok, msg)
+	}
+
+	// 去掉误用字段后同一请求必须通过，确认拒绝范围没有扩大。
+	body.ExtraArgs = nil
 	if msg, ok := body.validate(); !ok {
 		t.Fatalf("valid body must pass, got %q", msg)
 	}

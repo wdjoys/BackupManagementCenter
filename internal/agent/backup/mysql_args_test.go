@@ -158,7 +158,9 @@ func TestExitErrorMessageHasSingleFailedWord(t *testing.T) {
 // 官方 MySQL 8.0 客户端默认开启 --column-statistics，会先查
 // information_schema.COLUMN_STATISTICS。该表是 MySQL 8.0 专有的，MariaDB 与
 // MySQL 5.x 都没有，dump 会以
-//   Unknown table 'COLUMN_STATISTICS' in information_schema (1109)
+//
+//	Unknown table 'COLUMN_STATISTICS' in information_schema (1109)
+//
 // 失败（exit 2）。必须在参数中显式关闭。
 func TestMySQLBackupDisablesColumnStatistics(t *testing.T) {
 	rec := &argRecorder{}
@@ -290,8 +292,8 @@ func TestMySQLCnfSetsUTF8MB4(t *testing.T) {
 	}
 }
 
-// 合法表名可以含反引号（转义为 ``）与单引号。此前按"第一个反引号前的内容"截断，
-// 会把 `back``tick` 解析成 back，导致恢复校验误报 missing tables 并触发回滚。
+// 合法表名可以含反引号（转义为 “）与单引号。此前按"第一个反引号前的内容"截断，
+// 会把 `back“tick` 解析成 back，导致恢复校验误报 missing tables 并触发回滚。
 func TestMySQLDumpTableNamesHandlesEscapedBackticks(t *testing.T) {
 	dump := "CREATE TABLE `it's` (\n  `id` int NOT NULL\n);\n" +
 		"CREATE TABLE `back``tick` (\n  `id` int NOT NULL\n);\n" +
@@ -391,4 +393,23 @@ func indexOf(xs []string, want string) int {
 		}
 	}
 	return -1
+}
+
+// 库名含单引号时 mysqldump 在 --routines 下会错误转义该名字，备份必然失败
+// （上游缺陷）。必须给出指向 --skip-routines 的可诊断提示，而不是只剩一行 stderr。
+func TestMySQLDumpQuoteNameHint(t *testing.T) {
+	stderr := []string{"mysqldump: Got error: 1049: Unknown database 'a\\'b' when selecting the database"}
+	hint := mysqlDumpQuoteNameHint("a'b", stderr)
+	if hint == "" || !strings.Contains(hint, "--skip-routines") {
+		t.Fatalf("quote name + Unknown database must produce a hint, got %q", hint)
+	}
+	if hint := mysqlDumpQuoteNameHint("appdb", stderr); hint != "" {
+		t.Fatalf("plain name must not produce the hint, got %q", hint)
+	}
+	if hint := mysqlDumpQuoteNameHint("all", stderr); hint != "" {
+		t.Fatalf("all scope must not produce the hint, got %q", hint)
+	}
+	if hint := mysqlDumpQuoteNameHint("a'b", []string{"Access denied for user 'root'"}); hint != "" {
+		t.Fatalf("unrelated stderr must not produce the hint, got %q", hint)
+	}
 }

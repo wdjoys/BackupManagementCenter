@@ -3,7 +3,11 @@
 // shapes exchanged inside ExecuteCommand.params_json and REST APIs.
 package model
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Plan kinds.
 const (
@@ -37,6 +41,50 @@ const (
 	RunFailed     = "failed"
 	RunCancelled  = "cancelled"
 )
+
+// SystemDatabases 是各数据库类型中绝不允许作为恢复目标的系统库。服务端在受理
+// 恢复请求时即拒绝（避免把一个安全的策略拒绝变成"回滚失败/需人工确认"的运行），
+// 各 adapter 在准备目标时同样拒绝，形成纵深防御。
+var SystemDatabases = map[string]map[string]bool{
+	KindMySQL:      {"mysql": true, "information_schema": true, "performance_schema": true, "sys": true},
+	KindPostgreSQL: {"postgres": true, "template0": true, "template1": true},
+	KindMongoDB:    {"admin": true, "local": true, "config": true},
+}
+
+// AllowedExtraArgs 是各数据库类型允许的额外导出参数：只允许非路由、非认证、
+// 不改写输出的开关。服务端在建计划时校验，agent 在备份/恢复前再次校验
+// （纵深防御）。两份实现曾各自维护同一清单，加入 --skip-routines 时漏改服务端
+// 就会让该参数永远被拒，因此统一放在这里。
+var AllowedExtraArgs = map[string]map[string]bool{
+	KindPostgreSQL: {"--no-owner": true, "--no-privileges": true, "--no-acl": true, "--blobs": true, "--no-comments": true, "--no-publications": true, "--no-subscriptions": true, "--no-security-labels": true, "--inserts": true},
+	KindMySQL:      {"--single-transaction": true, "--quick": true, "--routines": true, "--skip-routines": true, "--events": true, "--triggers": true, "--hex-blob": true, "--skip-lock-tables": true},
+	KindMongoDB:    {},
+	KindSQLite:     {},
+}
+
+// ValidateExtraArgs 拒绝不在白名单中的额外参数，并指出具体选项名。
+func ValidateExtraArgs(kind string, args []string) error {
+	allowed := AllowedExtraArgs[kind]
+	for _, arg := range args {
+		if strings.TrimSpace(arg) == "" || !allowed[arg] {
+			return fmt.Errorf("extra_args contains disallowed option %q", arg)
+		}
+	}
+	return nil
+}
+
+// IsSystemDatabase 判断 name 是否是该类型的系统库。MySQL 库名大小写不敏感，
+// 其余类型按原样比较。
+func IsSystemDatabase(kind, name string) bool {
+	list := SystemDatabases[kind]
+	if len(list) == 0 {
+		return false
+	}
+	if kind == KindMySQL {
+		name = strings.ToLower(name)
+	}
+	return list[name]
+}
 
 // Stable error codes surfaced to the UI and audit log.
 const (

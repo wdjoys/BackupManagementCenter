@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"backupmanagementcenter/internal/model"
 	"sort"
 	"strings"
 	"time"
@@ -35,7 +37,7 @@ func (a *SQLiteAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if _, err := os.Stat(s.Path); err != nil {
 		return fmt.Errorf("path %q not accessible: %w", s.Path, err)
 	}
-	if err := ValidateExtraArgs(KindSQLite, s.ExtraArgs); err != nil {
+	if err := model.ValidateExtraArgs(model.KindSQLite, s.ExtraArgs); err != nil {
 		return err
 	}
 	return nil

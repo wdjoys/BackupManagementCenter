@@ -42,7 +42,7 @@ func (a *PostgreSQLAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
 	}
-	if err := ValidateExtraArgs(KindPostgreSQL, s.ExtraArgs); err != nil {
+	if err := model.ValidateExtraArgs(model.KindPostgreSQL, s.ExtraArgs); err != nil {
 		return err
 	}
 	return nil
@@ -237,11 +237,6 @@ func (c *pgRestoreCtx) targetQuery(sql string) []string {
 		"-d", c.db.TargetDatabase, "-v", "ON_ERROR_STOP=1", "-tAc", sql}
 }
 
-// pgSystemDatabases 是绝不允许作为恢复目标的集群维护库。
-var pgSystemDatabases = map[string]bool{
-	"postgres": true, "template0": true, "template1": true,
-}
-
 // TargetExists reports whether the target database exists. A failed query
 // (auth, connection, permission) is an error, never "absent".
 func (a *PostgreSQLAdapter) TargetExists(ctx context.Context, spec *RestoreSpec) (bool, error) {
@@ -267,7 +262,7 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 	if err != nil {
 		return err
 	}
-	if pgSystemDatabases[c.db.TargetDatabase] {
+	if model.IsSystemDatabase(model.KindPostgreSQL, c.db.TargetDatabase) {
 		return fmt.Errorf("refusing to restore into system database %q", c.db.TargetDatabase)
 	}
 	quoted := `"` + strings.ReplaceAll(c.db.TargetDatabase, `"`, `""`) + `"`

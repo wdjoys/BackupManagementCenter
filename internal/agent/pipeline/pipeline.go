@@ -546,7 +546,7 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 			message += "; rollback also failed: " + rollbackErr.Error()
 		}
 		return nil, &PipelineError{
-			Code:       rollbackFailureCode(phase),
+			Code:       restoreFailureCode(phase, model.ErrRestoreImportFailed),
 			Message:    message,
 			Cause:      importErr,
 			ResultJSON: restoreResultJSON(phase, protectionSnapshotID),
@@ -559,7 +559,7 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 			message += "; rollback also failed: " + rollbackErr.Error()
 		}
 		return nil, &PipelineError{
-			Code:       rollbackFailureCode(phase),
+			Code:       restoreFailureCode(phase, model.ErrRestoreVerification),
 			Message:    message,
 			Cause:      verifyErr,
 			ResultJSON: restoreResultJSON(phase, protectionSnapshotID),
@@ -572,12 +572,14 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	}, nil
 }
 
-// rollbackFailureCode 根据回滚结果选择稳定错误码：回滚成功说明目标已回到
-// 修改前状态（验证失败），回滚失败则必须以 rollback_failed 暴露。
-func rollbackFailureCode(phase string) string {
+// restoreFailureCode 选择失败码：回滚未成功时统一报 rollback_failed（仍需人工
+// 介入）；回滚成功时用调用方给出的失败类别，避免把所有导入失败都笼统报成
+// restore_verification_failed —— 例如"权限不足无法建库"与"导入后校验不一致"
+// 是完全不同的排查方向。
+func restoreFailureCode(phase, category string) string {
 	switch phase {
 	case model.RestorePhaseRolledBack, model.RestorePhaseNewTargetCleaned:
-		return model.ErrRestoreVerification
+		return category
 	default:
 		return model.ErrRollbackFailed
 	}

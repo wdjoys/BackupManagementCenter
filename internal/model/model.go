@@ -40,21 +40,24 @@ const (
 
 // Stable error codes surfaced to the UI and audit log.
 const (
-	ErrServerRestarted          = "server_restarted"
-	ErrAgentUnavailable         = "agent_unavailable"
-	ErrAgentOnline              = "agent_online"
-	ErrAgentRevoked             = "agent_revoked"
-	ErrRepositoryMissing        = "repository_missing"
-	ErrRepositoryLocked         = "repository_locked"
-	ErrPartialSourceRead        = "partial_source_read"
-	ErrWrongRepositoryPassword  = "wrong_repository_password"
-	ErrCancelled                = "cancelled"
-	ErrInsufficientTempSpace    = "insufficient_temp_space"
-	ErrMissingTools             = "missing_tools"
-	ErrInvalidPlan              = "invalid_plan"
-	ErrPathValidation           = "path_validation_failed"
-	ErrRestoreTargetNotEmpty    = "restore_target_not_empty"
-	ErrRestoreVerification      = "restore_verification_failed"
+	ErrServerRestarted         = "server_restarted"
+	ErrAgentUnavailable        = "agent_unavailable"
+	ErrAgentOnline             = "agent_online"
+	ErrAgentRevoked            = "agent_revoked"
+	ErrRepositoryMissing       = "repository_missing"
+	ErrRepositoryLocked        = "repository_locked"
+	ErrPartialSourceRead       = "partial_source_read"
+	ErrWrongRepositoryPassword = "wrong_repository_password"
+	ErrCancelled               = "cancelled"
+	ErrInsufficientTempSpace   = "insufficient_temp_space"
+	ErrMissingTools            = "missing_tools"
+	ErrInvalidPlan             = "invalid_plan"
+	ErrPathValidation          = "path_validation_failed"
+	ErrRestoreTargetNotEmpty   = "restore_target_not_empty"
+	ErrRestoreVerification     = "restore_verification_failed"
+	// ErrRestoreImportFailed 表示恢复的导入步骤本身失败（如权限不足无法建库、
+	// 导入语句报错），与"导入完成但校验不一致"的 ErrRestoreVerification 区分。
+	ErrRestoreImportFailed      = "restore_import_failed"
 	ErrStorageRemoteUnreachable = "storage_remote_unreachable"
 	ErrTimeout                  = "run_timeout"
 	ErrAgentDisconnected        = "agent_disconnected"
@@ -318,12 +321,12 @@ type SystemLog struct {
 // restore occupancy, while the unsafe ones keep it until an operator resolves
 // the restore explicitly.
 const (
-	RestorePhaseQueued       = "queued"
-	RestorePhasePreBackup    = "pre_backup"
-	RestorePhaseRestoring    = "restoring"
-	RestorePhaseRollingBack  = "rolling_back"
-	RestorePhaseCancelling   = "cancelling"
-	RestorePhaseSucceeded    = "succeeded"
+	RestorePhaseQueued      = "queued"
+	RestorePhasePreBackup   = "pre_backup"
+	RestorePhaseRestoring   = "restoring"
+	RestorePhaseRollingBack = "rolling_back"
+	RestorePhaseCancelling  = "cancelling"
+	RestorePhaseSucceeded   = "succeeded"
 	// RestorePhaseFailed 表示执行失败且已确认目标未被修改。
 	RestorePhaseFailed               = "failed"
 	RestorePhasePreBackupFailed      = "pre_backup_failed"

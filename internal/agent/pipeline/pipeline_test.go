@@ -754,3 +754,20 @@ func TestRunRestoreMissingSpecReportsSafePhase(t *testing.T) {
 		t.Fatalf("code=%q resultJSON=%q", pe.Code, string(pe.ResultJSON))
 	}
 }
+
+// 回滚成功时不应把所有失败笼统报成 restore_verification_failed：
+// 例如"权限不足无法建库"属于导入失败，与"导入后校验不一致"排查方向完全不同。
+func TestRestoreFailureCodeDistinguishesImportFromVerification(t *testing.T) {
+	cases := []struct{ phase, category, want string }{
+		{model.RestorePhaseRolledBack, model.ErrRestoreImportFailed, model.ErrRestoreImportFailed},
+		{model.RestorePhaseNewTargetCleaned, model.ErrRestoreImportFailed, model.ErrRestoreImportFailed},
+		{model.RestorePhaseRolledBack, model.ErrRestoreVerification, model.ErrRestoreVerification},
+		{model.RestorePhaseRollbackFailed, model.ErrRestoreImportFailed, model.ErrRollbackFailed},
+		{model.RestorePhaseManualRecoveryNeeded, model.ErrRestoreVerification, model.ErrRollbackFailed},
+	}
+	for _, c := range cases {
+		if got := restoreFailureCode(c.phase, c.category); got != c.want {
+			t.Fatalf("phase=%s category=%s: got %q want %q", c.phase, c.category, got, c.want)
+		}
+	}
+}

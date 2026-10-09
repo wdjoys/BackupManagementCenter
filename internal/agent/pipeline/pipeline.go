@@ -55,6 +55,8 @@ type Deps struct {
 	ScratchMinFreeBytes int64
 	MaxConcurrency      int
 	ResticCacheDir      string
+	// ResticCheckReadDataSubset 透传给 restic check 的 --read-data-subset。
+	ResticCheckReadDataSubset string
 }
 
 // Result mirrors proto RunResult payload fields produced by successful ops.
@@ -1357,10 +1359,11 @@ func newResticOpts(d Deps, repoPath, tempDir string, secrets backup.SecretBundle
 		return restic.Options{}, &PipelineError{Code: "internal", Message: "write restic password", Cause: err}
 	}
 	opts := restic.Options{
-		Exe:          toolExe(d, "restic"),
-		RepoPath:     restic.NormalizeRepoPath(repoPath),
-		PasswordFile: pwPath,
-		CacheDir:     d.ResticCacheDir,
+		Exe:            toolExe(d, "restic"),
+		RepoPath:       restic.NormalizeRepoPath(repoPath),
+		PasswordFile:   pwPath,
+		ReadDataSubset: d.ResticCheckReadDataSubset,
+		CacheDir:       d.ResticCacheDir,
 		Logf: func(line string) {
 			if d.Logf != nil {
 				d.Logf("error", "restic stderr: %s", line)

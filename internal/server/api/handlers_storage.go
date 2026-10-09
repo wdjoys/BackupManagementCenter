@@ -161,6 +161,17 @@ func (s *Server) handleBindRepository(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /repositories
+// POST /repositories/{id}/check — 手工触发一次仓库完整性校验（restic check）。
+// 返回 202 与 run 视图；校验结果通过 run 终态与日志呈现。
+func (s *Server) handleRepositoryCheck(w http.ResponseWriter, r *http.Request) {
+	run, err := s.Jobs.StartRepositoryCheck(r.Context(), actorID(r), pathParam(r, "id"))
+	if err != nil {
+		s.jobsErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"run": runView(run)})
+}
+
 func (s *Server) handleListRepositories(w http.ResponseWriter, r *http.Request) {
 	repos, err := s.ST.ListRepositories(r.Context())
 	if err != nil {

@@ -844,6 +844,30 @@ func (o *Orchestrator) ValidatePlanSource(ctx context.Context, kind string, src 
 // real rclone failure surfaces before this wait expires.
 const verifyRemoteWait = 120 * time.Second
 
+// StartRepositoryCheck 手工触发一次仓库完整性校验（restic check）。
+// 此前只有调度器的周检会跑 check，运维无法主动校验某个仓库；而"备份成功会写
+// last_check_at"曾使周检在活跃仓库上永不触发，手工入口同时也是排查手段。
+func (o *Orchestrator) StartRepositoryCheck(ctx context.Context, actorID, repositoryID string) (*model.Run, error) {
+	repo, err := o.Store.GetRepository(ctx, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	if repo.RepositoryPath == "" {
+		return nil, fmt.Errorf("%w: repository has empty repository path", ErrPathInvalid)
+	}
+	if !o.Disp.IsConnected(repo.AgentID) {
+		return nil, ErrAgentOffline
+	}
+	run, err := o.SystemRun(ctx, repo.AgentID, repositoryID, model.OpCheck,
+		model.CheckTask{Repository: model.RepoAccess{RepositoryPath: repo.RepositoryPath}}, 30*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	o.Audit(ctx, "admin", actorID, "repository.check.requested", "repository", repositoryID,
+		map[string]string{"run_id": run.ID})
+	return run, nil
+}
+
 // ValidateStorageRemote runs a verify remote check on the given agent.
 func (o *Orchestrator) ValidateStorageRemote(ctx context.Context, confContent, remoteName, agentID string) (*VerifyResult, error) {
 	params := model.VerifyRemoteTask{ConfigProvided: true, RemoteName: remoteName}

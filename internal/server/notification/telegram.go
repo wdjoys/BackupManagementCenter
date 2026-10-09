@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -182,5 +182,7 @@ func renderFailure(run model.Run, plan model.Plan, publicURL string) string {
 // LogFailure records a best-effort notification error without the token;
 // shared by all call sites to keep log formatting identical.
 func LogFailure(runID string, err error) {
-	log.Printf("[ERROR] plan failure notification run=%s: %v", runID, err)
+	// 用 slog.Error：此前走标准 log 的 Printf，服务端把它按 INFO 级别输出
+	// （日志行显示 level=INFO，文本里却写着 [ERROR]），运维按级别过滤时看不到。
+	slog.Error("plan failure notification failed", "run_id", runID, "error", err)
 }

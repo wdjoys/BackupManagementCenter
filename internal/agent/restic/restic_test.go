@@ -674,3 +674,27 @@ func TestForgetLogsRetentionSummary(t *testing.T) {
 		t.Fatalf("retention summary must be logged, got %q", joined)
 	}
 }
+
+// check 必须能读到数据：只做结构校验会漏掉静默位腐（pack 内容损坏但索引完好），
+// 实测这类仓库 restic check 报健康而 --read-data/恢复均失败。
+func TestCheckPassesReadDataSubset(t *testing.T) {
+	var cmd backup.Cmd
+	if err := Check(context.Background(), checkExecutor{stdout: `{}`, cmd: &cmd},
+		Options{Exe: "restic", RepoPath: "rclone:remote:/repo", ReadDataSubset: "1/10"}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(cmd.Args, "--read-data-subset=1/10") {
+		t.Fatalf("check must pass --read-data-subset, args = %q", cmd.Args)
+	}
+	// 关闭时不得带该参数（保持只做结构校验的旧行为）。
+	var cmd2 backup.Cmd
+	if err := Check(context.Background(), checkExecutor{stdout: `{}`, cmd: &cmd2},
+		Options{Exe: "restic", RepoPath: "rclone:remote:/repo", ReadDataSubset: "0"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range cmd2.Args {
+		if strings.HasPrefix(a, "--read-data-subset") {
+			t.Fatalf("disabled subset must not be passed, args = %q", cmd2.Args)
+		}
+	}
+}

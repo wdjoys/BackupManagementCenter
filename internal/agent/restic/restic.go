@@ -24,6 +24,9 @@ type Options struct {
 	RcloneConfFile string       // 0600 rclone.conf path; required for rclone: repos
 	WorkingDir     string       // optional working directory for relative backup paths
 	Logf           func(string) // optional stderr sink; called with a readable line, already level-tagged by the caller
+	// ReadDataSubset 是 check 的 --read-data-subset（空表示只做结构校验）。
+	// 只做结构校验时仓库内的静默位腐不会被发现。
+	ReadDataSubset string
 }
 
 // Snapshot represents a restic snapshot from --json output.
@@ -597,6 +600,11 @@ func Check(ctx context.Context, exec backup.Executor, opts Options) error {
 		return fmt.Errorf("restic exe not set")
 	}
 	args := []string{"check", "--json"}
+	if opts.ReadDataSubset != "" && opts.ReadDataSubset != "0" {
+		// 只做结构校验会漏掉静默位腐（pack 内容损坏但索引完好）：实测这类仓库
+		// restic check 报健康，而 --read-data / 恢复均失败。
+		args = append(args, "--read-data-subset="+opts.ReadDataSubset)
+	}
 	if opts.RepoPath != "" {
 		args = append(args, "--repo", opts.RepoPath)
 	}

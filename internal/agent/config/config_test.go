@@ -199,3 +199,18 @@ func TestParseServerEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// BMC_RESTIC_CHECK_READ_DATA_SUBSET 的取值必须校验：非法值应让启动失败（而不是
+// 静默退回只做结构校验，那会漏掉静默位腐）。
+func TestValidateReadDataSubset(t *testing.T) {
+	for _, ok := range []string{"", "0", "1/10", "3/7", "10%", "2.5%", "512m", "1G", "100k"} {
+		if err := validateReadDataSubset(ok); err != nil {
+			t.Fatalf("%q must be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"1/0", "abc", "10", "1/10/2", "-1/10", "10 %", "1.5/2", "5x"} {
+		if err := validateReadDataSubset(bad); err == nil {
+			t.Fatalf("%q must be rejected", bad)
+		}
+	}
+}

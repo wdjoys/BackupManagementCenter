@@ -1354,6 +1354,11 @@ func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, erro
 // 成功插入的行回填 ID；被幂等忽略的行 ID 置 0。
 // 重复投递（Agent 重连重放、Server 重试）不会失败，也不会产生重复行。
 func (s *sqliteStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) error {
+	// 与其它写方法一致地串行化：这是唯一一处用事务写库却不取 s.mu 的路径，
+	// 与受锁的写方法并发时会互相撞 SQLITE_BUSY（实测：Agent 重建后大量写入期间，
+	// 快照树缓存的写入以 500 "database is locked (5)" 失败）。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(logs) == 0 {
 		return nil
 	}

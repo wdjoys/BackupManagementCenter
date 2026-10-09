@@ -2361,3 +2361,40 @@ func TestTransitionRunNotifiesObserverOnTerminalOnly(t *testing.T) {
 type observerFunc func(model.Run)
 
 func (f observerFunc) ObserveRunTerminal(run model.Run) { f(run) }
+
+// 写方法必须在 store 内串行化（AGENTS.md 约定）。AppendRunLogs 曾是唯一用事务写库
+// 却不取 s.mu 的路径：与受锁写方法并发时互相撞 SQLITE_BUSY，实测表现为快照树缓存
+// 写入以 500 "database is locked (5)" 失败。此处确定性验证它必须等待写锁。
+func TestAppendRunLogsWaitsForStoreWriteLock(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	if err := ts.Store.CreateRun(ctx, &model.Run{
+		ID: "run-logs", AgentID: "a1", Operation: model.OpBackup, Status: model.RunQueued, QueuedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	inner := ts.Store.(*sqliteStore)
+
+	inner.mu.Lock() // 模拟另一个写方法正在持锁
+	done := make(chan error, 1)
+	go func() {
+		done <- ts.Store.AppendRunLogs(ctx, []model.RunLog{{RunID: "run-logs", Source: model.RunLogSourceAgent, SourceSeq: 1, Level: "info", Message: "hello", Timestamp: now}})
+	}()
+	select {
+	case err := <-done:
+		inner.mu.Unlock()
+		t.Fatalf("AppendRunLogs returned (%v) while the write lock was held — writes are not serialized", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	inner.mu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("AppendRunLogs after unlock: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("AppendRunLogs did not complete after the write lock was released")
+	}
+}

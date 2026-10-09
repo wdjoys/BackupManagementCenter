@@ -455,11 +455,17 @@ func TestSnapshotsUnrelatedFailureStaysGeneric(t *testing.T) {
 	}
 }
 
-// 保留策略必须按 host 分组：每条快照都带本次运行唯一的 run:<uuid> 标签，
-// staging 路径也每次不同，因此 --group-by host,tags（以及 restic 默认的
-// host,paths）会让每条快照自成一"组"，--keep-last/--keep-daily 对每组都成立，
-// forget 静默地一个也不删。这是线上实测到的"保留策略空转"缺陷。
-func TestForgetGroupsByHostOnly(t *testing.T) {
+// 保留策略必须让同一计划的快照落在**同一个**组：每条快照都带本次运行唯一的
+// run:<uuid> 标签、staging 路径也每次不同，所以 --group-by 带 tags 或 paths
+// （含 restic 默认的 host,paths）会让每条快照自成一"组"，--keep-last/--keep-daily
+// 对每组都成立，forget 静默地一个也不删 —— 这是线上实测到的"保留策略空转"缺陷。
+//
+// 曾经改用 host：但 restic 的 host 取 os.Hostname()，容器里就是容器 ID，agent
+// 容器一重建 host 就变，同一计划的快照被拆进多个 host 组，keep_last 每组单独计数
+// → 依然一个也不删（实测某计划 7 个快照分布在 4 个 host 组，retention run 报
+// succeeded 却删除 0 个）。仓库与 agent 一对一绑定，按 host 分组本无意义，故直接
+// 关闭分组（”）。
+func TestForgetDisablesGrouping(t *testing.T) {
 	var cmd backup.Cmd
 	err := ForgetOnly(context.Background(), checkExecutor{cmd: &cmd}, Options{
 		Exe: "restic", RepoPath: "rclone:remote:/repo", CacheDir: "/cache/restic",
@@ -467,7 +473,7 @@ func TestForgetGroupsByHostOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForgetOnly: %v", err)
 	}
-	want := []string{"forget", "--group-by", "host", "--repo", "rclone:remote:/repo",
+	want := []string{"forget", "--group-by", "", "--repo", "rclone:remote:/repo",
 		"--cache-dir", "/cache/restic", "--tag", "plan:plan-1", "--tag", "kind:mysql",
 		"--keep-last", "1", "--keep-daily", "7", "--json"}
 	if len(cmd.Args) != len(want) {
@@ -478,11 +484,11 @@ func TestForgetGroupsByHostOnly(t *testing.T) {
 			t.Fatalf("args = %q, want %q", cmd.Args, want)
 		}
 	}
-	// 分组里绝不能出现 tags 或 paths：两者都含每次运行唯一的值。
+	// 分组必须为空：tags 与 paths 都含每次运行唯一的值，host 则随容器重建变化。
 	for i := 0; i+1 < len(cmd.Args); i++ {
 		if cmd.Args[i] == "--group-by" {
-			if g := cmd.Args[i+1]; g != "host" {
-				t.Fatalf("--group-by must be host only, got %q", g)
+			if g := cmd.Args[i+1]; g != "" {
+				t.Fatalf("--group-by must be empty (no grouping), got %q", g)
 			}
 		}
 	}
@@ -646,5 +652,24 @@ func TestLsEndsOptionsBeforeSnapshotPath(t *testing.T) {
 	}
 	if cmd.Args[0] != "ls" {
 		t.Fatalf("first arg must be the ls subcommand, got %q", cmd.Args)
+	}
+}
+
+// 保留策略的结果必须记入运行日志：此前 forget 的 stdout 被直接丢弃，实际删了
+// 多少个快照完全不可见 —— 分组错误导致"报 succeeded 却一个也不删"的静默失效
+// 因此长期无人发现。
+func TestForgetLogsRetentionSummary(t *testing.T) {
+	var cmd backup.Cmd
+	var logs []string
+	err := ForgetOnly(context.Background(),
+		checkExecutor{stdout: `{"groups":[{"keep":["a","b"],"remove":["c","d","e"]}]}`, cmd: &cmd},
+		Options{Exe: "restic", RepoPath: "rclone:remote:/repo", Logf: func(l string) { logs = append(logs, l) }},
+		model.Retention{KeepLast: 2}, []string{"plan:p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "删除 3 个快照") || !strings.Contains(joined, "保留 2 个") {
+		t.Fatalf("retention summary must be logged, got %q", joined)
 	}
 }

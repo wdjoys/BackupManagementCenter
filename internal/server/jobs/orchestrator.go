@@ -1720,6 +1720,19 @@ func (o *Orchestrator) DryRunRestore(ctx context.Context, repoID, snapshotID str
 	if err != nil {
 		return nil, term, err
 	}
+	if term == nil {
+		return nil, nil, errors.New("dry run returned no terminal state")
+	}
+	// 失败/取消的运行绝不能当成"无变化的成功预演"返回：agent 会把阶段载荷写进
+	// result_json，直接反序列化成 DryRunStats 会得到全 0 统计，调用方（以及 UI 的
+	// 试运行面板）会误以为目标没有变化。实测：非空目标 + overwrite_mode=never 的
+	// dry-run 已被 agent 正确拒绝（restore_target_not_empty），API 却返回 200 全 0。
+	if term.Status != model.RunSucceeded {
+		if term.ErrorCode != "" {
+			return nil, term, fmt.Errorf("%s: %s", term.ErrorCode, term.ErrorMessage)
+		}
+		return nil, term, errors.New("dry run failed")
+	}
 	if resultJSON == nil {
 		return nil, term, nil
 	}

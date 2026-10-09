@@ -421,12 +421,17 @@ func forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 	if opts.Exe == "" {
 		return fmt.Errorf("restic exe not set")
 	}
-	// --group-by 必须按 host，不能带 tags，也不能用 restic 的默认 host,paths：
-	// 每条快照都带本次运行唯一的 run:<uuid> 标签，staging 路径也每次不同，
-	// 于是每条快照自成一"组"，--keep-last/--keep-daily 对每组都成立，
-	// 保留策略会静默地一个也不删。标签过滤已由 --tag 限定在单个计划范围内，
-	// 按 host 分组即可让同一计划的快照进入同一组。
-	args := []string{"forget", "--group-by", "host"}
+	// --group-by 必须让同一计划的快照进入**同一个**组：每条快照都带本次运行唯一的
+	// run:<uuid> 标签、staging 路径也每次不同，所以不能用 restic 的默认 host,paths，
+	// 也不能带 tags，否则每条快照自成一"组"、--keep-last 对每组都成立，保留策略会
+	// 静默地一个也不删。
+	//
+	// 此前用 host：restic 的 host 取 os.Hostname()，容器里就是容器 ID，agent 容器
+	// 一重建 host 就变，同一计划的快照被拆进多个 host 组，keep_last 每组单独计数 →
+	// 仍然一个也不删（实测某计划 7 个快照分布在 4 个 host 组，retention run 报
+	// succeeded 却删除 0 个，快照无界累积）。仓库与 agent 是一对一绑定，按 host
+	// 分组本无意义，因此直接关闭分组（''），让 --keep-* 作用于该计划的全部快照。
+	args := []string{"forget", "--group-by", ""}
 	if prune {
 		args = append(args, "--prune")
 	}
@@ -447,7 +452,37 @@ func forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 		args = append(args, "--keep-monthly", strconv.Itoa(retention.KeepMonthly))
 	}
 	args = append(args, "--json")
-	return runDelete(ctx, exec, opts, args)
+	stdout, err := runDeleteCapturing(ctx, exec, opts, args)
+	if err != nil {
+		return err
+	}
+	logRetentionResult(opts, tags, stdout)
+	return nil
+}
+
+// logRetentionResult 把 restic forget 的结果记成一行日志。此前 forget 的 stdout
+// 被直接丢弃，保留策略实际删了多少个快照在运行日志里完全不可见 —— 分组错误导致
+// "报 succeeded 却一个也不删"的静默失效因此长期无人发现。
+func logRetentionResult(opts Options, tags []string, stdout string) {
+	if opts.Logf == nil {
+		return
+	}
+	var doc struct {
+		Groups []struct {
+			Remove []string `json:"remove"`
+			Keep   []string `json:"keep"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc); err != nil || len(doc.Groups) == 0 {
+		return
+	}
+	removed, kept := 0, 0
+	for _, g := range doc.Groups {
+		removed += len(g.Remove)
+		kept += len(g.Keep)
+	}
+	opts.Logf(fmt.Sprintf("保留策略：删除 %d 个快照，保留 %d 个（分组数 %d，标签 %s）",
+		removed, kept, len(doc.Groups), strings.Join(tags, ",")))
 }
 
 // DeleteSnapshots 删除指定 snapshot ID 的快照，并可选 prune 回收空间。
@@ -482,54 +517,62 @@ func resticRepositoryArgs(opts Options) []string {
 }
 
 func runDelete(ctx context.Context, exec backup.Executor, opts Options, args []string) error {
-	if err := runResticDeleteCommand(ctx, exec, opts, args); err == nil {
-		return nil
+	_, err := runDeleteCapturing(ctx, exec, opts, args)
+	return err
+}
+
+// runDeleteCapturing 与 runDelete 相同，但额外返回 stdout（forget --json 的结果）。
+func runDeleteCapturing(ctx context.Context, exec backup.Executor, opts Options, args []string) (string, error) {
+	if stdout, err := runResticDeleteCommand(ctx, exec, opts, args); err == nil {
+		return stdout, nil
 	} else {
 		var resticErr *ResticError
 		if !errors.As(err, &resticErr) || resticErr.Code != model.ErrRepositoryLocked {
-			return err
+			return "", err
 		}
 		if opts.Logf != nil {
 			opts.Logf("检测到仓库锁，开始执行 stale unlock")
 		}
 		unlockArgs := append([]string{"unlock"}, resticRepositoryArgs(opts)...)
 		unlockArgs = append(unlockArgs, "--json")
-		if unlockErr := runResticDeleteCommand(ctx, exec, opts, unlockArgs); unlockErr != nil {
+		if _, unlockErr := runResticDeleteCommand(ctx, exec, opts, unlockArgs); unlockErr != nil {
 			if opts.Logf != nil {
 				opts.Logf(fmt.Sprintf("stale unlock 失败：%v", unlockErr))
 			}
-			return unlockErr
+			return "", unlockErr
 		}
 		if opts.Logf != nil {
 			opts.Logf("已清理陈旧锁，重新删除快照")
 		}
 		retryArgs := addRetryLock(args)
-		if retryErr := runResticDeleteCommand(ctx, exec, opts, retryArgs); retryErr != nil {
+		if _, retryErr := runResticDeleteCommand(ctx, exec, opts, retryArgs); retryErr != nil {
 			if opts.Logf != nil {
 				opts.Logf(fmt.Sprintf("重试删除失败：%v", retryErr))
 			}
-			return retryErr
+			return "", retryErr
 		}
-		return nil
+		return "", nil
 	}
 }
 
-func runResticDeleteCommand(ctx context.Context, exec backup.Executor, opts Options, args []string) error {
+func runResticDeleteCommand(ctx context.Context, exec backup.Executor, opts Options, args []string) (string, error) {
 	env := buildEnv(opts)
 	if opts.CacheDir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
-	var stderrTail strings.Builder
-	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) {
+	var stderrTail, stdoutBuf strings.Builder
+	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(line string) {
+		stdoutBuf.WriteString(line + "\n")
+	}, func(line string) {
 		stderrTail.WriteString(line + "\n")
 		if opts.Logf != nil {
 			opts.Logf(line)
 		}
 	})
 	if err != nil || exitCode != 0 {
-		return enriched(mapResticError(exitCode, err), stderrTail.String())
+		return "", enriched(mapResticError(exitCode, err), stderrTail.String())
 	}
-	return nil
+	return stdoutBuf.String(), nil
 }
 
 func addRetryLock(args []string) []string {

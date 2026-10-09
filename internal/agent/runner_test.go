@@ -8,20 +8,19 @@ import (
 	"testing"
 	"time"
 
-
-	"google.golang.org/grpc/metadata"
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/agent/backup"
 	"backupmanagementcenter/internal/agent/pipeline"
+	"google.golang.org/grpc/metadata"
 )
 
 // fakePipelineExecute implements the executeFn signature for testing.
 type fakePipelineExecute struct {
-	mu         sync.Mutex
-	calls      int
-	blockWait  chan struct{}
-	errorRet   error
-	resultRet  *pipeline.Result
+	mu        sync.Mutex
+	calls     int
+	blockWait chan struct{}
+	errorRet  error
+	resultRet *pipeline.Result
 }
 
 func (f *fakePipelineExecute) Execute(ctx context.Context, d pipeline.Deps, tempDir string, op bmcv1.ExecuteCommand_Operation, params []byte, secrets backup.SecretBundle) (*pipeline.Result, error) {
@@ -108,7 +107,7 @@ func TestRunner_DuplicateCommandIdIgnored(t *testing.T) {
 	}
 
 	fake := &fakePipelineExecute{
-		blockWait:   make(chan struct{}),
+		blockWait: make(chan struct{}),
 		resultRet: &pipeline.Result{
 			SnapshotIDs: []string{"snap-123"},
 		},
@@ -159,7 +158,7 @@ func TestRunner_CancelCommand(t *testing.T) {
 	}
 
 	fake := &fakePipelineExecute{
-		blockWait:   make(chan struct{}),
+		blockWait: make(chan struct{}),
 		resultRet: &pipeline.Result{
 			SnapshotIDs: []string{"snap-123"},
 		},
@@ -364,6 +363,7 @@ func TestLRUCache_Update(t *testing.T) {
 		t.Fatal("expected 'b' and 'c' to still exist")
 	}
 }
+
 // --- Fake stream ---
 
 type fakeStream struct {
@@ -373,7 +373,7 @@ type fakeStream struct {
 
 func (s *fakeStream) CloseSend() error { return nil }
 
-func (s *fakeStream) Context() context.Context { return context.Background() }
+func (s *fakeStream) Context() context.Context     { return context.Background() }
 func (s *fakeStream) Header() (metadata.MD, error) { return metadata.MD{}, nil }
 
 func (s *fakeStream) Trailer() metadata.MD { return metadata.MD{} }
@@ -403,3 +403,70 @@ func newFakeStream() (server, client *fakeStream) {
 }
 
 var _ = runtime.GOOS
+
+// BMC_AGENT_MAX_CONCURRENCY 的全局槽位此前**没有任何测试覆盖**。上限语义：同 Agent 上
+// 同时执行的运行数不超过 MaxConcurrency，多余的等待（而不是失败或无限并行）。
+// 这里用空 repository 参数避免仓库锁参与（此处只测全局槽位）。
+func TestRunner_MaxConcurrencyCapsParallelExecutions(t *testing.T) {
+	const cap = 2
+	ident := &Identity{
+		AgentID:   "test-agent",
+		SecretHex: "aabbccddee0011223344556677889900aabbccddee0011223344556677889900",
+	}
+	deps := pipeline.Deps{
+		Tools:          make(map[string]backup.ToolInfo),
+		Exec:           &OSExecutor{},
+		MaxConcurrency: cap,
+	}
+	runner := NewRunner(deps, t.TempDir(), ident)
+
+	total := cap * 3
+	finished := make(chan struct{}, total)
+	var mu sync.Mutex
+	cur, peak := 0, 0
+	runner.executeFn = func(context.Context, pipeline.Deps, string, bmcv1.ExecuteCommand_Operation, []byte, backup.SecretBundle) (*pipeline.Result, error) {
+		mu.Lock()
+		cur++
+		if cur > peak {
+			peak = cur
+		}
+		mu.Unlock()
+		time.Sleep(40 * time.Millisecond)
+		mu.Lock()
+		cur--
+		mu.Unlock()
+		finished <- struct{}{}
+		return &pipeline.Result{}, nil
+	}
+
+	stream := &fakeStream{}
+	ctx := context.Background()
+	// Execute 立即返回、真正的执行在内部 goroutine 中，因此用完成信号同步。
+	for i := 0; i < total; i++ {
+		runner.Execute(ctx, stream, &bmcv1.ExecuteCommand{
+			CommandId:  fmt.Sprintf("cmd-%d", i),
+			RunId:      fmt.Sprintf("run-%d", i),
+			Operation:  bmcv1.ExecuteCommand_BACKUP,
+			ParamsJson: []byte("{}"),
+		})
+	}
+	deadline := time.After(10 * time.Second)
+	done := 0
+	for done < total {
+		select {
+		case <-finished:
+			done++
+		case <-deadline:
+			t.Fatalf("only %d/%d executions completed", done, total)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if peak > cap {
+		t.Fatalf("concurrent executions peaked at %d, must not exceed MaxConcurrency=%d", peak, cap)
+	}
+	if peak != cap {
+		t.Fatalf("expected the cap to be reached (%d), peaked at %d — parallel capacity may be broken", cap, peak)
+	}
+}

@@ -599,7 +599,9 @@ func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID, sna
 	if snapshotPath == "" {
 		snapshotPath = "/"
 	}
-	args := []string{"ls", snapshotID, snapshotPath}
+	// 选项必须全部排在 -- 之前：快照内路径由调用方提供（API 的 path 查询参数），
+	// 以 '-' 开头的路径会被 restic 当作选项解析（实测 unknown shorthand flag 'd'）。
+	args := []string{"ls"}
 	if opts.RepoPath != "" {
 		args = append(args, "--repo", opts.RepoPath)
 	}
@@ -609,7 +611,7 @@ func Ls(ctx context.Context, exec backup.Executor, opts Options, snapshotID, sna
 	if opts.CacheDir != "" {
 		args = append(args, "--cache-dir", opts.CacheDir)
 	}
-	args = append(args, "--json")
+	args = append(args, "--json", "--", snapshotID, snapshotPath)
 
 	env := buildEnv(opts)
 	var entries []SnapshotEntry

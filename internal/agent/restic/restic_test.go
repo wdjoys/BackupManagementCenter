@@ -134,7 +134,9 @@ func TestLsFiltersByRequestedDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ls: %v", err)
 	}
-	wantArgs := []string{"ls", "snapshot-id", "/backup", "--repo", "rclone:remote:/repo", "--cache-dir", cacheDir, "--json"}
+	// 选项全部在 -- 之前、位置参数在 -- 之后：快照内路径由调用方提供，以 '-' 开头
+	// 时若排在选项位置会被 restic 当作选项（实测 unknown shorthand flag 'd'）。
+	wantArgs := []string{"ls", "--repo", "rclone:remote:/repo", "--cache-dir", cacheDir, "--json", "--", "snapshot-id", "/backup"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("args = %q, want %q", cmd.Args, wantArgs)
 	}
@@ -619,4 +621,30 @@ func TestSiblingCallSitesSurfaceStderr(t *testing.T) {
 			t.Fatal("cat-config stderr must be logged")
 		}
 	})
+}
+
+// 快照内路径由 API 的 path 查询参数提供（未经绝对路径校验），以 '-' 开头时必须是
+// 位置参数而不是选项：实测 `restic ls snap -dash.txt` 报 unknown shorthand flag 'd'。
+func TestLsEndsOptionsBeforeSnapshotPath(t *testing.T) {
+	var cmd backup.Cmd
+	_, err := Ls(context.Background(), checkExecutor{stdout: "", cmd: &cmd},
+		Options{Exe: "restic", RepoPath: "repo"}, "snap-1", "-dash.txt")
+	if err != nil {
+		t.Fatalf("Ls: %v", err)
+	}
+	dash := -1
+	for i, a := range cmd.Args {
+		if a == "--" {
+			dash = i
+		}
+	}
+	if dash < 0 {
+		t.Fatalf("args must contain -- separator, got %q", cmd.Args)
+	}
+	if dash != len(cmd.Args)-3 || cmd.Args[len(cmd.Args)-2] != "snap-1" || cmd.Args[len(cmd.Args)-1] != "-dash.txt" {
+		t.Fatalf("-- must precede the positional snapshot id and path, got %q", cmd.Args)
+	}
+	if cmd.Args[0] != "ls" {
+		t.Fatalf("first arg must be the ls subcommand, got %q", cmd.Args)
+	}
 }

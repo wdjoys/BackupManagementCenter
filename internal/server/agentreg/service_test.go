@@ -38,6 +38,10 @@ type fakeStore struct {
 }
 
 // AppendRunLogs 复刻真实 store 的 ID 回填语义：插入的行拿到递增 ID。
+func (f *fakeStore) PruneHistory(context.Context, time.Time) (store.HistoryPruneResult, error) {
+	return store.HistoryPruneResult{}, nil
+}
+
 func (f *fakeStore) AppendRunLogs(_ context.Context, logs []model.RunLog) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

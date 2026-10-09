@@ -658,6 +658,10 @@ func (s *fakeStore) DetachRepository(ctx context.Context, id string) error {
 	r.DetachedAt = &now
 	return nil
 }
+func (s *fakeStore) PruneHistory(context.Context, time.Time) (store.HistoryPruneResult, error) {
+	return store.HistoryPruneResult{}, nil
+}
+
 func (s *fakeStore) MarkRepositoryChecked(ctx context.Context, id string, at time.Time) error {
 	return nil
 }

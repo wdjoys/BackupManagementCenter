@@ -36,6 +36,9 @@ type Server struct {
 	// restore overwrites data and must not run until the operator has verified
 	// pre-restore backup and rollback against the real target.
 	DatabaseRestoreKinds []string
+	// HistoryRetentionDays 控制运行历史（runs/日志/审计事件）的保留天数，
+	// 0（默认）表示永久保留 —— 升级不删除既有数据；正数时由调度器每日清理一次。
+	HistoryRetentionDays int
 }
 
 // knownDatabaseRestoreKinds 是允许通过 BMC_DATABASE_RESTORE_KINDS 启用的 kind。
@@ -80,6 +83,10 @@ func LoadServer() (Server, error) {
 		}
 		c.DatabaseRestoreKinds = append(c.DatabaseRestoreKinds, kind)
 	}
+	c.HistoryRetentionDays = envInt("BMC_HISTORY_RETENTION_DAYS", 0)
+	if c.HistoryRetentionDays < 0 {
+		return c, fmt.Errorf("config: BMC_HISTORY_RETENTION_DAYS must be >= 0 (0 keeps history forever)")
+	}
 	return c, nil
 }
 
@@ -103,6 +110,16 @@ func env(key, def string) string {
 
 func EnvInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// envInt 读取整型环境变量，缺省或非法时返回默认值。
+func envInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}

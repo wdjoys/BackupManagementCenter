@@ -894,6 +894,52 @@ func (s *sqliteStore) UpdateRepositoryStatus(ctx context.Context, id, status str
 	return nil
 }
 
+// PruneHistory 见 store.Store 的说明。删除顺序：先删已终结的恢复请求（它们以
+// run_id 引用 runs 且无级联），再删终态 runs（logs/secrets 级联、snapshot_deletions
+// 置 NULL），最后删审计事件。
+// ClearRunProgress 把 run 的 progress_json 复位为 '{}'。系统运行（快照列表/树）
+// 用它把结果传给调用方，调用方解析并写入缓存表后这份 JSON 再无用途 —— 实测
+// 974 条 snapshots 运行贡献 18.58MB（占全库 54%），且历史默认永久保留。
+func (s *sqliteStore) ClearRunProgress(ctx context.Context, runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.ExecContext(ctx, "UPDATE runs SET progress_json = '{}' WHERE id = ?", runID); err != nil {
+		return fmt.Errorf("clear run progress: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) PruneHistory(ctx context.Context, cutoff time.Time) (HistoryPruneResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out HistoryPruneResult
+	at := cutoff.UTC().Format(time.RFC3339)
+
+	safe := restoreSafePhaseArgs()
+	resReq, err := s.db.ExecContext(ctx,
+		"DELETE FROM restore_requests WHERE created_at < ? AND phase IN ("+restorePlaceholders(len(safe))+")",
+		append([]any{at}, safe...)...)
+	if err != nil {
+		return out, fmt.Errorf("prune restore requests: %w", err)
+	}
+	out.RestoreRequests, _ = resReq.RowsAffected()
+
+	resRuns, err := s.db.ExecContext(ctx,
+		"DELETE FROM runs WHERE COALESCE(finished_at, queued_at) < ? AND status IN (?, ?, ?)",
+		at, model.RunSucceeded, model.RunFailed, model.RunCancelled)
+	if err != nil {
+		return out, fmt.Errorf("prune runs: %w", err)
+	}
+	out.Runs, _ = resRuns.RowsAffected()
+
+	resAudit, err := s.db.ExecContext(ctx, "DELETE FROM audit_events WHERE occurred_at < ?", at)
+	if err != nil {
+		return out, fmt.Errorf("prune audit events: %w", err)
+	}
+	out.AuditEvents, _ = resAudit.RowsAffected()
+	return out, nil
+}
+
 func (s *sqliteStore) MarkRepositoryChecked(ctx context.Context, id string, at time.Time) error {
 	_, err := s.db.ExecContext(ctx,
 		"UPDATE repositories SET last_check_at = ?, updated_at = ? WHERE id = ?",

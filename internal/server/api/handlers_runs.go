@@ -73,6 +73,11 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	// 空结果统一序列化为 []（ListRunLogs 无行时返回 nil slice，此前会输出 null，
+	// 与 /runs、/logs/server 等接口的 [] 不一致）。
+	if logs == nil {
+		logs = []model.RunLog{}
+	}
 	writeJSON(w, http.StatusOK, logs)
 }
 

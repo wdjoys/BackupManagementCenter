@@ -85,6 +85,10 @@ type Store interface {
 	DetachRepository(ctx context.Context, id string) error
 	UpdateRepositoryStatus(ctx context.Context, id, status string) error
 	MarkRepositoryChecked(ctx context.Context, id string, at time.Time) error
+	// PruneHistory 删除早于 cutoff 的运行历史：已终结的恢复请求、终态 runs
+	// （其日志/密钥随 ON DELETE CASCADE 删除）与审计事件。返回删除行数。
+	// 未终结的恢复请求与未终结的 runs 一律保留。
+	PruneHistory(ctx context.Context, cutoff time.Time) (HistoryPruneResult, error)
 
 	// Plans
 	CreatePlan(ctx context.Context, p *model.Plan) error
@@ -311,4 +315,11 @@ type FinishRestoreRunInput struct {
 	// AllowUnsafeTerminal 允许在没有可信结果时以不安全 phase 终结（人工解除）。
 	AllowUnsafeTerminal bool
 	FinishedAt          time.Time
+}
+
+// HistoryPruneResult 是 PruneHistory 的删除统计。
+type HistoryPruneResult struct {
+	RestoreRequests int64
+	Runs            int64
+	AuditEvents     int64
 }

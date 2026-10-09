@@ -218,8 +218,12 @@ func (f *fakeStore) ListRepositories(_ context.Context) ([]model.Repository, err
 	copy(out, f.repos)
 	return out, nil
 }
-func (f *fakeStore) DetachRepository(_ context.Context, _ string) error                   { return nil }
-func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, _, _ string) error          { return nil }
+func (f *fakeStore) DetachRepository(_ context.Context, _ string) error          { return nil }
+func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, _, _ string) error { return nil }
+func (f *fakeStore) PruneHistory(context.Context, time.Time) (store.HistoryPruneResult, error) {
+	return store.HistoryPruneResult{}, nil
+}
+
 func (f *fakeStore) MarkRepositoryChecked(_ context.Context, _ string, _ time.Time) error { return nil }
 func (f *fakeStore) CreatePlan(_ context.Context, _ *model.Plan) error                    { return nil }
 func (f *fakeStore) UpdatePlan(_ context.Context, _ *model.Plan) error                    { return nil }
@@ -367,7 +371,7 @@ func TestCronFiresOncePerSlot(t *testing.T) {
 		Timezone: "UTC",
 	})
 	start := newFakeStarter()
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 
 	// Tick 1 @ 10:00:00 → cursor initialized to 10:01:00 (nextAfter), no fire.
 	tickAt(s, mustTime("2026-08-22T10:00:00Z"))
@@ -421,7 +425,7 @@ func TestCronToleratesDuplicateRun(t *testing.T) {
 	start := newFakeStarter()
 	start.returnErr = store.ErrDuplicateRun
 
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z")) // init cursor
 	tickAt(s, mustTime("2026-08-22T10:01:01Z")) // fire (ErrDuplicateRun returned)
@@ -447,7 +451,7 @@ func TestCronTimezone(t *testing.T) {
 		Timezone: "Asia/Shanghai", // UTC+8
 	})
 	start := newFakeStarter()
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 
 	// 09:00 Asia/Shanghai = 01:00 UTC. At this point 08:00 has already
 	// passed, so the next fire is 2026-08-23T00:00:00Z (08:00 Shanghai next day).
@@ -478,7 +482,7 @@ func TestCronDisabledPlanSkipped(t *testing.T) {
 		Timezone: "UTC",
 	})
 	start := newFakeStarter()
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z"))
 	tickAt(s, mustTime("2026-08-22T10:01:01Z"))
@@ -500,7 +504,7 @@ func TestCronSkipsOfflineAgent(t *testing.T) {
 	})
 	fst.agents["agent-1"] = model.Agent{ID: "agent-1", Status: model.AgentOffline}
 	start := newFakeStarter()
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z"))
 	tickAt(s, mustTime("2026-08-22T10:01:01Z"))
@@ -533,7 +537,7 @@ func TestCronInvalidScheduleAndTZDoNotCrash(t *testing.T) {
 		Timezone: "UTC",
 	})
 	start := newFakeStarter()
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z")) // init cursors
 	tickAt(s, mustTime("2026-08-22T10:05:01Z")) // good plan should fire
@@ -569,7 +573,7 @@ func TestStaleQueuedRunFailsWhenAgentOffline(t *testing.T) {
 	}
 	start := newFakeStarter()
 	notifier := &recordingNotifier{}
-	s := New(fst, start, notifier)
+	s := New(fst, start, notifier, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:00:30Z")) // deadline 10:01:00 not yet reached → no fail
 	if len(fst.transitions) != 0 {
@@ -619,7 +623,7 @@ func TestStaleQueuedRunUsesDefaultTimeoutWhenNoPlan(t *testing.T) {
 		ID:     "agent-1",
 		Status: model.AgentOffline,
 	}
-	s := New(fst, newFakeStarter(), nil)
+	s := New(fst, newFakeStarter(), nil, 0)
 
 	// 4 minutes < 300s → no fail.
 	tickAt(s, mustTime("2026-08-22T10:04:00Z"))
@@ -649,7 +653,7 @@ func TestStaleQueuedRunNotFailedWhenAgentOnline(t *testing.T) {
 		ID:     "agent-1",
 		Status: model.AgentOnline,
 	}
-	s := New(fst, newFakeStarter(), nil)
+	s := New(fst, newFakeStarter(), nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:05:00Z"))
 	if len(fst.transitions) != 0 {
@@ -669,7 +673,7 @@ func TestStaleQueuedRunFailsWhenAgentRowMissing(t *testing.T) {
 		Status:   model.RunQueued,
 		QueuedAt: mustTime("2026-08-22T10:00:00Z"),
 	})
-	s := New(fst, newFakeStarter(), nil)
+	s := New(fst, newFakeStarter(), nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:01:00Z"))
 	if len(fst.transitions) != 1 || fst.transitions[0].code != model.ErrAgentUnavailable {
@@ -722,7 +726,7 @@ func TestWeeklyRepoCheckOnlyReadyOnline(t *testing.T) {
 	fst.agents["agent-4"] = model.Agent{ID: "agent-4", Status: model.AgentOnline}
 
 	start := newFakeStarter()
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 	s.now = func() time.Time { return now }
 
 	s.runTick(context.Background(), now)
@@ -747,7 +751,7 @@ func TestWeeklyRepoCheckFiresMultipleRepos(t *testing.T) {
 	fst.agents["agent-b"] = model.Agent{ID: "agent-b", Status: model.AgentOnline}
 
 	start := newFakeStarter()
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 	now := mustTime("2026-08-22T10:00:00Z")
 	s.now = func() time.Time { return now }
 
@@ -771,7 +775,7 @@ func TestWeeklyRepoCheckDoesNotStormAfterFailure(t *testing.T) {
 	})
 
 	start := newFakeStarter()
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 	now := mustTime("2026-08-22T10:00:00Z")
 	s.now = func() time.Time { return now }
 	s.runTick(context.Background(), now)
@@ -786,7 +790,7 @@ func TestWeeklyRepoCheckDoesNotStormAfterFailure(t *testing.T) {
 func TestLoopStartsAndStops(t *testing.T) {
 	fst := newFakeStore(t)
 	start := newFakeStarter()
-	s := New(fst, start, nil)
+	s := New(fst, start, nil, 0)
 
 	called := make(chan time.Time, 1)
 	s.tickFn = func(_ time.Duration) *time.Ticker {
@@ -838,7 +842,7 @@ func TestMaintenanceRetentionNotStarvedByOtherForgetRuns(t *testing.T) {
 				Operation: model.OpForget, Status: model.RunSucceeded,
 				QueuedAt: fin, FinishedAt: &fin, ProgressJSON: tc.params,
 			})
-			s := New(st, starter, nil)
+			s := New(st, starter, nil, 0)
 			s.tickMaintenance(context.Background(), now)
 			got := len(starter.retentionCalls)
 			if tc.wantSkip && got != 0 {

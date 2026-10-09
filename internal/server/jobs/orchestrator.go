@@ -606,6 +606,7 @@ func (o *Orchestrator) SnapshotsWithOptions(ctx context.Context, repoID, agentID
 	if err := json.Unmarshal(resultJSON, &snaps); err != nil {
 		return o.finishListFlight(flight, nil, term, CacheInfo{}, err)
 	}
+	o.clearRunProgress(ctx, run.ID)
 	if hasCache && generationOK {
 		fingerprint := store.SnapshotFingerprint(snaps)
 		if err := cs.SaveSnapshotListCache(ctx, repoID, generation, string(resultJSON), fingerprint, time.Now().UTC()); err != nil {
@@ -625,6 +626,17 @@ func (o *Orchestrator) SnapshotsWithOptions(ctx context.Context, repoID, agentID
 		return o.finishListFlight(flight, o.filterHiddenSnapshots(ctx, repoID, snaps), term, CacheInfo{Hit: false, VerifiedAt: &at}, nil)
 	}
 	return o.finishListFlight(flight, o.filterHiddenSnapshots(ctx, repoID, snaps), term, CacheInfo{Hit: false}, nil)
+}
+
+// clearRunProgress 在系统运行的结果被调用方消费后清空 run 的 progress_json，
+// 避免每次浏览未命中缓存都永久留下一条约 20KB 的记录（实测占全库 54%）。
+// 失败只忽略：清理失败不影响本次结果。
+func (o *Orchestrator) clearRunProgress(ctx context.Context, runID string) {
+	if cr, ok := o.Store.(interface {
+		ClearRunProgress(context.Context, string) error
+	}); ok {
+		_ = cr.ClearRunProgress(ctx, runID)
+	}
 }
 
 // WarmSnapshotCache 预热快照列表及新快照根目录缓存。
@@ -1245,6 +1257,12 @@ func (o *Orchestrator) DeletePlanBackups(ctx context.Context, planID string) err
 	repo, err := o.Store.GetRepository(ctx, plan.RepositoryID)
 	if err != nil {
 		return err
+	}
+	// 快照只存在于 restic 仓库里，只有该仓库所属 Agent 能删；Agent 离线/已消失时
+	// forget 运行会一直排队，此前调用方只能等到 API 等待超时（实测 504 wait_timeout，
+	// 毫无可行动信息）。这里前置拒绝并说明原因。
+	if !o.Disp.IsConnected(repo.AgentID) {
+		return fmt.Errorf("%w: cannot purge plan snapshots while the repository's agent is offline", ErrAgentOffline)
 	}
 	run, err := o.SystemRun(ctx, repo.AgentID, repo.ID, model.OpForget, model.ForgetTask{
 		PlanID:     plan.ID,

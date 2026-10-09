@@ -72,6 +72,7 @@ func processLogLimit(r *http.Request) int {
 	}
 	return limit
 }
+
 var processLogLevels = map[string]struct{}{
 	"debug": {},
 	"info":  {},
@@ -86,8 +87,8 @@ var processLogTypes = map[string]struct{}{
 	"run":          {},
 	"scheduler":    {},
 	"dispatcher":   {},
-	"connection":  {},
-	"command":     {},
+	"connection":   {},
+	"command":      {},
 	"notification": {},
 }
 
@@ -137,7 +138,6 @@ func processLogValues(r *http.Request, name string, allowed map[string]struct{})
 	}
 	return out, true
 }
-
 
 func logCursor(r *http.Request) (int64, bool) {
 	value := strings.TrimSpace(r.URL.Query().Get("before_id"))

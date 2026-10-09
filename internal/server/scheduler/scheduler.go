@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"backupmanagementcenter/internal/model"
@@ -45,9 +46,12 @@ const (
 )
 
 type Scheduler struct {
-	store    store.Store
-	starter  RunStarter
-	notifier notification.FailureNotifier
+	store                store.Store
+	starter              RunStarter
+	notifier             notification.FailureNotifier
+	historyRetentionDays int
+	// lastHistoryPrune 是上次历史剪枝的 unix 秒（0 表示从未跑过），用于每日节流。
+	lastHistoryPrune atomic.Int64
 
 	// test knobs
 	tickFn func(time.Duration) *time.Ticker
@@ -63,20 +67,21 @@ type Scheduler struct {
 }
 
 // New builds a Scheduler. notifier may be nil; a no-op is used then.
-func New(st store.Store, starter RunStarter, notifier notification.FailureNotifier) *Scheduler {
+func New(st store.Store, starter RunStarter, notifier notification.FailureNotifier, historyRetentionDays int) *Scheduler {
 	if notifier == nil {
 		notifier = notification.NopNotifier{}
 	}
 	p := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	return &Scheduler{
-		store:    st,
-		starter:  starter,
-		notifier: notifier,
-		parser:   p,
-		tickFn:   time.NewTicker,
-		now:      func() time.Time { return time.Now().UTC() },
-		closeCh:  make(chan struct{}),
-		cursors:  make(map[string]time.Time),
+		store:                st,
+		starter:              starter,
+		notifier:             notifier,
+		historyRetentionDays: historyRetentionDays,
+		parser:               p,
+		tickFn:               time.NewTicker,
+		now:                  func() time.Time { return time.Now().UTC() },
+		closeCh:              make(chan struct{}),
+		cursors:              make(map[string]time.Time),
 	}
 }
 
@@ -116,6 +121,31 @@ func (s *Scheduler) runTick(ctx context.Context, now time.Time) {
 	s.tickWeeklyRepoCheck(ctx, now)
 	s.tickMaintenance(ctx, now)
 	s.tickSnapshotCleanup(ctx, now)
+	s.tickHistoryPrune(ctx, now)
+}
+
+// tickHistoryPrune 每日一次清理超出保留窗口的运行历史（runs/日志/审计事件）。
+// 默认关闭（HistoryRetentionDays=0 时什么都不做）——升级不删除既有数据。
+func (s *Scheduler) tickHistoryPrune(ctx context.Context, now time.Time) {
+	if s.historyRetentionDays <= 0 {
+		return
+	}
+	last := s.lastHistoryPrune.Load()
+	if last != 0 && now.Sub(time.Unix(last, 0)) < 24*time.Hour {
+		return
+	}
+	if !s.lastHistoryPrune.CompareAndSwap(last, now.Unix()) {
+		return
+	}
+	cutoff := now.AddDate(0, 0, -s.historyRetentionDays)
+	res, err := s.store.PruneHistory(ctx, cutoff)
+	if err != nil {
+		slog.Error("scheduler: PruneHistory", "error", err)
+		return
+	}
+	slog.Info("scheduler: pruned run history",
+		"cutoff", cutoff.UTC().Format(time.RFC3339),
+		"runs", res.Runs, "restore_requests", res.RestoreRequests, "audit_events", res.AuditEvents)
 }
 
 // tickSnapshotCleanup 触发每 tick 一次删除状态机与孤儿扫描。失败不阻断

@@ -130,6 +130,10 @@ func (f *fakeStore) ResolveRestoreRequest(context.Context, string, string, strin
 	return nil
 }
 
+func (f *fakeStore) PruneHistory(context.Context, time.Time) (store.HistoryPruneResult, error) {
+	return store.HistoryPruneResult{}, nil
+}
+
 func (f *fakeStore) AppendRunLogs(_ context.Context, _ []model.RunLog) error {
 	return nil
 }

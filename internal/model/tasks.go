@@ -10,8 +10,7 @@ type BackupTask struct {
 	Kind           string     `json:"kind"`
 	Repository     RepoAccess `json:"repository"`
 	Source         PlanSource `json:"source"`
-	Retention      Retention  `json:"retention,omitempty"` // run after successful backup (best effort)
-	Tags           []string   `json:"tags"`                // contains plan:<id>, kind:<kind>, run:<id>
+	Tags           []string   `json:"tags"` // contains plan:<id>, kind:<kind>, run:<id>
 	TimeoutSeconds int        `json:"timeout_seconds,omitempty"`
 }
 
@@ -30,14 +29,14 @@ type CheckTask struct {
 // are selected; Prune removes unreferenced repository data after forgetting.
 // SnapshotIDs 非空时按完整 snapshot ID 精确删除，且不得与 Tags/DeleteAll/retention 并存。
 type ForgetTask struct {
-  PlanID     string     `json:"plan_id"`
-  Kind       string     `json:"kind"`
-  Repository RepoAccess `json:"repository"`
-  Retention  Retention  `json:"retention"`
-  Tags       []string   `json:"tags,omitempty"`
-  Prune      bool       `json:"prune,omitempty"`
-  DeleteAll  bool       `json:"delete_all,omitempty"`
-  SnapshotIDs []string  `json:"snapshot_ids,omitempty"`
+	PlanID      string     `json:"plan_id"`
+	Kind        string     `json:"kind"`
+	Repository  RepoAccess `json:"repository"`
+	Retention   Retention  `json:"retention"`
+	Tags        []string   `json:"tags,omitempty"`
+	Prune       bool       `json:"prune,omitempty"`
+	DeleteAll   bool       `json:"delete_all,omitempty"`
+	SnapshotIDs []string   `json:"snapshot_ids,omitempty"`
 }
 
 // RestoreTask drives OPERATION_RESTORE and OPERATION_RESTORE_DRY_RUN.

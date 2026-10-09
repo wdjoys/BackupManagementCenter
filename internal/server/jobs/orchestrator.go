@@ -1929,7 +1929,6 @@ func (o *Orchestrator) buildBackupParams(ctx context.Context, run *model.Run) ([
 		Kind:           plan.Kind,
 		Repository:     model.RepoAccess{RepositoryPath: repo.RepositoryPath},
 		Source:         plan.Source,
-		Retention:      plan.Retention,
 		Tags:           tags,
 		TimeoutSeconds: plan.TimeoutSeconds,
 	}

@@ -101,8 +101,11 @@ const (
 	ErrMissingTools            = "missing_tools"
 	ErrInvalidPlan             = "invalid_plan"
 	ErrPathValidation          = "path_validation_failed"
-	ErrRestoreTargetNotEmpty   = "restore_target_not_empty"
-	ErrRestoreVerification     = "restore_verification_failed"
+	// ErrForbidden 表示被刻意拒绝的请求（如数据库覆盖恢复的确认值不匹配）。
+	// 响应文案保持简短：调用方不应据其区分是哪个目标字段有问题。
+	ErrForbidden             = "forbidden"
+	ErrRestoreTargetNotEmpty = "restore_target_not_empty"
+	ErrRestoreVerification   = "restore_verification_failed"
 	// ErrRestoreImportFailed 表示恢复的导入步骤本身失败（如权限不足无法建库、
 	// 导入语句报错），与"导入完成但校验不一致"的 ErrRestoreVerification 区分。
 	ErrRestoreImportFailed      = "restore_import_failed"

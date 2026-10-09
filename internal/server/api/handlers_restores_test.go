@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"backupmanagementcenter/internal/model"
+	"backupmanagementcenter/internal/server/jobs"
 	"backupmanagementcenter/internal/server/store"
 )
 
@@ -205,4 +206,25 @@ func TestResolveRestoreRequiresBlockedPhaseAndConfirmations(t *testing.T) {
 		t.Fatalf("expected %s, got %s", model.RestorePhaseManualRecoveryDone, got.Phase)
 	}
 	_ = repo
+}
+
+// 覆盖恢复的确认值不匹配属于客户端问题：必须是 403 + 稳定码，而不是 500 internal
+// （实测：错误 confirmation 曾被兜底成 500 internal/forbidden，运维会误判为服务端故障）。
+func TestJobsErrMapsForbiddenTo403(t *testing.T) {
+	rec := httptest.NewRecorder()
+	(&Server{}).jobsErr(rec, jobs.ErrForbidden)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Error.Code != model.ErrForbidden {
+		t.Fatalf("expected code %q, got %q", model.ErrForbidden, body.Error.Code)
+	}
 }

@@ -420,6 +420,12 @@ func writeSnapshotCacheHeaders(w http.ResponseWriter, info jobs.CacheInfo) {
 // jobsErr maps orchestrator errors (incl. stable codes) to HTTP.
 func (s *Server) jobsErr(w http.ResponseWriter, err error) {
 	var mt *jobs.MissingToolsError
+	if errors.Is(err, jobs.ErrForbidden) {
+		// 覆盖恢复的确认值不匹配等刻意拒绝：属客户端问题，必须是 4xx 而不是 500，
+		// 否则运维会把它当成服务端内部错误。文案保持简短（反枚举）。
+		writeErr(w, http.StatusForbidden, model.ErrForbidden, "forbidden")
+		return
+	}
 	if errors.Is(err, jobs.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not_found", "resource not found")
 		return

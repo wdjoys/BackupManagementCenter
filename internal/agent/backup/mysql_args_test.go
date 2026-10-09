@@ -413,3 +413,18 @@ func TestMySQLDumpQuoteNameHint(t *testing.T) {
 		t.Fatalf("unrelated stderr must not produce the hint, got %q", hint)
 	}
 }
+
+// 库级字符集/排序规则来自快照 manifest（存在仓库里），拼接进 CREATE DATABASE 前
+// 必须过白名单，否则恶意 manifest 可注入 SQL。
+func TestValidCharsetName(t *testing.T) {
+	for _, ok := range []string{"utf8mb4", "utf8mb4_unicode_ci", "latin1_swedish_ci", "utf8mb4_0900_ai_ci", "a1_B2"} {
+		if !validCharsetName(ok) {
+			t.Fatalf("%q must be accepted", ok)
+		}
+	}
+	for _, bad := range []string{"", "utf8mb4; DROP DATABASE x", "utf8mb4'", "utf8mb4`", "utf 8", "utf8mb4-collation", strings.Repeat("a", 65)} {
+		if validCharsetName(bad) {
+			t.Fatalf("%q must be rejected", bad)
+		}
+	}
+}

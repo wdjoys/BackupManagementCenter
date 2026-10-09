@@ -500,19 +500,21 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	defer unlock()
 
 	spec := &backup.RestoreSpec{
-		SnapshotID:       execDB.SnapshotID,
-		Kind:             task.Kind,
-		StagingDir:       artifactRoot,
-		Database:         &execDB,
-		Secrets:          secrets,
-		Tools:            d.Tools,
-		Logf:             d.Logf,
-		Progress:         d.Progress,
-		Exec:             d.Exec,
-		RunID:            task.RunID,
-		ArtifactFile:     artifact.file,
-		ArtifactDatabase: artifact.database,
-		ArtifactFormat:   artifact.format,
+		SnapshotID:        execDB.SnapshotID,
+		Kind:              task.Kind,
+		StagingDir:        artifactRoot,
+		Database:          &execDB,
+		Secrets:           secrets,
+		Tools:             d.Tools,
+		Logf:              d.Logf,
+		Progress:          d.Progress,
+		Exec:              d.Exec,
+		RunID:             task.RunID,
+		ArtifactFile:      artifact.file,
+		ArtifactDatabase:  artifact.database,
+		ArtifactFormat:    artifact.format,
+		ArtifactCharset:   artifact.charset,
+		ArtifactCollation: artifact.collation,
 	}
 
 	// 存在性判断：权限/连接错误必须失败，不能被当作“目标不存在”。
@@ -605,9 +607,11 @@ func restoreResultJSON(phase, rollbackSnapshotID string) []byte {
 
 // manifestArtifact 是本 run 唯一需要导入的产物。
 type manifestArtifact struct {
-	file     string
-	database string
-	format   string
+	file      string
+	database  string
+	format    string
+	charset   string
+	collation string
 }
 
 // singleDatabaseArtifact 校验快照只包含一个可导入的库，并返回产物路径。
@@ -630,7 +634,14 @@ func singleDatabaseArtifact(manifest *backup.Manifest, artifactRoot string) (man
 	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
 		return manifestArtifact{}, errors.New("manifest artifact is missing or not a regular file")
 	}
-	return manifestArtifact{file: path, database: exp.Database, format: exp.Format}, nil
+	// 库级默认字符集/排序规则由备份侧写入 manifest 的 restore_hints。
+	return manifestArtifact{
+		file:      path,
+		database:  exp.Database,
+		format:    exp.Format,
+		charset:   manifest.RestoreHints["charset"],
+		collation: manifest.RestoreHints["collation"],
+	}, nil
 }
 
 // uploadProtectionBackup 把目标现状导出并上传到来源仓库，返回保护快照 ID。

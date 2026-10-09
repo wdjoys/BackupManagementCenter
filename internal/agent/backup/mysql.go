@@ -147,17 +147,40 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 	toolVersions["mysqldump"] = getToolVersion(ctx, rc.Exec, mysqldumpPath, nil)
 
+	restoreHints := map[string]string{
+		"host":     source.Host,
+		"port":     strconv.Itoa(source.Port),
+		"username": source.Username,
+	}
+	// 记录源库自身的默认字符集/排序规则：mysqldump 以单库位置参数调用时不输出
+	// CREATE DATABASE，恢复侧若不显式指定，目标库会继承**目标服务器**的默认值 ——
+	// 表/列/例程的字符集随 dump 显式带出不受影响，但之后在该库中新建且未指定
+	// 字符集的对象会与源库不同。
+	if source.Database != "" && source.Database != "all" {
+		schemaQuery := "SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '" +
+			strings.ReplaceAll(source.Database, "'", "''") + "'"
+		var charset, collation string
+		if _, qErr := rc.Exec.Run(ctx, Cmd{Exe: tools.client, Args: append([]string{"--defaults-extra-file=" + cnfFile}, "-N", "-s", "-e", schemaQuery)}, func(line string) {
+			if f := strings.Fields(strings.TrimSpace(line)); len(f) >= 2 {
+				charset, collation = f[0], f[1]
+			}
+		}, logLine); qErr == nil {
+			if validCharsetName(charset) {
+				restoreHints["charset"] = charset
+			}
+			if validCharsetName(collation) {
+				restoreHints["collation"] = collation
+			}
+		}
+	}
+
 	manifest := &Manifest{
 		Adapter:      KindMySQL,
 		ToolVersions: toolVersions,
 		Databases:    []DbExport{{Database: source.Database, File: filepath.Base(dumpFile), Format: "sql"}},
 		StartedAt:    time.Now().UTC(),
 		FinishedAt:   time.Now().UTC(),
-		RestoreHints: map[string]string{
-			"host":     source.Host,
-			"port":     strconv.Itoa(source.Port),
-			"username": source.Username,
-		},
+		RestoreHints: restoreHints,
 	}
 
 	manifestPath := filepath.Join(stagingDir, "manifest.json")
@@ -324,6 +347,22 @@ type mysqlCtx struct {
 	logf  func(string)
 }
 
+// validCharsetName 只接受 MySQL 字符集/排序规则名允许的字符（字母、数字、下划线）。
+// 这些值来自快照 manifest（存在仓库里），拼接进 CREATE DATABASE 前必须校验。
+func validCharsetName(v string) bool {
+	if v == "" || len(v) > 64 {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		ch := v[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // mysqlPrepare writes the target credentials into a 0600 config file inside the
 // private staging dir and resolves the client binary. Credentials never enter
 // argv.
@@ -412,10 +451,20 @@ func (a *MySQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 		return errors.New("mysql restore artifact is missing")
 	}
 	quoted := "`" + strings.ReplaceAll(c.db.TargetDatabase, "`", "``") + "`"
+	// 库级默认字符集/排序规则来自快照 manifest，恢复时显式带上，避免继承目标
+	// 服务器的默认值。值必须先过白名单校验：manifest 存在仓库里，不能当作可信
+	// SQL 片段拼接。
+	suffix := ""
+	if validCharsetName(spec.ArtifactCharset) {
+		suffix = " CHARACTER SET " + spec.ArtifactCharset
+		if validCharsetName(spec.ArtifactCollation) {
+			suffix += " COLLATE " + spec.ArtifactCollation
+		}
+	}
 	// 新建不允许 IF NOT EXISTS：并发执行者创建的库必须冲突失败。
-	setup := "CREATE DATABASE " + quoted
+	setup := "CREATE DATABASE " + quoted + suffix
 	if !spec.TargetIsNew {
-		setup = "DROP DATABASE IF EXISTS " + quoted + "; CREATE DATABASE " + quoted
+		setup = "DROP DATABASE IF EXISTS " + quoted + "; CREATE DATABASE " + quoted + suffix
 	}
 	if err := c.runQuery(ctx, spec, setup, nil); err != nil {
 		return fmt.Errorf("prepare mysql target database: %w", err)
@@ -447,7 +496,10 @@ func (a *MySQLAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) er
 		return err
 	}
 	present := map[string]struct{}{}
-	query := "SELECT table_name FROM information_schema.tables WHERE table_schema = '" +
+	// 只统计基表：information_schema.tables 也包含视图，而 want 来自 dump 的
+	// CREATE TABLE（不含 CREATE VIEW），否则含视图的库两个数字永不相等、日志易被
+	// 误读成"多出表"（实测 9 tables present, 8 expected）。
+	query := "SELECT table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_schema = '" +
 		strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "'"
 	if err := c.runQuery(ctx, spec, query, func(line string) { present[strings.ToLower(line)] = struct{}{} }); err != nil {
 		return err

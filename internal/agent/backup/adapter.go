@@ -103,6 +103,10 @@ type RestoreSpec struct {
 	ArtifactFile     string
 	ArtifactDatabase string
 	ArtifactFormat   string
+	// ArtifactCharset/ArtifactCollation 是产物所属库的默认字符集/排序规则（备份时
+	// 记入 manifest，恢复时用于 CREATE DATABASE，避免目标库继承目标服务器默认值）。
+	ArtifactCharset   string
+	ArtifactCollation string
 	// TargetIsNew 为 true 表示目标由本 run 新建，清理时只允许删除该目标。
 	TargetIsNew bool
 }

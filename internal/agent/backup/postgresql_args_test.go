@@ -1,9 +1,9 @@
 package backup
 
 import (
-	"strings"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"backupmanagementcenter/internal/model"
@@ -158,5 +158,27 @@ func TestPostgreSQLVerifyQueryCountsIndexes(t *testing.T) {
 	// 约束背后的隐式索引在归档里是 CONSTRAINT 行而非 INDEX 条目，必须排除。
 	if !strings.Contains(query, "pg_constraint") {
 		t.Fatalf("verification query must exclude constraint-backing indexes, got %q", query)
+	}
+}
+
+// pg_restore -l 的名字可以含空格（"It's W"）。按固定下标取末尾三项会把名字错位，
+// 该关系在 dump 侧缺失，目标侧却被列出，于是校验报 unexpected 并触发回滚。
+func TestPGDumpRelationNamesHandlesSpacesInNames(t *testing.T) {
+	list := `;
+215; 1259 17125 TABLE public It's W bmc
+3445; 0 17125 TABLE DATA public It's W bmc
+3301; 2606 17131 CONSTRAINT public It's W It's W_pkey bmc
+216; 1259 16415 TABLE public users bmc
+3317; 1259 16436 INDEX public It's W idx bmc
+`
+	got := pgDumpRelationNames(list)
+	want := map[string]struct{}{"public.It's W": {}, "public.It's W idx": {}, "public.users": {}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for name := range want {
+		if _, ok := got[name]; !ok {
+			t.Fatalf("missing %q in %v", name, got)
+		}
 	}
 }

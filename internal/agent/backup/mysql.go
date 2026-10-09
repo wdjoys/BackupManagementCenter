@@ -452,6 +452,8 @@ func (a *MySQLAdapter) RemoveTarget(ctx context.Context, spec *RestoreSpec) erro
 }
 
 // mysqlDumpTableNames 从 mysqldump 输出里抽取 CREATE TABLE 的表名。
+// 表名用反引号包围，且名字内部的反引号以 `` 形式转义（合法表名可以含反引号），
+// 因此不能简单地"取第一个反引号前的内容"，必须按转义规则扫描到真正的结束反引号。
 func mysqlDumpTableNames(path string) (map[string]struct{}, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -471,12 +473,32 @@ func mysqlDumpTableNames(path string) (map[string]struct{}, error) {
 			rest = strings.TrimSpace(rest[len("IF NOT EXISTS "):])
 		}
 		rest = strings.TrimPrefix(rest, "`")
-		if idx := strings.Index(rest, "`"); idx > 0 {
-			names[strings.ToLower(rest[:idx])] = struct{}{}
+		name, ok := mysqlUnquoteIdentifier(rest)
+		if ok {
+			names[strings.ToLower(name)] = struct{}{}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan mysql dump: %w", err)
 	}
 	return names, nil
+}
+
+// mysqlUnquoteIdentifier 读取 s 开头（已去掉起始反引号）的反引号标识符，
+// 把 `` 还原为单个反引号，返回名字与是否找到结束反引号。
+func mysqlUnquoteIdentifier(s string) (string, bool) {
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '`' {
+			sb.WriteByte(s[i])
+			continue
+		}
+		if i+1 < len(s) && s[i+1] == '`' {
+			sb.WriteByte('`')
+			i++
+			continue
+		}
+		return sb.String(), sb.Len() > 0
+	}
+	return "", false
 }

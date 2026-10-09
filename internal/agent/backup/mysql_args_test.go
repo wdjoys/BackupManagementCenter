@@ -289,3 +289,29 @@ func TestMySQLCnfSetsUTF8MB4(t *testing.T) {
 		t.Fatalf("restore my.cnf must set utf8mb4, got %q", string(restoreCnf))
 	}
 }
+
+// 合法表名可以含反引号（转义为 ``）与单引号。此前按"第一个反引号前的内容"截断，
+// 会把 `back``tick` 解析成 back，导致恢复校验误报 missing tables 并触发回滚。
+func TestMySQLDumpTableNamesHandlesEscapedBackticks(t *testing.T) {
+	dump := "CREATE TABLE `it's` (\n  `id` int NOT NULL\n);\n" +
+		"CREATE TABLE `back``tick` (\n  `id` int NOT NULL\n);\n" +
+		"CREATE TABLE IF NOT EXISTS `plain` (\n  `id` int NOT NULL\n);\n"
+	dir := t.TempDir()
+	p := filepath.Join(dir, "dump.sql")
+	if err := os.WriteFile(p, []byte(dump), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mysqlDumpTableNames(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]struct{}{"it's": {}, "back`tick": {}, "plain": {}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for name := range want {
+		if _, ok := got[name]; !ok {
+			t.Fatalf("missing %q in %v", name, got)
+		}
+	}
+}

@@ -452,13 +452,35 @@ func isPgVersionSkewCommand(line string) bool {
 	return false
 }
 
+// pgRelationEntryTypes 列出 pg_restore -l 中形如
+// "<id>; <oid> <oid> <TYPE> <schema> <name> <owner>" 的条目类型，**按最长匹配优先**。
+// 必须把多词附属类型（TABLE DATA / SEQUENCE OWNED BY / SEQUENCE SET …）也列全：
+// 否则 "SEQUENCE OWNED BY" 会被当成 "SEQUENCE"，把 OWNED.BY 之类解析成关系名。
+// 其中的附属类型本身不计入关系集合（见 pgRelationKind）。
+var pgRelationEntryTypes = []string{
+	"MATERIALIZED VIEW DATA", "MATERIALIZED VIEW", "TABLE DATA ATTACH", "TABLE DATA",
+	"TABLE ATTACH", "FOREIGN TABLE", "SEQUENCE OWNED BY", "SEQUENCE SET",
+	"INDEX ATTACH", "TABLE", "SEQUENCE", "VIEW", "INDEX",
+}
+
+// pgRelationKind 判断类型名是否是要纳入关系集合的类型。
+func pgRelationKind(typ string) bool {
+	switch typ {
+	case "TABLE", "SEQUENCE", "VIEW", "INDEX", "MATERIALIZED VIEW", "FOREIGN TABLE":
+		return true
+	default:
+		return false
+	}
+}
+
 // pgDumpRelationNames extracts relation identifiers from `pg_restore -l` output.
+// 每行形如 "<dumpId>; <oid> <oid> <TYPE...> <schema> <name> <owner>"。
 //
-// 每行形如 "<dumpId>; <oid> <oid> <TYPE...> <schema> <name> <owner>"。TYPE 可能
-// 是多个词（"TABLE DATA"、"SEQUENCE OWNED BY"、"SEQUENCE SET"、
-// "MATERIALIZED VIEW"），因此不能按固定下标取字段：schema/name/owner 恒为
-// 末尾三项，类型是中间的全部词。只保留真正代表关系对象的类型，跳过
-// DATA/OWNED BY/SET 这类附属条目（它们指向的关系已由 TYPE/SEQUENCE 行覆盖）。
+// 名字可以**包含空格**（"It's W"）甚至与类型名同形，TYPE 本身也可能是多个词
+// （"TABLE DATA"、"MATERIALIZED VIEW"），因此不能按固定下标取字段：先按最长
+// 匹配确定类型，再把类型之后的 <schema> 与末尾 <owner> 之间整体作为名字。
+// 只保留真正代表关系对象的类型，跳过 DATA/OWNED BY/SET 这类附属条目
+// （它们指向的关系已由对应的 TABLE/SEQUENCE 行覆盖）。
 func pgDumpRelationNames(list string) map[string]struct{} {
 	names := map[string]struct{}{}
 	for _, line := range strings.Split(list, "\n") {
@@ -466,11 +488,33 @@ func pgDumpRelationNames(list string) map[string]struct{} {
 		if len(fields) < 6 || !strings.HasSuffix(fields[0], ";") {
 			continue
 		}
-		typ := strings.Join(fields[3:len(fields)-3], " ")
-		switch typ {
-		case "TABLE", "SEQUENCE", "VIEW", "INDEX", "MATERIALIZED VIEW", "FOREIGN TABLE":
-			names[fields[len(fields)-3]+"."+fields[len(fields)-2]] = struct{}{}
+		rest := fields[3:] // 跳过 "<id>;" 与两个 oid
+		typ, width := "", 0
+		for _, cand := range pgRelationEntryTypes {
+			parts := strings.Fields(cand)
+			if len(rest) < len(parts) {
+				continue
+			}
+			match := true
+			for i, p := range parts {
+				if rest[i] != p {
+					match = false
+					break
+				}
+			}
+			if match {
+				typ, width = cand, len(parts)
+				break
+			}
 		}
+		if !pgRelationKind(typ) {
+			continue
+		}
+		after := rest[width:] // <schema> <name...> <owner>
+		if len(after) < 3 {
+			continue
+		}
+		names[after[0]+"."+strings.Join(after[1:len(after)-1], " ")] = struct{}{}
 	}
 	return names
 }

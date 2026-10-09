@@ -182,3 +182,30 @@ func TestPGDumpRelationNamesHandlesSpacesInNames(t *testing.T) {
 		}
 	}
 }
+
+// schema 名也可以含空格（"app schema"）。SCHEMA 条目形如
+// "<id>; <oid> <oid> SCHEMA - <schema...> <owner>"，"-" 与末尾 owner 之间整体即
+// schema 名，可无歧义取得；再按最长 schema 前缀切分关系条目即可正确得到
+// "app schema.t1"。此前按首个 token 切分会得到 "app.schema t1"，与目标侧的
+// "app schema.t1" 不等，恢复被误判失败并自动回滚。
+func TestPGDumpRelationNamesHandlesSpacesInSchema(t *testing.T) {
+	list := `;
+; Selected TOC Entries:
+;
+6; 2615 17177 SCHEMA - app schema bmc
+216; 1259 17178 TABLE app schema t1 bmc
+217; 1259 17183 TABLE public t2 bmc
+3450; 0 17178 TABLE DATA app schema t1 bmc
+3306; 2606 17182 CONSTRAINT app schema t1 t1_pkey bmc
+`
+	got := pgDumpRelationNames(list)
+	want := map[string]struct{}{"app schema.t1": {}, "public.t2": {}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for name := range want {
+		if _, ok := got[name]; !ok {
+			t.Fatalf("missing %q in %v", name, got)
+		}
+	}
+}

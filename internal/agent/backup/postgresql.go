@@ -482,8 +482,36 @@ func pgRelationKind(typ string) bool {
 // 只保留真正代表关系对象的类型，跳过 DATA/OWNED BY/SET 这类附属条目
 // （它们指向的关系已由对应的 TABLE/SEQUENCE 行覆盖）。
 func pgDumpRelationNames(list string) map[string]struct{} {
+	lines := strings.Split(list, "\n")
+
+	// 第一遍：收集 SCHEMA 条目里的 schema 名。SCHEMA 条目形如
+	//   <id>; <oid> <oid> SCHEMA - <schema...> <owner>
+	// schema 名可以含空格（"app schema"），但 owner 恒为最后一段，所以
+	// "-" 与 owner 之间的整体就是 schema 名，可无歧义解析。
+	// public 是 PostgreSQL 的默认 schema，dump 中不一定出现 SCHEMA 条目，固定补上。
+	schemas := map[string]struct{}{"public": {}}
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || !strings.HasSuffix(fields[0], ";") || fields[3] != "SCHEMA" || fields[4] != "-" {
+			continue
+		}
+		schemas[strings.Join(fields[5:len(fields)-1], " ")] = struct{}{}
+	}
+	// 按 token 数降序，保证用最长的 schema 前缀去切分，避免 "app" 抢走 "app schema"。
+	ordered := make([]string, 0, len(schemas))
+	for sc := range schemas {
+		ordered = append(ordered, sc)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		ti, tj := len(strings.Fields(ordered[i])), len(strings.Fields(ordered[j]))
+		if ti != tj {
+			return ti > tj
+		}
+		return ordered[i] < ordered[j]
+	})
+
 	names := map[string]struct{}{}
-	for _, line := range strings.Split(list, "\n") {
+	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) < 6 || !strings.HasSuffix(fields[0], ";") {
 			continue
@@ -510,11 +538,38 @@ func pgDumpRelationNames(list string) map[string]struct{} {
 		if !pgRelationKind(typ) {
 			continue
 		}
-		after := rest[width:] // <schema> <name...> <owner>
-		if len(after) < 3 {
+		mid := rest[width:] // <schema...> <name...> <owner>
+		if len(mid) < 3 {
 			continue
 		}
-		names[after[0]+"."+strings.Join(after[1:len(after)-1], " ")] = struct{}{}
+		body := mid[:len(mid)-1] // 去掉末尾 owner
+		schema, name := "", ""
+		for _, cand := range ordered {
+			parts := strings.Fields(cand)
+			if len(parts) >= len(body) {
+				continue
+			}
+			match := true
+			for i, p := range parts {
+				if body[i] != p {
+					match = false
+					break
+				}
+			}
+			if match {
+				schema = cand
+				name = strings.Join(body[len(parts):], " ")
+				break
+			}
+		}
+		if schema == "" {
+			// 未知 schema（例如 dump 里没有对应的 SCHEMA 条目）：退回按首个 token 切分。
+			schema, name = body[0], strings.Join(body[1:], " ")
+		}
+		if name == "" {
+			continue
+		}
+		names[schema+"."+name] = struct{}{}
 	}
 	return names
 }

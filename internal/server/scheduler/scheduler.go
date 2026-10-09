@@ -2,8 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,6 +130,45 @@ func (s *Scheduler) tickSnapshotCleanup(ctx context.Context, now time.Time) {
 	}
 }
 
+// forgetRunIsRetention 判断一次 forget 运行是否由"保留策略"触发。
+//
+// 只有保留运行才应推迟下一次保留：绑定仓库时的初始化、计划清理（delete_all）与
+// 手动删除单个快照（snapshot_ids）同样产生 forget 运行，若一并计入，频繁删除会让
+// 保留策略长期不再运行、快照无界累积。实测：新绑定的仓库因初始化 forget 运行而被
+// 跳过保留超过 100 秒（守卫窗口为 24 小时）。
+//
+// 参数从两处读取：运行创建时写入的 ProgressJSON（保留运行不会被进度覆盖）与不可变的
+// DedupKey 尾部参数，任一处显示非零保留策略即认定为保留运行。
+func forgetRunIsRetention(run model.Run) bool {
+	for _, payload := range []string{run.ProgressJSON, dedupKeyParams(run.DedupKey)} {
+		if payload == "" {
+			continue
+		}
+		var task model.ForgetTask
+		if err := json.Unmarshal([]byte(payload), &task); err != nil {
+			continue
+		}
+		r := task.Retention
+		if r.KeepLast+r.KeepDaily+r.KeepWeekly+r.KeepMonthly > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupKeyParams 取出系统运行去重键尾部的任务参数 JSON（见 jobs.systemRunDedupKey）。
+func dedupKeyParams(key string) string {
+	parts := strings.Split(key, "\x00")
+	if len(parts) == 0 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+	if strings.HasPrefix(strings.TrimSpace(last), "{") {
+		return last
+	}
+	return ""
+}
+
 // tickMaintenance schedules forget (without prune) at most once per day per
 // repository. The repository queue serializes it after any active backup.
 func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
@@ -156,7 +197,7 @@ func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
 			if run.Operation == model.OpBackup && (run.Status == model.RunQueued || run.Status == model.RunDispatched || run.Status == model.RunRunning) {
 				active = true
 			}
-			if run.Operation == model.OpForget {
+			if run.Operation == model.OpForget && forgetRunIsRetention(run) {
 				at := run.FinishedAt
 				if at == nil {
 					at = &run.QueuedAt

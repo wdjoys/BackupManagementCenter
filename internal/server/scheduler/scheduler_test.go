@@ -211,7 +211,13 @@ func (f *fakeStore) GetRepository(_ context.Context, _ string) (*model.Repositor
 func (f *fakeStore) GetRepositoryByAgentAndTarget(_ context.Context, _, _ string) (*model.Repository, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListRepositories(_ context.Context) ([]model.Repository, error)       { return nil, nil }
+func (f *fakeStore) ListRepositories(_ context.Context) ([]model.Repository, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]model.Repository, len(f.repos))
+	copy(out, f.repos)
+	return out, nil
+}
 func (f *fakeStore) DetachRepository(_ context.Context, _ string) error                   { return nil }
 func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, _, _ string) error          { return nil }
 func (f *fakeStore) MarkRepositoryChecked(_ context.Context, _ string, _ time.Time) error { return nil }
@@ -280,6 +286,7 @@ type fakeStarter struct {
 	mu                  sync.Mutex
 	startPlanRunCalls   []startPlanRunCall
 	systemRunCheckCalls []string
+	retentionCalls      []string
 	returnErr           error // if set, returned by StartPlanRun
 }
 
@@ -792,4 +799,54 @@ func TestLoopStartsAndStops(t *testing.T) {
 	s.Start()
 	called <- mustTime("2026-08-22T10:00:00Z")
 	s.Stop()
+}
+
+// StartRetentionRun 记录保留策略派发（原 fakeStarter 未实现该接口，
+// 导致 tickMaintenance 在测试中直接返回、完全未被覆盖）。
+func (f *fakeStarter) StartRetentionRun(_ context.Context, repositoryID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retentionCalls = append(f.retentionCalls, repositoryID)
+	return nil
+}
+
+// 只有"保留策略"驱动的 forget 运行才应推迟下一次保留。实测：新绑定的仓库因初始化
+// forget 运行（参数为 {"initialized":true}）被跳过保留超过 100 秒（窗口 24 小时）；
+// 计划清理与手动删除同样产生 forget 运行，一并计入会让频繁删除的仓库永不裁剪。
+func TestMaintenanceRetentionNotStarvedByOtherForgetRuns(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name       string
+		params     string
+		wantSkip   bool
+		wantReason string
+	}{
+		{"init 运行不推迟保留", `{"repository":{"repository_path":"r:/x"},"restic_init":true}`, false, "initialized"},
+		{"计划清理（delete_all）不推迟保留", `{"plan_id":"p1","kind":"mysql","repository":{"repository_path":"r:/x"},"delete_all":true}`, false, "delete_all"},
+		{"手动删除快照不推迟保留", `{"plan_id":"p1","kind":"mysql","repository":{"repository_path":"r:/x"},"snapshot_ids":["abc"]}`, false, "snapshot_ids"},
+		{"保留运行推迟保留", `{"plan_id":"p1","kind":"mysql","repository":{"repository_path":"r:/x"},"retention":{"keep_last":1},"tags":["plan:p1"]}`, true, "keep_last"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore(t)
+			starter := newFakeStarter()
+			st.agents["agent-1"] = model.Agent{ID: "agent-1", Status: model.AgentOnline}
+			st.repos = append(st.repos, model.Repository{ID: "repo-1", AgentID: "agent-1", Status: "ready"})
+			fin := now.Add(-5 * time.Minute)
+			st.runs = append(st.runs, model.Run{
+				ID: "run-forget", AgentID: "agent-1", RepositoryID: "repo-1",
+				Operation: model.OpForget, Status: model.RunSucceeded,
+				QueuedAt: fin, FinishedAt: &fin, ProgressJSON: tc.params,
+			})
+			s := New(st, starter, nil)
+			s.tickMaintenance(context.Background(), now)
+			got := len(starter.retentionCalls)
+			if tc.wantSkip && got != 0 {
+				t.Fatalf("%s: retention must be postponed by a recent retention run, got %d dispatch(es)", tc.wantReason, got)
+			}
+			if !tc.wantSkip && got == 0 {
+				t.Fatalf("%s: retention must NOT be postponed by this forget run", tc.wantReason)
+			}
+		})
+	}
 }

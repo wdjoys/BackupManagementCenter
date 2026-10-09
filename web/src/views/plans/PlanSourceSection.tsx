@@ -161,7 +161,6 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
               id="db-port"
               type="number"
               min={1}
-              max={65535}
               value={source.port ?? ''}
               onChange={(e) =>
                 onUpdateSource({ port: e.target.value ? Number(e.target.value) : undefined })

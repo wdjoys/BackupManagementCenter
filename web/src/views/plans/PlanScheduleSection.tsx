@@ -52,7 +52,7 @@ export const PlanScheduleSection: React.FC<PlanScheduleSectionProps> = ({
         />
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
           <span className="text-xs text-muted-foreground">
-            {t('plans.form.presets')}:
+            {t('plans.form.presets')}
           </span>
           {cronPresets.map((p) => (
             <Badge

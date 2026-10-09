@@ -23,7 +23,7 @@ export const PlanRetentionSection: React.FC<PlanRetentionSectionProps> = ({
       <p className="text-xs text-muted-foreground">{t('plans.form.retentionHint')}</p>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
         <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground font-mono">keep_last</span>
+          <span className="text-xs text-muted-foreground">{t('plans.form.keepLast')}</span>
           <Input
             type="number"
             min={0}
@@ -34,7 +34,7 @@ export const PlanRetentionSection: React.FC<PlanRetentionSectionProps> = ({
           />
         </div>
         <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground font-mono">keep_daily</span>
+          <span className="text-xs text-muted-foreground">{t('plans.form.keepDaily')}</span>
           <Input
             type="number"
             min={0}
@@ -45,7 +45,7 @@ export const PlanRetentionSection: React.FC<PlanRetentionSectionProps> = ({
           />
         </div>
         <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground font-mono">keep_weekly</span>
+          <span className="text-xs text-muted-foreground">{t('plans.form.keepWeekly')}</span>
           <Input
             type="number"
             min={0}
@@ -56,7 +56,7 @@ export const PlanRetentionSection: React.FC<PlanRetentionSectionProps> = ({
           />
         </div>
         <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground font-mono">keep_monthly</span>
+          <span className="text-xs text-muted-foreground">{t('plans.form.keepMonthly')}</span>
           <Input
             type="number"
             min={0}

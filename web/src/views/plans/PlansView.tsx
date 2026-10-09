@@ -153,7 +153,11 @@ export const PlansView: React.FC = () => {
   const openCreate = () => {
     setEditing(false)
     const init = blankForm()
-    if (agents.length > 0) init.agent_id = agents[0].id
+    // 默认选中一个**在线且未吊销**的 Agent：此前取 agents[0]，可能恰好是已吊销/
+    // 离线的（实测新建表单默认选中 revoked+offline 的 Agent，直接保存会被服务端拒绝）。
+    const usableAgents = agents.filter((a) => a.status === 'online' && !a.revoked)
+    const defaultAgent = usableAgents[0] ?? agents[0]
+    if (defaultAgent) init.agent_id = defaultAgent.id
     const availableRepo = repositories.find((r) => r.agent_id === init.agent_id)
     if (availableRepo) init.repository_id = availableRepo.id
     setFormModel(init)

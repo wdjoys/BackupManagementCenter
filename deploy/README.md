@@ -28,6 +28,8 @@ curl --fail https://backup.example.com/health/ready
 >   mkdir -p ./bmc-server-data && sudo chown -R 65532:65532 ./bmc-server-data
 >   ```
 
+> **`/tmp` 必须对 uid `65532` 可写（尤其是在 `read_only: true` 时）**：模板通过 `tmpfs: - /tmp:uid=65532,gid=65532,mode=0700` 提供可写临时目录。**只写 `mode=0700` 而漏掉 `uid`/`gid` 会让 tmpfs 归 `root:root`，非 root 进程无法写入**——SQLite 拿不到临时文件目录，报 `disk I/O error (6410)`（`SQLITE_IOERR_GETTEMPPATH`），表现为运行列表接口在较大 `limit`（200–500）时返回 500、需要临时文件的迁移/清理操作失败。手工 `docker run` 部署时同理，务必带上 `--tmpfs /tmp:uid=65532,gid=65532,mode=0700`。
+
 主密钥首次启动时自动生成并保存于 `bmc-data` 命名卷中的 `/var/lib/bmc/master.key`（权限 `0600`）。**首次启动后必须立即备份主密钥**；若主密钥丢失，数据库中所有已加密的存储目标与凭据均无法恢复：
 
 ```sh

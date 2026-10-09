@@ -29,8 +29,12 @@ services:
     volumes:
       - bmc-data:/var/lib/bmc
     read_only: true
+    # tmpfs 必须显式指定 uid/gid：默认由 root 拥有且 mode=0700，
+    # 而容器以 nonroot(65532) 运行，服务端会连临时文件都建不出来——
+    # SQLite 报 disk I/O error (6410, SQLITE_IOERR_GETTEMPPATH)，
+    # 表现为大 limit 的运行列表 500、临时文件相关的迁移/清理失败。
     tmpfs:
-      - /tmp:mode=0700
+      - /tmp:uid=65532,gid=65532,mode=0700
     security_opt:
       - no-new-privileges:true
 volumes:

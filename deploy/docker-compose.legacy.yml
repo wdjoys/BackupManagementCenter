@@ -42,8 +42,10 @@ services:
       - bmc_tls_cert
       - bmc_tls_key
     read_only: true
+    # 与 docker-compose.yml 同理：tmpfs 必须显式指定 uid/gid，
+    # 否则 nonroot(65532) 无法写 /tmp，SQLite 报 6410 (GETTEMPPATH)。
     tmpfs:
-      - /tmp:mode=0700
+      - /tmp:uid=65532,gid=65532,mode=0700
     security_opt:
       - no-new-privileges:true
 volumes:

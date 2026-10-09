@@ -801,27 +801,30 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 		}
 	}
 
-	// Mark repository checked for backup/check operations on success
+	// repositoryID 供两处使用：备份成功后的快照缓存预热（下方 warmCache），以及
+	// 校验成功后的"最近一次校验时间"。两者用途不同，不能共用一个条件。
 	var repositoryID string
-	if toStatus == model.RunSucceeded && run.Operation != "" {
-		if run.Operation == model.OpBackup || run.Operation == model.OpCheck {
-			// Scheduled repository checks are system runs with no plan ID, so
-			// prefer the repository carried directly on the run. Backups keep
-			// the plan lookup as a compatibility fallback for older rows.
-			repositoryID = run.RepositoryID
-			if repositoryID == "" && run.PlanID != "" {
-				plan, planErr := s.store.GetPlan(ctx, run.PlanID)
-				if planErr == nil {
-					repositoryID = plan.RepositoryID
-				}
+	if toStatus == model.RunSucceeded && (run.Operation == model.OpBackup || run.Operation == model.OpCheck) {
+		// Scheduled repository checks are system runs with no plan ID, so
+		// prefer the repository carried directly on the run. Backups keep
+		// the plan lookup as a compatibility fallback for older rows.
+		repositoryID = run.RepositoryID
+		if repositoryID == "" && run.PlanID != "" {
+			plan, planErr := s.store.GetPlan(ctx, run.PlanID)
+			if planErr == nil {
+				repositoryID = plan.RepositoryID
 			}
-			if repositoryID != "" {
-				now := time.Now().UTC()
-				_ = s.store.MarkRepositoryChecked(ctx, repositoryID, now)
-				// 此前 bmc_repository_last_check_timestamp 从未被赋值、完全不导出：
-				// 运维看不到仓库"最近一次成功校验"的时间，只能被动等仓库状态变化。
-				s.recordRepoCheck(repositoryID, now)
-			}
+		}
+		// 只有**校验**（check）成功才更新"最近一次校验时间"：备份成功并不校验仓库
+		// 完整性。此前一并写入，使 last_check_at 在活跃部署里永远新鲜，而周检要求
+		// last_check_at > 7 天（ListRepositoriesNeedingCheck）→ 有日常备份的仓库
+		// **永远不会被校验**，完整性检查等于被关掉。指标
+		// bmc_repository_last_check_timestamp 的说明（last successful restic check）
+		// 也印证这里只应记 check。
+		if run.Operation == model.OpCheck && repositoryID != "" {
+			now := time.Now().UTC()
+			_ = s.store.MarkRepositoryChecked(ctx, repositoryID, now)
+			s.recordRepoCheck(repositoryID, now)
 		}
 	}
 

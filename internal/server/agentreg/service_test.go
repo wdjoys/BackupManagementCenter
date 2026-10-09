@@ -294,7 +294,7 @@ func TestHandleRunResultCheckMarksSystemRepository(t *testing.T) {
 	st.addRun(run)
 	svc, _ := newTestService(st)
 	if err := svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
-		RunId: run.ID,
+		RunId:  run.ID,
 		Status: bmcv1.RunResult_SUCCEEDED,
 	}); err != nil {
 		t.Fatalf("handleRunResult: %v", err)
@@ -734,5 +734,28 @@ func TestHandleRunResultLogsBeforeTerminalState(t *testing.T) {
 	second := <-ch
 	if second.Type != events.State {
 		t.Fatalf("second event type = %q, want state", second.Type)
+	}
+}
+
+// 备份成功不得更新"最近一次校验时间"：last_check_at 决定周检是否触发
+// （ListRepositoriesNeedingCheck 要求 last_check_at > 7 天），若备份也写它，
+// 有日常备份的仓库永远不会被校验，完整性检查等于被关掉。
+func TestHandleRunResultBackupDoesNotMarkRepositoryChecked(t *testing.T) {
+	st := newFakeStore()
+	run := baseRun("backup-run-1", "plan-1", model.RunRunning)
+	run.RepositoryID = "repo-1"
+	st.addRun(run)
+	svc, _ := newTestService(st)
+	if err := svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:  run.ID,
+		Status: bmcv1.RunResult_SUCCEEDED,
+	}); err != nil {
+		t.Fatalf("handleRunResult: %v", err)
+	}
+	st.mu.Lock()
+	_, ok := st.repoChecks[run.RepositoryID]
+	st.mu.Unlock()
+	if ok {
+		t.Fatalf("successful backup must not mark repository %s as checked", run.RepositoryID)
 	}
 }

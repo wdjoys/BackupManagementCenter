@@ -2455,3 +2455,38 @@ func TestCreateRestoreRequestRejectsBusyFilesystemTarget(t *testing.T) {
 		t.Fatalf("terminal request must not block the target: %v", err)
 	}
 }
+
+// TestSQLitePragmasApplyToEveryConnection 确认连接级 pragma 对连接池中每条连接
+// 生效。busy_timeout/foreign_keys 是连接级设置：用 db.Exec 设置只会命中池里
+// 的一条连接，其余连接缺失这些设置，写竞争时会立刻返回 SQLITE_BUSY（实测并发
+// 下 POST /plans/{id}/backups/delete 曾报 500 "database is locked (5)"）。
+func TestSQLitePragmasApplyToEveryConnection(t *testing.T) {
+	s := newTestStore(t)
+	t.Cleanup(func() { _ = s.Store.Close() })
+	raw, ok := s.Store.(*sqliteStore)
+	if !ok {
+		t.Fatalf("unexpected store type %T", s.Store)
+	}
+	ctx := context.Background()
+	conns := make([]*sql.Conn, 0, 2)
+	for i := 0; i < 2; i++ {
+		c, err := raw.db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("acquire conn %d: %v", i, err)
+		}
+		defer c.Close()
+		conns = append(conns, c)
+	}
+	for i, c := range conns {
+		var busy, fk int
+		if err := c.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busy); err != nil {
+			t.Fatalf("conn %d busy_timeout: %v", i, err)
+		}
+		if err := c.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil {
+			t.Fatalf("conn %d foreign_keys: %v", i, err)
+		}
+		if busy != 5000 || fk != 1 {
+			t.Fatalf("conn %d: busy_timeout=%d foreign_keys=%d, want 5000/1", i, busy, fk)
+		}
+	}
+}

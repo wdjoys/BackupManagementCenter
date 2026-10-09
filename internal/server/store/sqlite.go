@@ -79,22 +79,19 @@ func NewWithSealer(path string, seal secrets.Sealer) (Store, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	// 连接级 pragma（busy_timeout/foreign_keys/synchronous）必须写在 DSN 里：
+	// db.Exec 只作用于连接池中的一条连接，其余连接会缺失这些设置，写竞争时
+	// 立刻返回 SQLITE_BUSY 而不是等待（实测并发下 POST /plans/{id}/backups/delete
+	// 报 500 "database is locked (5)"）。WAL 是文件级持久设置，仍单独设置一次。
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	// Set pragmas. WAL mode must be set while no other connections exist.
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA synchronous=NORMAL",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("set pragma %s: %w", pragma, err)
-		}
+	// WAL mode must be set while no other connections exist.
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set pragma journal_mode: %w", err)
 	}
 
 	// Allow up to 4 connections for concurrent reads; the write mutex

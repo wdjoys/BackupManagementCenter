@@ -137,9 +137,11 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 			"--host", source.Host,
 			"--port", strconv.Itoa(source.Port),
 			"--username", source.Username,
-			source.Database,
 		}
 		args = append(args, source.ExtraArgs...)
+		// 以 -- 结束选项：库名是位置参数，且合法库名可以以 '-' 开头，否则 pg_dump
+		// 会把库名当选项解析（实测报 "no matching extensions were found"）。
+		args = append(args, "--", source.Database)
 		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, logLine)
 		if err != nil || exitCode != 0 {
 			return nil, exitError("pg_dump", exitCode, err)

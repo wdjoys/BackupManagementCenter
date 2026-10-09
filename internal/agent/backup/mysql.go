@@ -110,12 +110,15 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 		args = append(args, "--column-statistics=0")
 	}
 	args = append(args, "--result-file="+dumpFile)
+	// extra_args 必须排在 -- 之前（它们是选项；-- 之后的一切都会被当作位置参数）。
+	args = append(args, source.ExtraArgs...)
+	// 位置参数形式的库名必须以 -- 结束选项：合法的库名可以以 '-' 开头（引号标识符），
+	// 否则会被客户端当作选项簇解析（实测 mysqldump 报 unknown option '-s'）。
 	if source.Database == "all" {
 		args = append(args, "--all-databases")
 	} else {
-		args = append(args, source.Database)
+		args = append(args, "--", source.Database)
 	}
-	args = append(args, source.ExtraArgs...)
 
 	// 收集 stderr：MySQL ≤5.7 默认 character_set_server=latin1，官方 8.0 客户端
 	// 请求 utf8mb4 时会因排序规则 utf8mb4_0900_ai_ci 不存在而回退 latin1，导致
@@ -395,6 +398,8 @@ func (a *MySQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 		"--defaults-extra-file=" + c.cnf,
 		"--binary-mode",
 		"-h", c.db.TargetHost, "-P", strconv.Itoa(c.db.TargetPort), "-u", c.db.TargetUsername,
+		// 以 -- 结束选项：目标库名是位置参数，且合法库名可以以 '-' 开头。
+		"--",
 		c.db.TargetDatabase,
 	}
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.mysql, Args: dumpArgs, StdinPath: spec.ArtifactFile}, c.logf, c.logf)

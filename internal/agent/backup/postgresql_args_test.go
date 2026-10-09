@@ -209,3 +209,51 @@ func TestPGDumpRelationNamesHandlesSpacesInSchema(t *testing.T) {
 		}
 	}
 }
+
+// 合法库名可以以 '-' 开头（引号标识符）。pg_dump 的库名是位置参数，必须用 --
+// 结束选项，否则会被当选项解析（实测 "no matching extensions were found"），
+// 该库永远无法备份。同时锚定 extra_args 仍排在 -- 之前（它们是选项）。
+func TestPGDumpArgsEndOptionsBeforeDatabase(t *testing.T) {
+	rec := &argRecorder{}
+	rc := &RunContext{
+		Task: model.BackupTask{
+			PlanID: "plan-1",
+			Kind:   KindPostgreSQL,
+			Source: model.PlanSource{
+				Host: "127.0.0.1", Port: 5432, Username: "bmc",
+				Database: "-weird", EstimatedDumpBytes: 1 << 20,
+				ExtraArgs: []string{"--no-comments"},
+			},
+		},
+		Secrets: SecretBundle{DBPassword: "pw"},
+		TempDir: t.TempDir(),
+		Exec:    rec,
+		Logf:    func(string, string, ...any) {},
+	}
+	if _, err := (&PostgreSQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	dump := rec.find("pg_dump")
+	if dump == nil {
+		t.Fatal("pg_dump was never invoked")
+	}
+	dash := -1
+	for i, a := range dump.Args {
+		if a == "--" {
+			dash = i
+			break
+		}
+	}
+	if dash < 0 || dash != len(dump.Args)-2 || dump.Args[len(dump.Args)-1] != "-weird" {
+		t.Fatalf("-- must immediately precede the database name, got %v", dump.Args)
+	}
+	ea := -1
+	for i, a := range dump.Args {
+		if a == "--no-comments" {
+			ea = i
+		}
+	}
+	if ea < 0 || ea > dash {
+		t.Fatalf("extra_args must stay before -- (they are options), got %v", dump.Args)
+	}
+}

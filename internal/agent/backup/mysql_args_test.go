@@ -315,3 +315,80 @@ func TestMySQLDumpTableNamesHandlesEscapedBackticks(t *testing.T) {
 		}
 	}
 }
+
+// 合法库名可以以 '-' 开头（引号标识符）。库名是位置参数，必须用 -- 结束选项，
+// 否则客户端把它当选项簇解析：实测 mysqldump 报 "unknown option '-s'"，
+// 该库永远无法备份。同时锚定 extra_args 仍排在 -- 之前（它们是选项）。
+func TestMySQLDumpArgsEndOptionsBeforeDatabase(t *testing.T) {
+	rec := &argRecorder{}
+	task := mysqlBackupTask("-dashdb")
+	task.Source.ExtraArgs = []string{"--skip-comments"}
+	rc := &RunContext{
+		Task: task, Secrets: SecretBundle{DBPassword: "pw"}, TempDir: t.TempDir(),
+		Exec: rec, Logf: func(string, string, ...any) {},
+	}
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	dump := rec.find("mysqldump")
+	if dump == nil {
+		t.Fatal("mysqldump was never invoked")
+	}
+	dash := indexOf(dump.Args, "--")
+	if dash < 0 {
+		t.Fatalf("dump args must contain -- separator, got %v", dump.Args)
+	}
+	if dash != len(dump.Args)-2 || dump.Args[len(dump.Args)-1] != "-dashdb" {
+		t.Fatalf("-- must immediately precede the database name, got %v", dump.Args)
+	}
+	if ea := indexOf(dump.Args, "--skip-comments"); ea < 0 || ea > dash {
+		t.Fatalf("extra_args must stay before -- (they are options), got %v", dump.Args)
+	}
+}
+
+// 恢复导入时目标库名同样是位置参数：以 '-' 开头的合法库名会被 mysql 客户端
+// 当成选项（实测 unknown option '-d'）。
+func TestMySQLImportArgsEndOptionsBeforeTargetDatabase(t *testing.T) {
+	rec := &argRecorder{}
+	spec := &RestoreSpec{
+		Kind:         KindMySQL,
+		StagingDir:   t.TempDir(),
+		ArtifactFile: filepath.Join(t.TempDir(), "dump.sql"),
+		Database: &model.DatabaseRestore{
+			TargetDatabase: "-dashout", TargetHost: "127.0.0.1", TargetPort: 3306, TargetUsername: "bmc",
+		},
+		Secrets: SecretBundle{DBPassword: "pw"},
+		Logf:    func(string, string, ...any) {},
+		Exec:    rec,
+	}
+	if err := (&MySQLAdapter{}).Import(context.Background(), spec); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	// 准备步骤也用 mysql 客户端（-e 内嵌 SQL，库名以反引号引用，天然安全）；
+	// 导入步骤以 --binary-mode 区分。
+	var imp *Cmd
+	for i := range rec.calls {
+		c := &rec.calls[i]
+		// 导入：走 stdin 且不带 -e（准备步骤用 -e 执行建库语句）。
+		if filepath.Base(c.Exe) == "mysql" && indexOf(c.Args, "--binary-mode") >= 0 && indexOf(c.Args, "-e") < 0 {
+			imp = c
+			break
+		}
+	}
+	if imp == nil {
+		t.Fatal("mysql import (with --binary-mode) was never invoked")
+	}
+	dash := indexOf(imp.Args, "--")
+	if dash < 0 || dash != len(imp.Args)-2 || imp.Args[len(imp.Args)-1] != "-dashout" {
+		t.Fatalf("-- must immediately precede the target database, got %v", imp.Args)
+	}
+}
+
+func indexOf(xs []string, want string) int {
+	for i, x := range xs {
+		if x == want {
+			return i
+		}
+	}
+	return -1
+}

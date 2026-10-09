@@ -70,6 +70,7 @@ func main() {
 		Exec: agent.OSExecutor{}, SourceRoots: cfg.SourceRoots, RestoreRoots: cfg.RestoreRoots,
 		SourcePathMappings: cfg.SourcePathMappings, RestorePathMappings: cfg.RestorePathMappings,
 		ScratchMinFreeBytes: cfg.ScratchMinFreeBytes, MaxConcurrency: cfg.MaxConcurrency, ResticCacheDir: cfg.ResticCacheDir,
+		ResticCheckReadDataSubset: cfg.ResticCheckReadDataSubset,
 		Logf: func(level, format string, args ...any) {
 			log.Printf("[%s] "+format, append([]any{level}, args...)...)
 		},

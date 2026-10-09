@@ -1662,6 +1662,23 @@ var activeRestorePhases = []string{
 	model.RestorePhaseRollingBack, model.RestorePhaseCancelling,
 }
 
+// filesystemTargetsOverlap 判断两个恢复目标是否会写入同一片目录：完全相同，或
+// 一个是另一个的祖先目录（如 /restore 与 /restore/sub —— 父目录的恢复会写到子目录里）。
+// 仅按路径边界比较，避免把 /restore 与 /restore-other 误判为重叠。
+func filesystemTargetsOverlap(a, b string) bool {
+	// 目标是 Agent 上的 POSIX 路径，必须用 path（而非 filepath）规整：后者在 Windows
+	// 上会把 "/a/b" 变成 "\a\b"，使边界比较失效。
+	a = strings.TrimSuffix(path.Clean(a), "/")
+	b = strings.TrimSuffix(path.Clean(b), "/")
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	return strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
 // filesystemTargetBusy 判断同一 Agent 是否已有未终结的文件系统恢复指向同一目标路径。
 // 目标路径从 target_json 解析（该列无独立索引，故在 Go 侧比较；活跃请求数量很小）。
 func filesystemTargetBusy(ctx context.Context, tx *sql.Tx, rr *model.RestoreRequest) (bool, error) {
@@ -1696,7 +1713,7 @@ func filesystemTargetBusy(ctx context.Context, tx *sql.Tx, rr *model.RestoreRequ
 		var other struct {
 			TargetPath string `json:"target_path"`
 		}
-		if json.Unmarshal([]byte(targetJSON), &other) == nil && other.TargetPath == want.TargetPath {
+		if json.Unmarshal([]byte(targetJSON), &other) == nil && filesystemTargetsOverlap(want.TargetPath, other.TargetPath) {
 			return true, nil
 		}
 	}

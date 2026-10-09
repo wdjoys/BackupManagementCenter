@@ -2439,6 +2439,14 @@ func TestCreateRestoreRequestRejectsBusyFilesystemTarget(t *testing.T) {
 	if err := mk("rr-4", "run-4", model.KindMySQL, "/restore/a", model.RestorePhaseQueued); err != nil {
 		t.Fatalf("database restore must not be affected: %v", err)
 	}
+	// 嵌套目标同样重叠：父目录的恢复会写入子目录（/restore/a 与 /restore/a/sub）
+	if err := mk("rr-7", "run-7", model.KindFilesystem, "/restore/a/sub", model.RestorePhaseQueued); !errors.Is(err, ErrRestoreTargetBusy) {
+		t.Fatalf("nested target must be rejected, got %v", err)
+	}
+	// 仅前缀相同但不是祖先关系（/restore/a 与 /restore/abc）不算重叠
+	if err := mk("rr-8", "run-8", model.KindFilesystem, "/restore/abc", model.RestorePhaseQueued); err != nil {
+		t.Fatalf("sibling-prefix target must be allowed: %v", err)
+	}
 	// 已终结的文件系统恢复不占用目标：先落一条 failed，再在同路径上开新的进行中恢复
 	if err := mk("rr-5", "run-5", model.KindFilesystem, "/restore/c", model.RestorePhaseFailed); err != nil {
 		t.Fatalf("terminal request insert: %v", err)

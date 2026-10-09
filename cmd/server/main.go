@@ -226,7 +226,7 @@ func main() {
 		}
 	}
 
-	sched := scheduler.New(st, schedAdapter{orch}, notifier)
+	sched := scheduler.New(st, schedAdapter{orch}, notifier, cfg.HistoryRetentionDays)
 	sched.Start()
 	defer sched.Stop()
 	defer disp.StopWatchdog()

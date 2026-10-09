@@ -132,12 +132,21 @@ type planBody struct {
 	Credentials *struct {
 		Password string `json:"password,omitempty"`
 	} `json:"credentials,omitempty"`
+	// Password 只用于拒绝误用：数据库口令只从 source.password 或
+	// credentials.password 读取，顶层 password 会被静默丢弃，导致"计划建好了
+	// 但口令为空"、备份报 Access denied (using password: NO)。
+	Password       *string         `json:"password,omitempty"`
 	RepositoryID   string          `json:"repository_id"`
 	Retention      model.Retention `json:"retention"`
 	TimeoutSeconds int             `json:"timeout_seconds"`
 }
 
 func (b *planBody) validate() (string, bool) {
+	// 顶层 password 不参与读取，必须在 switch 之前拒绝（switch 只执行首个
+	// 匹配分支，放在里面会被其它分支跳过）。
+	if b.Password != nil {
+		return "password must be nested: use credentials.password (or source.password)", false
+	}
 	switch {
 	case len(b.Name) < 1 || len(b.Name) > 200:
 		return "name must be 1..200 chars", false

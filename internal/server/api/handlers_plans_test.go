@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 
 	"backupmanagementcenter/internal/model"
@@ -26,5 +27,25 @@ func TestValidateDatabaseEstimateRejectsOplogWithSingleDatabase(t *testing.T) {
 	pg := model.PlanSource{Host: "h", Port: 5432, Username: "u", Database: "appdb", EstimatedDumpBytes: 1 << 20}
 	if msg := validateDatabaseEstimate(model.KindPostgreSQL, pg); msg != "" {
 		t.Fatalf("postgresql must be unaffected, got %q", msg)
+	}
+}
+
+// 顶层 password 不参与读取（口令只从 source.password / credentials.password 取），
+// 必须显式拒绝：否则计划创建成功但口令为空，备份才会以
+// "Access denied ... (using password: NO)" 失败，排查成本高。
+func TestPlanBodyRejectsTopLevelPassword(t *testing.T) {
+	pw := "secret"
+	body := planBody{
+		Name: "p", Kind: model.KindMySQL, AgentID: "a", RepositoryID: "r",
+		Schedule: "0 9 * * *", Timezone: "UTC", TimeoutSeconds: 3600,
+		Retention: model.Retention{KeepLast: 1}, Password: &pw,
+	}
+	if msg, ok := body.validate(); ok || !strings.Contains(msg, "credentials.password") {
+		t.Fatalf("top-level password must be rejected with a hint, got ok=%v msg=%q", ok, msg)
+	}
+	// 去掉误用字段后同一请求必须通过，确认拒绝范围没有扩大。
+	body.Password = nil
+	if msg, ok := body.validate(); !ok {
+		t.Fatalf("valid body must pass, got %q", msg)
 	}
 }

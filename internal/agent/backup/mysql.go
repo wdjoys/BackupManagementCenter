@@ -412,14 +412,28 @@ func (c *mysqlCtx) args(query string) []string {
 
 // runQuery 执行一条语句并把首个非空 stdout 行交给 scan。
 func (c *mysqlCtx) runQuery(ctx context.Context, spec *RestoreSpec, query string, scan func(string)) error {
+	var stderrTail strings.Builder
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.mysql, Args: c.args(query)},
 		func(line string) {
 			if trimmed := strings.TrimSpace(line); trimmed != "" && scan != nil {
 				scan(trimmed)
 			}
-		}, c.logf)
+		}, func(line string) {
+			// 收集 stderr：目标不可达（2003）与凭据错误（1045）此前只体现在 agent
+			// 日志里，运行错误只剩 "mysql query failed (exit 1)"，两者不可区分。
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				stderrTail.WriteString(trimmed + "\n")
+			}
+			if c.logf != nil {
+				c.logf(line)
+			}
+		})
 	if err != nil || exit != 0 {
-		return exitError("mysql query", exit, err)
+		base := exitError("mysql query", exit, err)
+		if tail := strings.TrimSpace(stderrTail.String()); tail != "" {
+			return fmt.Errorf("%w: %s", base, tail)
+		}
+		return base
 	}
 	return nil
 }
@@ -435,7 +449,8 @@ func (a *MySQLAdapter) TargetExists(ctx context.Context, spec *RestoreSpec) (boo
 	query := "SELECT 1 FROM information_schema.schemata WHERE schema_name = '" +
 		strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "'"
 	if err := c.runQuery(ctx, spec, query, func(line string) { found = line }); err != nil {
-		return false, err
+		// 带上意图：恢复尚未触碰目标就失败时，调用方需要知道是"无法判定目标是否存在"。
+		return false, fmt.Errorf("cannot determine whether the target exists: %w", err)
 	}
 	return found != "", nil
 }

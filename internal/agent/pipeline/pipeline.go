@@ -523,7 +523,7 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 		return nil, restoreSafeFail(model.ErrRestoreVerification, "cannot determine whether the target exists", err)
 	}
 	if exists && !execDB.ReplaceExisting {
-		return nil, restoreSafeFail(model.ErrRestoreTargetNotEmpty, "target already exists and overwrite is not enabled", nil)
+		return nil, restoreSafeFail(model.ErrRestoreTargetExists, "target already exists and overwrite is not enabled", nil)
 	}
 	spec.TargetIsNew = !exists
 

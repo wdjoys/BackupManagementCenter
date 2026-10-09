@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/dispatch"
@@ -1299,6 +1300,14 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		if model.IsSystemDatabase(in.RestoreKind, in.Target.Database) {
 			return nil, nil, fmt.Errorf("%w: refusing to restore into system database %q", ErrPathInvalid, in.Target.Database)
 		}
+		// 目标库名长度必须在目标引擎的标识符上限内。等 agent 侧 CREATE DATABASE 报
+		// 1059 再失败时，回滚阶段会用同一个非法标识符 DROP DATABASE 再次失败，阶段机
+		// 落到 rollback_failed → 阻塞**所有**数据库恢复并需人工 resolve（实测 65 字符
+		// 库名触发）。与系统库一样，在受理阶段就拒绝。
+		if max := maxDatabaseNameRunes(in.RestoreKind); max > 0 && utf8.RuneCountInString(in.Target.Database) > max {
+			return nil, nil, fmt.Errorf("%w: target database name is too long for %s (max %d characters)",
+				ErrPathInvalid, in.RestoreKind, max)
+		}
 		// Check the destructive confirmation before validating connection
 		// details.  A caller with a stale/incorrect confirmation must receive
 		// the same forbidden response regardless of which target fields are
@@ -2218,6 +2227,20 @@ func (o *Orchestrator) QueueSnapshotDeletion(ctx context.Context, actorID, repoI
 	o.Audit(ctx, "admin", actorID, "snapshot.delete.requested", "snapshot", snapshotID,
 		map[string]string{"repository_id": repoID, "deletion_id": del.ID, "source": string(del.Source)})
 	return del, created, nil
+}
+
+// maxDatabaseNameRunes 返回目标引擎对数据库标识符的字符数上限（0 表示不设限）。
+// MySQL/MariaDB 为 64；PostgreSQL 为 63（NAMEDATALEN-1）。sqlite 的“库名”是路径，
+// 不适用。
+func maxDatabaseNameRunes(kind string) int {
+	switch kind {
+	case model.KindMySQL:
+		return 64
+	case model.KindPostgreSQL:
+		return 63
+	default:
+		return 0
+	}
 }
 
 // assertSnapshotNotRestoreProtected 拒绝删除承载未终结恢复保护信息的快照。

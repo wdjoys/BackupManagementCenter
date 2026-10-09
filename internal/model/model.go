@@ -105,7 +105,10 @@ const (
 	// 响应文案保持简短：调用方不应据其区分是哪个目标字段有问题。
 	ErrForbidden             = "forbidden"
 	ErrRestoreTargetNotEmpty = "restore_target_not_empty"
-	ErrRestoreVerification   = "restore_verification_failed"
+	// ErrRestoreTargetExists 表示数据库目标已存在且未开启覆盖（与"目标非空"区分：
+	// 数据库恢复对已存在目标会 DROP+CREATE，空库同样需要显式覆盖）。
+	ErrRestoreTargetExists = "restore_target_exists"
+	ErrRestoreVerification = "restore_verification_failed"
 	// ErrRestoreImportFailed 表示恢复的导入步骤本身失败（如权限不足无法建库、
 	// 导入语句报错），与"导入完成但校验不一致"的 ErrRestoreVerification 区分。
 	ErrRestoreImportFailed      = "restore_import_failed"

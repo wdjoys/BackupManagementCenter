@@ -244,6 +244,20 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
           </div>
 
           {kind === 'mongodb' && (
+            <div className="space-y-1.5">
+              <Label className="text-xs">{t('plans.form.authSource')}</Label>
+              <Input
+                value={source.auth_source ?? ''}
+                onChange={(e) => onUpdateSource({ auth_source: e.target.value })}
+                placeholder="admin"
+                disabled={submitting}
+                className="h-9 text-xs"
+              />
+              <p className="text-[11px] text-muted-foreground">{t('plans.form.authSourceHint')}</p>
+            </div>
+          )}
+
+          {kind === 'mongodb' && (
             <div className="flex items-center justify-between rounded-md border border-border p-3 sm:col-span-2">
               <div className="space-y-0.5">
                 <Label className="text-xs">{t('plans.form.captureOplog')}</Label>

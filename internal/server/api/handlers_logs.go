@@ -148,7 +148,8 @@ func logCursor(r *http.Request) (int64, bool) {
 		return 0, false
 	}
 	id, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || id <= 0 {
+	// 0 视为"无游标"（与 /runs/{id}/logs 一致：那边 before_id=0 也返回全量）。
+	if err != nil || id < 0 {
 		return 0, false
 	}
 	return id, true

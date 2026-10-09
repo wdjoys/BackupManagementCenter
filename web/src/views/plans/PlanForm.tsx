@@ -157,6 +157,15 @@ export const PlanForm: React.FC<PlanFormProps> = ({
       if (dbEstimate == null || dbEstimate <= 0) {
         errs['source.estimated_dump_bytes'] = t('plans.rules.dumpBytesPositive')
       }
+      // mongodump 限制：--oplog 只支持整实例 dump，配单库时必然失败；后端同样拒绝，
+      // 这里给出表单内提示而不是等服务端 422。
+      if (
+        model.kind === 'mongodb' &&
+        model.source.capture_oplog === true &&
+        (model.source.database ?? '').trim().toLowerCase() !== 'all'
+      ) {
+        errs['source.capture_oplog'] = t('plans.rules.captureOplogRequiresAll')
+      }
     }
     // 上限对 sqlite 同样生效（后端在 kind 分支之外检查）。
     const estimate = model.source.estimated_dump_bytes

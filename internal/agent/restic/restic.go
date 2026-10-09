@@ -2,6 +2,8 @@
 package restic
 
 import (
+	"backupmanagementcenter/internal/agent/backup"
+	"backupmanagementcenter/internal/model"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,8 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"backupmanagementcenter/internal/agent/backup"
-	"backupmanagementcenter/internal/model"
 )
 
 // Options configures restic CLI invocation.
@@ -330,9 +330,19 @@ func RestoreWithOverwrite(ctx context.Context, exec backup.Executor, opts Option
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
 
-	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(string) {})
+	// 与删除/快照路径一致：收集 stderr 既写日志又并入错误。此前两个回调都是空函数
+	// 且不做 enriched 包装，导致快照下载失败时运行只显示 "restic exit 1
+	// (restic_failed): exit 1"、日志里没有任何 agent 侧信息 —— 仓库损坏、权限不足、
+	// 快照缺失都无法区分。
+	var stderrTail strings.Builder
+	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env}, func(string) {}, func(line string) {
+		stderrTail.WriteString(line + "\n")
+		if opts.Logf != nil {
+			opts.Logf(line)
+		}
+	})
 	if err != nil || exitCode != 0 {
-		return mapResticError(exitCode, err)
+		return enriched(mapResticError(exitCode, err), stderrTail.String())
 	}
 	return nil
 }
@@ -632,12 +642,18 @@ func Init(ctx context.Context, exec backup.Executor, opts Options) error {
 		env = append(env, "RESTIC_CACHE_DIR="+opts.CacheDir)
 	}
 	var lastLine string
+	var stderrTail strings.Builder
 	exitCode, err := exec.Run(ctx, backup.Cmd{Exe: opts.Exe, Args: args, Env: env},
 		func(line string) {
 			lastLine = strings.TrimSpace(line)
-		}, func(string) {})
+		}, func(line string) {
+			stderrTail.WriteString(line + "\n")
+			if opts.Logf != nil {
+				opts.Logf(line)
+			}
+		})
 	if err != nil || exitCode != 0 {
-		return mapResticError(exitCode, err)
+		return enriched(mapResticError(exitCode, err), stderrTail.String())
 	}
 	_ = lastLine // success message
 	return nil

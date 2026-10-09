@@ -531,3 +531,46 @@ func TestRestoreDryRunParsesResticVerbLines(t *testing.T) {
 		t.Errorf("Sample = %d lines, want 5 (only changing entries)", len(progress.Sample))
 	}
 }
+
+// 快照下载（restic restore）是数据库/文件系统恢复的共用前置步骤。此前它的
+// stdout/stderr 回调都是空函数，且不做 enriched 包装：仓库损坏时运行只显示
+// "restic exit 1 (restic_failed): exit 1"、日志中无任何 agent 侧信息，运维无法
+// 区分数据损坏、权限不足还是快照缺失。这里锚定 stderr 必须同时进日志与错误。
+func TestRestoreFailureSurfacesStderr(t *testing.T) {
+	exec := &scriptedExecutor{steps: []struct {
+		code int
+		err  error
+		out  string
+	}{{code: 1, out: "Fatal: unable to find pack file ab12"}}}
+	var logged []string
+	opts := Options{Exe: "restic", RepoPath: "repo", Logf: func(line string) { logged = append(logged, line) }}
+	err := RestoreWithOverwrite(context.Background(), exec, opts, "snap1", "/tmp/target", nil, "always")
+	if err == nil {
+		t.Fatal("want error from failed restore")
+	}
+	if !strings.Contains(err.Error(), "unable to find pack file") {
+		t.Fatalf("error must carry restic stderr, got %v", err)
+	}
+	if len(logged) == 0 || !strings.Contains(logged[0], "unable to find pack file") {
+		t.Fatalf("stderr must be logged, got %v", logged)
+	}
+}
+
+// init 失败同样必须带上 stderr（仓库不存在 / 权限 / 后端错误）。
+func TestInitFailureSurfacesStderr(t *testing.T) {
+	exec := &scriptedExecutor{steps: []struct {
+		code int
+		err  error
+		out  string
+	}{{code: 1, out: "Fatal: create key in repository failed"}}}
+	var logged []string
+	opts := Options{Exe: "restic", RepoPath: "repo", Logf: func(line string) { logged = append(logged, line) }}
+	if err := Init(context.Background(), exec, opts); err == nil {
+		t.Fatal("want error from failed init")
+	} else if !strings.Contains(err.Error(), "create key in repository failed") {
+		t.Fatalf("init error must carry restic stderr, got %v", err)
+	}
+	if len(logged) == 0 {
+		t.Fatal("init stderr must be logged")
+	}
+}

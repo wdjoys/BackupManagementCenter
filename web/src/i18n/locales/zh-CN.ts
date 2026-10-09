@@ -745,6 +745,7 @@ export default {
     },
     "restoreDialog": {
       "title": "恢复快照（文件系统）",
+      "databaseTitle": "恢复快照（数据库）",
       "snapshot": "快照",
       "targetPath": "宿主机目标路径",
       "targetPathPlaceholder": "/backup-restore/job-1",

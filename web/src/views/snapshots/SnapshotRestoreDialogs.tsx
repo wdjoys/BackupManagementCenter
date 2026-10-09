@@ -139,7 +139,9 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-sm font-semibold">
-              {t('snapshots.restoreDialog.title')}
+              {restoreKind === 'filesystem'
+                ? t('snapshots.restoreDialog.title')
+                : t('snapshots.restoreDialog.databaseTitle')}
             </DialogTitle>
             <DialogDescription className="text-xs">
               {t('snapshots.restoreDialog.subtitle')}

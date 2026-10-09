@@ -745,6 +745,7 @@ export default {
     },
     "restoreDialog": {
       "title": "Restore Snapshot (Filesystem)",
+      "databaseTitle": "Restore Snapshot (Database)",
       "snapshot": "Snapshot",
       "targetPath": "Host Target Path",
       "targetPathPlaceholder": "/backup-restore/job-1",

@@ -2298,3 +2298,66 @@ func TestBackupSQLiteIsOwnerReadableOnly(t *testing.T) {
 		t.Fatalf("backup permissions = %04o, want 0600", perm)
 	}
 }
+
+// 终态观察者：仅在事务提交成功且进入终态时通知一次。指标依赖它统计
+// bmc_runs_total/bmc_run_duration_seconds（此前这两项从不统计真实终态运行）。
+func TestTransitionRunNotifiesObserverOnTerminalOnly(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	var got []model.Run
+	ts.Store.(interface {
+		SetRunObserver(RunObserver)
+	}).SetRunObserver(observerFunc(func(run model.Run) { got = append(got, run) }))
+
+	mk := func(id string) {
+		if err := ts.Store.CreateRun(ctx, &model.Run{
+			ID: id, AgentID: "a1", Operation: model.OpBackup, Status: model.RunQueued, QueuedAt: now,
+		}); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+	}
+	mk("run-ok")
+	if err := ts.Store.TransitionRun(ctx, "run-ok", model.RunQueued, model.RunDispatched, nil); err != nil {
+		t.Fatalf("queued->dispatched: %v", err)
+	}
+	if err := ts.Store.TransitionRun(ctx, "run-ok", model.RunDispatched, model.RunRunning, nil); err != nil {
+		t.Fatalf("dispatched->running: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("non-terminal transition must not notify, got %d", len(got))
+	}
+	fin := now.Add(90 * time.Second)
+	if err := ts.Store.TransitionRun(ctx, "run-ok", model.RunRunning, model.RunSucceeded, func(r *model.Run) {
+		r.FinishedAt = &fin
+	}); err != nil {
+		t.Fatalf("running->succeeded: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("terminal transition must notify exactly once, got %d", len(got))
+	}
+	if got[0].Operation != model.OpBackup || got[0].Status != model.RunSucceeded {
+		t.Fatalf("observer got %+v", got[0])
+	}
+	// 已是终态：再次转换必须失败且不得重复通知。
+	if err := ts.Store.TransitionRun(ctx, "run-ok", model.RunSucceeded, model.RunFailed, nil); err == nil {
+		t.Fatal("transition from a terminal state must fail")
+	}
+	if len(got) != 1 {
+		t.Fatalf("no extra notification expected, got %d", len(got))
+	}
+
+	// 失败态同样通知。
+	mk("run-fail")
+	if err := ts.Store.TransitionRun(ctx, "run-fail", model.RunQueued, model.RunFailed, nil); err != nil {
+		t.Fatalf("queued->failed: %v", err)
+	}
+	if len(got) != 2 || got[1].Status != model.RunFailed {
+		t.Fatalf("failed transition must notify, got %+v", got)
+	}
+}
+
+type observerFunc func(model.Run)
+
+func (f observerFunc) ObserveRunTerminal(run model.Run) { f(run) }

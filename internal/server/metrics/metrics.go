@@ -11,13 +11,12 @@ import (
 )
 
 type Metrics struct {
-	runsTotal       *prometheus.CounterVec
-	runDuration     *prometheus.HistogramVec
-	agentsOnline    prometheus.Gauge
-	queueDepth      prometheus.Gauge
-	repoLastCheck   *prometheus.GaugeVec
-	grpcReconnects  prometheus.Counter
-	registry        *prometheus.Registry
+	runsTotal      *prometheus.CounterVec
+	runDuration    *prometheus.HistogramVec
+	queueDepth     prometheus.Gauge
+	repoLastCheck  *prometheus.GaugeVec
+	grpcReconnects prometheus.Counter
+	registry       *prometheus.Registry
 }
 
 func New() *Metrics {
@@ -31,9 +30,6 @@ func New() *Metrics {
 			Help:    "Wall-clock duration of terminal runs.",
 			Buckets: []float64{1, 5, 15, 30, 60, 300, 900, 3600, 14400},
 		}, []string{"operation", "status"}),
-		agentsOnline: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "bmc_agents_online", Help: "Agents with a live control stream.",
-		}),
 		queueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "bmc_dispatch_queue_depth", Help: "Runs waiting for dispatch.",
 		}),
@@ -45,7 +41,7 @@ func New() *Metrics {
 		}),
 		registry: reg,
 	}
-	reg.MustRegister(m.runsTotal, m.runDuration, m.agentsOnline, m.queueDepth, m.repoLastCheck, m.grpcReconnects)
+	reg.MustRegister(m.runsTotal, m.runDuration, m.queueDepth, m.repoLastCheck, m.grpcReconnects)
 	return m
 }
 
@@ -55,9 +51,18 @@ func (m *Metrics) ObserveRun(operation, status string, d time.Duration) {
 	m.runDuration.WithLabelValues(operation, status).Observe(d.Seconds())
 }
 
-func (m *Metrics) SetAgentsOnline(n int)      { m.agentsOnline.Set(float64(n)) }
-func (m *Metrics) SetQueueDepth(n int)        { m.queueDepth.Set(float64(n)) }
-func (m *Metrics) IncReconnects()             { m.grpcReconnects.Inc() }
+// SetAgentsOnlineFunc 用回调在抓取时计算在线 Agent 数。此前 bmc_agents_online 是一个
+// 从未被赋值的普通 Gauge，导出值恒为 0（与实际在线数无关），监控据此会误判全部 Agent 离线。
+func (m *Metrics) SetAgentsOnlineFunc(fn func() float64) {
+	if fn == nil {
+		return
+	}
+	m.registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "bmc_agents_online", Help: "Agents with a live control stream.",
+	}, fn))
+}
+func (m *Metrics) SetQueueDepth(n int) { m.queueDepth.Set(float64(n)) }
+func (m *Metrics) IncReconnects()      { m.grpcReconnects.Inc() }
 func (m *Metrics) SetRepoCheck(id string, t time.Time) {
 	m.repoLastCheck.WithLabelValues(id).Set(float64(t.Unix()))
 }

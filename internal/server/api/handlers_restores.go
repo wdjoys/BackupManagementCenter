@@ -112,7 +112,8 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 		s.jobsErr(w, err)
 		return
 	}
-	s.Met.ObserveRun("restore_requested", "queued", 0)
+	// 运行计数由 store 的终态观察者统一记录；此处不再写入合成的
+	// "restore_requested/queued" 序列（它并非终态运行，会污染 bmc_runs_total）。
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"restore_request_id":   req.ID,
 		"pre_restore_run_id":   req.PreRestoreRunID,
@@ -132,10 +133,10 @@ func (s *Server) handleResolveRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		RunID        string `json:"run_id"`
-		Note         string `json:"note"`
-		ExecutionStopped bool `json:"execution_stopped"`
-		TargetVerified   bool `json:"target_verified"`
+		RunID            string `json:"run_id"`
+		Note             string `json:"note"`
+		ExecutionStopped bool   `json:"execution_stopped"`
+		TargetVerified   bool   `json:"target_verified"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -158,9 +159,9 @@ func (s *Server) handleResolveRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"restore_request_id": rr.ID,
-		"run_id":             rr.RunID,
-		"phase":              rr.Phase,
+		"restore_request_id":   rr.ID,
+		"run_id":               rr.RunID,
+		"phase":                rr.Phase,
 		"rollback_snapshot_id": rr.RollbackSnapshotID,
 	})
 }

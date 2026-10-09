@@ -148,6 +148,18 @@ func main() {
 	// and read per call; unconfigured settings disable sending.
 	notifier := notification.NewTelegramNotifier(st, cfg.PublicURL)
 
+	// 在线 Agent 数在抓取时由 registry 计算：此前该 Gauge 从未被赋值，导出恒为 0。
+	met.SetAgentsOnlineFunc(func() float64 { return float64(len(reg.List())) })
+
+	// 终态运行计数：此前 bmc_runs_total/bmc_run_duration_seconds 只被写入一个合成的
+	// restore_requested 标签，从不统计任何真实终态运行（运维无法据此监控备份成败）。
+	// 通过 store 的可选观察者接口在 TransactionRun 提交后统一观测，覆盖全部转换点。
+	if os, ok := st.(interface {
+		SetRunObserver(store.RunObserver)
+	}); ok {
+		os.SetRunObserver(terminalRunMetrics{met: met})
+	}
+
 	ready := &atomic.Bool{}
 
 	// Orchestrator + dispatcher (Src wired after construction to break the
@@ -165,6 +177,7 @@ func main() {
 		OfflineCheckInterval:     30 * time.Second,
 		OfflineThreshold:         90 * time.Second,
 	}, notifier, orch.WarmSnapshotCache)
+	svc.SetMetrics(met)
 
 	// Restart recovery: retry idempotent work left in-flight, but fail
 	// destructive operations because their external side effects are unknown.
@@ -239,10 +252,10 @@ func main() {
 	}()
 	handler := api.New(&api.Server{
 		ST: st, Bus: bus, Met: met, Jobs: orch,
-		Version:   version.Version,
-		PublicURL: cfg.PublicURL,
-		Reg:       reg,
-		Ready:     ready.Load,
+		Version:              version.Version,
+		PublicURL:            cfg.PublicURL,
+		Reg:                  reg,
+		Ready:                ready.Load,
 		DatabaseRestoreKinds: kindSet(cfg.DatabaseRestoreKinds),
 	})
 
@@ -446,4 +459,18 @@ func kindSet(kinds []string) map[string]bool {
 		out[k] = true
 	}
 	return out
+}
+
+// terminalRunMetrics 把终态运行折算成指标（时长取 queued→finished）。
+type terminalRunMetrics struct{ met *metrics.Metrics }
+
+func (t terminalRunMetrics) ObserveRunTerminal(run model.Run) {
+	var d time.Duration
+	if run.FinishedAt != nil {
+		d = run.FinishedAt.Sub(run.QueuedAt)
+		if d < 0 {
+			d = 0
+		}
+	}
+	t.met.ObserveRun(run.Operation, run.Status, d)
 }

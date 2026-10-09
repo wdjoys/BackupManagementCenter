@@ -42,15 +42,37 @@ func init() {
 }
 
 // Service implements bmcv1.AgentControlServer for the gRPC channel layer.
+// RunMetrics 是本服务需要的最小指标面。nil 时全部为 no-op（测试与嵌入式场景）。
+type RunMetrics interface {
+	SetRepoCheck(repositoryID string, at time.Time)
+	IncReconnects()
+}
+
+// SetMetrics 注入指标实现（构造后接线，与 orchestrator 的 AgentCaps 同风格）。
+func (s *Service) SetMetrics(m RunMetrics) { s.met = m }
+
+func (s *Service) recordRepoCheck(repositoryID string, at time.Time) {
+	if s.met != nil && repositoryID != "" {
+		s.met.SetRepoCheck(repositoryID, at)
+	}
+}
+
+func (s *Service) recordStreamStart() {
+	if s.met != nil {
+		s.met.IncReconnects()
+	}
+}
+
 type Service struct {
 	bmcv1.UnimplementedAgentControlServer
 
-	store    store.Store
-	reg      *Registry
-	bus      events.Bus
-	cfg      Config
-	notifier notification.FailureNotifier
+	store     store.Store
+	reg       *Registry
+	bus       events.Bus
+	cfg       Config
+	notifier  notification.FailureNotifier
 	warmCache func(ctx context.Context, repoID, agentID, snapshotID string) error
+	met       RunMetrics
 
 	// mu protects lastSeenWrite for the heartbeat throttle
 	lastSeenMu     sync.Mutex
@@ -218,6 +240,8 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 	}
 
 	// Register the stream (kicks old connection if any)
+	// 每次控制流（重）建立即计数：此前 bmc_agent_grpc_reconnects_total 恒为 0。
+	s.recordStreamStart()
 	sendCh, streamCtx := s.reg.Register(stream.Context(), agentID)
 
 	// Ensure cleanup on exit
@@ -792,7 +816,11 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 				}
 			}
 			if repositoryID != "" {
-				_ = s.store.MarkRepositoryChecked(ctx, repositoryID, time.Now().UTC())
+				now := time.Now().UTC()
+				_ = s.store.MarkRepositoryChecked(ctx, repositoryID, now)
+				// 此前 bmc_repository_last_check_timestamp 从未被赋值、完全不导出：
+				// 运维看不到仓库"最近一次成功校验"的时间，只能被动等仓库状态变化。
+				s.recordRepoCheck(repositoryID, now)
 			}
 		}
 	}

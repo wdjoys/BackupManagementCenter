@@ -26,10 +26,18 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// RunObserver 在每个运行**成功**转入终态后各调用一次（可选；未设置时无行为）。
+// 指标侧用它统计「按操作与终态的运行数」，避免在十来个调用点逐个埋点。
+type RunObserver interface {
+	ObserveRunTerminal(run model.Run)
+}
+
 type sqliteStore struct {
 	db   *sql.DB
 	mu   sync.Mutex
 	seal secrets.Sealer
+
+	runObserver RunObserver
 }
 
 // BackupSQLite creates a consistent point-in-time copy using SQLite's online
@@ -1173,6 +1181,10 @@ func isTerminal(status string) bool {
 	return status == model.RunSucceeded || status == model.RunFailed || status == model.RunCancelled
 }
 
+// SetRunObserver 注入终态观察者。调用方按接口断言设置（st 的动态类型是本类型），
+// 因此不会像"包装 store"那样破坏其它可选接口的能力断言。
+func (s *sqliteStore) SetRunObserver(obs RunObserver) { s.runObserver = obs }
+
 func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mutate func(*model.Run)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1233,6 +1245,11 @@ func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mu
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("transition run commit: %w", err)
+	}
+	// 仅在事务提交成功后通知，且只在进入终态时；重复转换会在上面以
+	// ErrInvalidTransition 提前返回，因此每个 run 至多通知一次。
+	if s.runObserver != nil && isTerminal(run.Status) {
+		s.runObserver.ObserveRunTerminal(*run)
 	}
 	return nil
 }

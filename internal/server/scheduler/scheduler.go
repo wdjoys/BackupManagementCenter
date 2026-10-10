@@ -246,7 +246,9 @@ func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
 	}
 	for _, repo := range repos {
 		if s.agentOffline(ctx, repo.AgentID) {
-			slog.Info("scheduler: skip retention for offline agent", "repositoryID", repo.ID, "agentID", repo.AgentID)
+			// 同样走限频：该分支此前是裸 slog.Info，每 15s 一行，长期离线仓库会持续刷屏
+			// （本环境 22 个离线 agent，实测单仓库 1m46s 内 7 行）。
+			s.logRetentionSkip(repo.ID, "offline", "scheduler: skip retention for offline agent")
 			continue
 		}
 		runs, err := s.store.ListRuns(ctx, store.RunFilter{RepositoryID: repo.ID, Limit: 100,

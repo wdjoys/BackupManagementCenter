@@ -479,6 +479,11 @@ func (a *MySQLAdapter) TargetExists(ctx context.Context, spec *RestoreSpec) (boo
 // 会无界等待（实测阻塞 52s，整次恢复从 4-5s 变成 59s），而这一步一旦失败/被取消，
 // 回滚会用同一个 DROP 再失败一次，阶段机落到 rollback_failed 并阻塞**所有**数据库
 // 恢复。与 SQLite 的预检同一思路：写之前就拒绝，让运维先断开目标库的会话。
+//
+// 判定必须按 MDL 而非仅按连接默认库：实测占用方**不设默认库**、只用限定名
+// （BEGIN; SELECT * FROM <target>.<table> LIMIT 1;）持表锁时 processlist.db 为
+// NULL，只看 db 会漏检并继续阻塞在 DROP DATABASE（实测阻塞 23.6s）。因此两条判据
+// 都查：① 默认库是目标库的会话；② 目标库上仍有 GRANTED 的 metadata lock。
 func (a *MySQLAdapter) PreflightRestore(ctx context.Context, spec *RestoreSpec) error {
 	c, err := mysqlPrepare(spec)
 	if err != nil {
@@ -488,15 +493,28 @@ func (a *MySQLAdapter) PreflightRestore(ctx context.Context, spec *RestoreSpec) 
 	if target == "" || strings.EqualFold(target, "all") {
 		return nil
 	}
-	var busy []string
+	quoted := strings.ReplaceAll(target, "'", "''")
 	// CONNECTION_ID() 排除本次检查自身的连接。
-	query := "SELECT id, user, host, command, time, state FROM information_schema.processlist WHERE db = '" +
-		strings.ReplaceAll(target, "'", "''") + "' AND id <> CONNECTION_ID()"
+	var busy []string
+	query := "SELECT CONCAT('session ', id, ' user=', user, ' host=', host, ' cmd=', command, ' time=', time, ' state=', state) FROM information_schema.processlist WHERE db = '" +
+		quoted + "' AND id <> CONNECTION_ID()"
 	if err := c.runQuery(ctx, spec, query, func(line string) { busy = append(busy, line) }); err != nil {
 		return fmt.Errorf("check target database sessions: %w", err)
 	}
+	// 按 MDL 兜住"默认库为空但锁着目标库表"的会话。performance_schema.metadata_locks
+	// 在 MySQL 5.7+ 才有，且可能未启用：查不到不能阻断恢复，按尽力而为处理。
+	mdlQuery := "SELECT CONCAT('metadata lock ', LOCK_TYPE, ' on ', OBJECT_SCHEMA, '.', IFNULL(OBJECT_NAME, '-')) FROM performance_schema.metadata_locks WHERE OBJECT_SCHEMA = '" +
+		quoted + "' AND LOCK_STATUS = 'GRANTED'"
+	var mdl []string
+	if err := c.runQuery(ctx, spec, mdlQuery, func(line string) { mdl = append(mdl, line) }); err != nil {
+		if spec.Logf != nil {
+			spec.Logf("warn", "无法查询 performance_schema.metadata_locks（旧服务端或未启用），仅按连接默认库判断目标占用：%v", err)
+		}
+	}
+	busy = append(busy, mdl...)
 	if len(busy) > 0 {
-		return fmt.Errorf("target database %q still has %d active session(s): close all target connections and retry", target, len(busy))
+		return fmt.Errorf("target database %q still has %d active lock(s)/session(s) (%s): close all target connections and retry",
+			target, len(busy), strings.Join(busy, "; "))
 	}
 	return nil
 }

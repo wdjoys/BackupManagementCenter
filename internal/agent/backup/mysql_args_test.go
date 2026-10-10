@@ -484,20 +484,40 @@ func TestValidCharsetName(t *testing.T) {
 	}
 }
 
-// rowsExec 回放预置的 stdout 行，用于驱动依赖查询结果的预检。
+// rowsExec 分别回放 processlist 与 metadata_locks 两个查询的输出。
 type rowsExec struct {
-	rows []string
-	cmds [][]string
+	sessions []string
+	mdl      []string
+	mdlErr   bool
+	cmds     [][]string
 }
 
 func (f *rowsExec) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (int, error) {
+	args := strings.Join(c.Args, " ")
 	f.cmds = append(f.cmds, c.Args)
-	if strings.Contains(strings.Join(c.Args, " "), "processlist") && onStdout != nil {
-		for _, r := range f.rows {
+	switch {
+	case strings.Contains(args, "information_schema.processlist"):
+		for _, r := range f.sessions {
+			onStdout(r)
+		}
+	case strings.Contains(args, "metadata_locks"):
+		if f.mdlErr {
+			return 1, nil
+		}
+		for _, r := range f.mdl {
 			onStdout(r)
 		}
 	}
 	return 0, nil
+}
+
+func (f *rowsExec) queryWith(sub string) (string, bool) {
+	for _, args := range f.cmds {
+		if joined := strings.Join(args, " "); strings.Contains(joined, sub) {
+			return joined, true
+		}
+	}
+	return "", false
 }
 
 func mysqlRestoreSpecForPreflight(exec Executor, target string) *RestoreSpec {
@@ -514,20 +534,23 @@ func mysqlRestoreSpecForPreflight(exec Executor, target string) *RestoreSpec {
 }
 
 // 目标库被其它会话占用时必须拒绝：DROP DATABASE 要拿 schema metadata lock，被占用
-// 时无界等待（实测阻塞 52s），且这一步失败后回滚会用同一个 DROP 再次失败，阶段机
-// 落到 rollback_failed 阻塞所有数据库恢复。
+// 时无界等待，且这一步失败后回滚会用同一个 DROP 再次失败，阶段机落到 rollback_failed
+// 阻塞所有数据库恢复。
 func TestMySQLPreflightRejectsBusyTarget(t *testing.T) {
-	busy := &rowsExec{rows: []string{"7861\tbmc\t10.0.0.9:52355\tSleep\t12\tNULL"}}
+	busy := &rowsExec{sessions: []string{"session 7861 user=bmc host=10.0.0.9 cmd=Sleep time=12 state=NULL"}}
 	err := (&MySQLAdapter{}).PreflightRestore(context.Background(), mysqlRestoreSpecForPreflight(busy, "appdb"))
 	if err == nil {
 		t.Fatal("目标库仍被占用时必须拒绝恢复")
 	}
-	if !strings.Contains(err.Error(), "active session") {
-		t.Fatalf("报错应说明目标库仍有会话: %v", err)
+	if !strings.Contains(err.Error(), "active lock(s)/session(s)") {
+		t.Fatalf("报错应说明目标库仍有占用: %v", err)
 	}
 	// 查询本身必须按目标库过滤，并排除检查自身的连接——否则要么拦不住占用，
 	// 要么把自己的连接当占用、永远拒绝恢复。
-	query := strings.Join(busy.cmds[0], " ")
+	query, ok := busy.queryWith("information_schema.processlist")
+	if !ok {
+		t.Fatal("必须查询 information_schema.processlist")
+	}
 	if !strings.Contains(query, "db = 'appdb'") {
 		t.Fatalf("必须按目标库过滤: %s", query)
 	}
@@ -545,9 +568,40 @@ func TestMySQLPreflightRejectsBusyTarget(t *testing.T) {
 	if err := (&MySQLAdapter{}).PreflightRestore(context.Background(), mysqlRestoreSpecForPreflight(quoted, "a'b")); err != nil {
 		t.Fatalf("含单引号的目标库名应能正常检查: %v", err)
 	}
-	q := strings.Join(quoted.cmds[0], " ")
-	// 断言转义后的形态：SQL 里应为两个连续单引号，避免注入。
+	q, _ := quoted.queryWith("information_schema.processlist")
 	if !strings.Contains(q, "db = 'a''b'") {
 		t.Fatalf("目标库名必须做单引号转义: %s", q)
+	}
+}
+
+// 占用方不设默认库、只用限定名锁住目标库表时 processlist.db 为 NULL，只看 db 会漏检
+// 并继续阻塞在 DROP DATABASE（实测阻塞 23.6s）。必须按 metadata lock 兜住。
+func TestMySQLPreflightDetectsMetadataLockWithoutDefaultDB(t *testing.T) {
+	exec := &rowsExec{mdl: []string{"metadata lock SHARED_READ on appdb.items"}}
+	err := (&MySQLAdapter{}).PreflightRestore(context.Background(), mysqlRestoreSpecForPreflight(exec, "appdb"))
+	if err == nil {
+		t.Fatal("目标库上仍有 GRANTED metadata lock 时必须拒绝恢复")
+	}
+	if !strings.Contains(err.Error(), "metadata lock SHARED_READ on appdb.items") {
+		t.Fatalf("报错应带上具体的锁对象便于排查: %v", err)
+	}
+	q, ok := exec.queryWith("metadata_locks")
+	if !ok {
+		t.Fatal("必须查询 performance_schema.metadata_locks")
+	}
+	if !strings.Contains(q, "OBJECT_SCHEMA = 'appdb'") || !strings.Contains(q, "LOCK_STATUS = 'GRANTED'") {
+		t.Fatalf("MDL 查询必须按目标库与 GRANTED 过滤: %s", q)
+	}
+}
+
+// metadata_locks 在 MySQL 5.7 之前不存在、也可能未启用：该查询失败**不能**阻断恢复，
+// 必须退化为只按连接默认库判断（否则会变成"旧服务端永远无法恢复"的新缺陷）。
+func TestMySQLPreflightToleratesMissingMetadataLocksTable(t *testing.T) {
+	exec := &rowsExec{mdlErr: true}
+	if err := (&MySQLAdapter{}).PreflightRestore(context.Background(), mysqlRestoreSpecForPreflight(exec, "appdb")); err != nil {
+		t.Fatalf("metadata_locks 查询失败时不得阻断恢复: %v", err)
+	}
+	if _, ok := exec.queryWith("information_schema.processlist"); !ok {
+		t.Fatal("仍应照常检查连接默认库")
 	}
 }

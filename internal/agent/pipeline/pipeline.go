@@ -1456,6 +1456,12 @@ func newResticOpts(d Deps, repoPath, tempDir string, secrets backup.SecretBundle
 				d.Logf("error", "restic stderr: %s", line)
 			}
 		},
+		// 我们自己生成的摘要（保留策略裁剪结果）走 info，不带 stderr 前缀。
+		InfoLogf: func(line string) {
+			if d.Logf != nil {
+				d.Logf("info", "%s", line)
+			}
+		},
 	}
 	if opts.Exe == "" {
 		opts.Exe = "restic"

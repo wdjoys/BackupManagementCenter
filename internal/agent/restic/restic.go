@@ -24,6 +24,10 @@ type Options struct {
 	RcloneConfFile string       // 0600 rclone.conf path; required for rclone: repos
 	WorkingDir     string       // optional working directory for relative backup paths
 	Logf           func(string) // optional stderr sink; called with a readable line, already level-tagged by the caller
+	// InfoLogf 是给"我们自己生成的摘要"用的 info 级日志出口（如保留策略裁剪摘要）。
+	// 不能借用 Logf：那是 restic stderr 的出口，级别固定 error 且带 "restic stderr: "
+	// 前缀——实测保留成功摘要因此被记为 error 级，按 error 告警/检索会把正常保留误判为失败。
+	InfoLogf func(string)
 	// ReadDataSubset 是 check 的 --read-data-subset（空表示只做结构校验）。
 	// 只做结构校验时仓库内的静默位腐不会被发现。
 	ReadDataSubset string
@@ -467,7 +471,7 @@ func forget(ctx context.Context, exec backup.Executor, opts Options, retention m
 // 被直接丢弃，保留策略实际删了多少个快照在运行日志里完全不可见 —— 分组错误导致
 // "报 succeeded 却一个也不删"的静默失效因此长期无人发现。
 func logRetentionResult(opts Options, tags []string, stdout string) {
-	if opts.Logf == nil {
+	if opts.Logf == nil && opts.InfoLogf == nil {
 		return
 	}
 	// restic 0.18 的 forget --json 输出是**顶层数组**（每个元素是一组，含
@@ -486,8 +490,14 @@ func logRetentionResult(opts Options, tags []string, stdout string) {
 		removed += len(g.Remove)
 		kept += len(g.Keep)
 	}
-	opts.Logf(fmt.Sprintf("保留策略：删除 %d 个快照，保留 %d 个（分组数 %d，标签 %s）",
-		removed, kept, len(groups), strings.Join(tags, ",")))
+	line := fmt.Sprintf("保留策略：删除 %d 个快照，保留 %d 个（分组数 %d，标签 %s）",
+		removed, kept, len(groups), strings.Join(tags, ","))
+	// 摘要走 info 出口：它是我们自己生成的正常结果，不是 restic 的 stderr。
+	if opts.InfoLogf != nil {
+		opts.InfoLogf(line)
+		return
+	}
+	opts.Logf(line)
 }
 
 // DeleteSnapshots 删除指定 snapshot ID 的快照，并可选 prune 回收空间。

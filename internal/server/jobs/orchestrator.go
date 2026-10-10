@@ -1228,6 +1228,25 @@ func (o *Orchestrator) StartRetentionRun(ctx context.Context, repositoryID strin
 		if r.KeepLast+r.KeepDaily+r.KeepWeekly+r.KeepMonthly == 0 {
 			continue
 		}
+		// 该计划还没有成功备份时不要派发保留：否则会在空仓库上空跑一次，而这次空跑
+		// 会立刻吃掉仓库级 24h 节流窗口，导致紧随其后的首批备份在 24h 内完全不受
+		// keep_last 约束（实测：新建启用计划 4s 后即在快照数=0 的仓库上派发保留，
+		// 随后 4 次备份的快照保持 4 个不降，直到次日才被裁剪）。
+		backups, err := o.Store.ListRuns(ctx, store.RunFilter{
+			PlanID:    plan.ID,
+			Operation: model.OpBackup,
+			Statuses:  []string{model.RunSucceeded},
+			Limit:     1,
+		})
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("plan %s: check backups: %w", plan.ID, err)
+			}
+			continue
+		}
+		if len(backups) == 0 {
+			continue
+		}
 		if _, err := o.SystemRun(ctx, repo.AgentID, repositoryID, model.OpForget, model.ForgetTask{
 			PlanID:     plan.ID,
 			Kind:       plan.Kind,

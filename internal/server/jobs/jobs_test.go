@@ -1949,6 +1949,11 @@ func TestStartRetentionRunScopesToPlan(t *testing.T) {
 		Enabled: true, RepositoryID: "repo-1",
 		Retention: model.Retention{KeepLast: 3},
 	}
+	// 保留只在该计划已有成功备份后才派发（空仓库空跑会吃掉仓库级 24h 节流窗口）。
+	st.runs["run-backup-1"] = &model.Run{
+		ID: "run-backup-1", PlanID: "plan-1", AgentID: "agent-1", RepositoryID: "repo-1",
+		Operation: model.OpBackup, Status: model.RunSucceeded, QueuedAt: time.Now().UTC(),
+	}
 
 	if err := o.StartRetentionRun(ctx, "repo-1"); err != nil {
 		t.Fatalf("StartRetentionRun: %v", err)
@@ -1975,6 +1980,47 @@ func TestStartRetentionRunScopesToPlan(t *testing.T) {
 	}
 }
 
+// 计划还没有成功备份时不得派发保留：空仓库空跑会立刻吃掉仓库级 24h 节流窗口
+// （实测：新建启用计划 4s 后即在快照数=0 的仓库上派发保留，随后 4 次备份的快照
+// 在 24h 内完全不受 keep_last 约束）。
+func TestStartRetentionRunSkipsPlanWithoutBackups(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+	o, _ := newTestOrchestrator(st, newFakeDispatcher())
+
+	st.agents["agent-1"] = &model.Agent{ID: "agent-1", Name: "a", Hostname: "h", Status: model.AgentOnline, EnrolledAt: time.Now().UTC()}
+	st.repos["repo-1"] = &model.Repository{ID: "repo-1", AgentID: "agent-1", RepositoryPath: "r:/x", Status: "ready"}
+	st.plans["plan-1"] = &model.Plan{ID: "plan-1", Name: "p", AgentID: "agent-1", Kind: model.KindMySQL,
+		Enabled: true, RepositoryID: "repo-1", Retention: model.Retention{KeepLast: 2}}
+
+	if err := o.StartRetentionRun(ctx, "repo-1"); err != nil {
+		t.Fatalf("StartRetentionRun: %v", err)
+	}
+	for _, r := range st.runs {
+		if r.Operation == model.OpForget {
+			t.Fatalf("空仓库（该计划尚无成功备份）不得派发保留，却产生了 forget run %s", r.ID)
+		}
+	}
+
+	// 出现成功备份后必须恢复派发（守卫只跳过"还没有东西可裁剪"的计划）。
+	st.runs["run-backup-1"] = &model.Run{
+		ID: "run-backup-1", PlanID: "plan-1", AgentID: "agent-1", RepositoryID: "repo-1",
+		Operation: model.OpBackup, Status: model.RunSucceeded, QueuedAt: time.Now().UTC(),
+	}
+	if err := o.StartRetentionRun(ctx, "repo-1"); err != nil {
+		t.Fatalf("StartRetentionRun(after backup): %v", err)
+	}
+	found := false
+	for _, r := range st.runs {
+		if r.Operation == model.OpForget {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("已有成功备份后必须派发保留")
+	}
+}
+
 // 同一仓库的多个计划必须各自按自己的保留策略裁剪：此前只取第一个启用计划，
 // 其余计划的快照永不裁剪、无界累积（实测某仓库 41 个计划中仅 1 个被裁剪）。
 func TestStartRetentionRunCoversEveryEnabledPlan(t *testing.T) {
@@ -1992,6 +2038,15 @@ func TestStartRetentionRunCoversEveryEnabledPlan(t *testing.T) {
 		Enabled: false, RepositoryID: "repo-1", Retention: model.Retention{KeepLast: 9}}
 	st.plans["plan-4-nopolicy"] = &model.Plan{ID: "plan-4-nopolicy", Name: "p4", AgentID: "agent-1", Kind: model.KindMySQL,
 		Enabled: true, RepositoryID: "repo-1", Retention: model.Retention{}}
+
+	// 保留只在该计划已有成功备份后才派发（空仓库空跑会吃掉仓库级 24h 节流窗口），
+	// 因此给两个"启用且有策略"的计划各放一条成功备份。
+	for _, planID := range []string{"plan-1", "plan-2"} {
+		st.runs["run-backup-"+planID] = &model.Run{
+			ID: "run-backup-" + planID, PlanID: planID, AgentID: "agent-1", RepositoryID: "repo-1",
+			Operation: model.OpBackup, Status: model.RunSucceeded, QueuedAt: time.Now().UTC(),
+		}
+	}
 
 	if err := o.StartRetentionRun(ctx, "repo-1"); err != nil {
 		t.Fatalf("StartRetentionRun: %v", err)

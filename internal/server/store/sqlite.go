@@ -2190,6 +2190,12 @@ func updateRestoreRequestTx(ctx context.Context, tx *sql.Tx, in FinishRestoreRun
 	case model.RestorePhaseReleasesOccupancy(currentPhase.String) && currentPhase.String != phase:
 		// 已确认的安全终态保持原值。
 		phase = currentPhase.String
+	case currentPhase.String == model.RestorePhaseManualRecoveryNeeded || currentPhase.String == model.RestorePhaseRollbackFailed:
+		// 需要人工确认的终态（占用型）同样不可被迟到/冲突结果改写：它们正是"等人
+		// 核验目标后再解除占用"的门槛，覆盖会绕过核验、静默释放全局数据库恢复占用，
+		// 并使 POST /restores/{id}/resolve 变成 409 restore_conflict（实测 Server
+		// 重启后 Agent 的迟到成功结果把 manual_recovery_required 改成 succeeded）。
+		phase = currentPhase.String
 	}
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE restore_requests SET phase = ?, rollback_snapshot_id = ? WHERE run_id = ?",

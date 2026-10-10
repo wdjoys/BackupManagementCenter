@@ -2051,6 +2051,63 @@ func TestCreateDatabaseRestoreRun(t *testing.T) {
 	}
 }
 
+// Server 重启把在途恢复置 manual_recovery_required 后，Agent 的迟到成功结果绝不能
+// 覆盖该相位：覆盖会绕过人工核验、静默释放全局数据库恢复占用，并使
+// POST /restores/{id}/resolve 变成 409 restore_conflict（实测 Server 重启 + 迟到
+// 结果即如此：run 保持 failed，请求相位却变成 succeeded）。
+func TestFinishRestoreRunKeepsBlockingPhasesAgainstLateResult(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	run := &model.Run{
+		ID: "run-late-1", AgentID: "agent-1",
+		Operation: model.OpRestore, Status: model.RunQueued,
+		QueuedAt: now, ProgressJSON: "{}",
+	}
+	rr := &model.RestoreRequest{
+		ID: "rr-late-1", RunID: run.ID, SnapshotID: "snapshot-abc",
+		RestoreKind: model.KindPostgreSQL,
+		Target:      model.RestoreTarget{Host: "db", Port: 5432, Username: "u", Database: "appdb"},
+		TargetJSON:  targetJSON(), Phase: model.RestorePhaseQueued, CreatedAt: now,
+	}
+	if err := ts.CreateDatabaseRestoreRun(ctx, run, rr); err != nil {
+		t.Fatalf("CreateDatabaseRestoreRun: %v", err)
+	}
+	// Server 重启对账：run 置 failed，请求进入需人工确认的占用型终态。
+	if err := ts.FinishRestoreRun(ctx, FinishRestoreRunInput{
+		RunID: run.ID, ToStatus: model.RunFailed, FinishedAt: now,
+		ErrorCode: model.ErrAgentDisconnected, ErrorMessage: "server restarted during non-retryable operation",
+		Phase: model.RestorePhaseManualRecoveryNeeded,
+	}); err != nil {
+		t.Fatalf("FinishRestoreRun(manual recovery): %v", err)
+	}
+	// Agent 迟到结果声称成功——相位必须保持 manual_recovery_required。
+	if err := ts.FinishRestoreRun(ctx, FinishRestoreRunInput{
+		RunID: run.ID, ToStatus: model.RunSucceeded, FinishedAt: now,
+		Phase: model.RestorePhaseSucceeded,
+	}); err != nil {
+		t.Fatalf("FinishRestoreRun(late result): %v", err)
+	}
+	got, err := ts.GetRestoreRequestByRunID(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRestoreRequestByRunID: %v", err)
+	}
+	if got.Phase != model.RestorePhaseManualRecoveryNeeded {
+		t.Fatalf("迟到结果不得覆盖 manual_recovery_required，得到 %q", got.Phase)
+	}
+	// 人工解除仍必须可用（不能被锁死）。
+	if err := ts.ResolveRestoreRequest(ctx, rr.ID, run.ID, "actor-1", "target verified manually", now); err != nil {
+		t.Fatalf("ResolveRestoreRequest: %v", err)
+	}
+	if got, err = ts.GetRestoreRequestByRunID(ctx, run.ID); err != nil {
+		t.Fatalf("GetRestoreRequestByRunID(after resolve): %v", err)
+	}
+	if got.Phase != model.RestorePhaseManualRecoveryDone {
+		t.Fatalf("resolve 应写入人工结论，得到 %q", got.Phase)
+	}
+}
+
 func TestAuditEvent(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)

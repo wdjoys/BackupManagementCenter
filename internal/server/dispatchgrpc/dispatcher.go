@@ -852,6 +852,8 @@ func (d *Dispatcher) checkTimeouts() {
 					r.LeaseExpiresAt = nil
 					r.ErrorCode = ""
 					r.ErrorMessage = ""
+					// 同上：重排队必须清掉进度，否则 queued 的 run 仍显示旧 phase。
+					r.ProgressJSON = "{}"
 				}); err == nil {
 					d.Enqueue(ctx, run.ID, run.AgentID, run.RepositoryID)
 				}

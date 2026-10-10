@@ -516,6 +516,8 @@ func recoverStaleRuns(ctx context.Context, st staleRunStore, notifier runFailure
 				r.LeaseExpiresAt = nil
 				r.ErrorCode = ""
 				r.ErrorMessage = ""
+				// 同上：重排队必须清掉进度，否则 queued 的 run 仍显示重启前的 phase。
+				r.ProgressJSON = "{}"
 			})
 			continue
 		}

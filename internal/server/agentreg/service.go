@@ -964,6 +964,10 @@ func (s *Service) handleDisconnect(agentID string) {
 						r.LeaseExpiresAt = nil
 						r.ErrorCode = ""
 						r.ErrorMessage = ""
+						// 重排队必须同时清掉进度：否则 run 回到 queued 后仍显示上一个
+						// 执行阶段的 phase（实测撤销 Agent 重排队后 status=queued 却
+						// 显示 dumping），运维会误判它还在跑。
+						r.ProgressJSON = "{}"
 					})
 					continue
 				}

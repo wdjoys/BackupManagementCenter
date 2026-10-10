@@ -234,6 +234,12 @@ func (s *Scheduler) logRetentionSkip(repoID, reason, message string) bool {
 
 // tickMaintenance schedules forget (without prune) at most once per day per
 // repository. The repository queue serializes it after any active backup.
+//
+// 注意节奏：备份运行本身**不**携带保留策略，因此高频计划（如每分钟）在两次维护之间
+// 会持续累积快照——实测 keep_last=1 的每分钟计划在 15 分钟窗口内快照 1→16、零清理，
+// 按此节奏一天可达约 1440 份。需要即时清理请用单份快照删除或 plans/{id}/backups/delete；
+// 相关行为与替代手段已写入 deploy/README.md。跳过原因（离线 / 有在途备份 / 24h 内已跑）
+// 通过 logRetentionSkip 记录，同一仓库同一原因每小时至多一条。
 func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
 	ms, ok := s.starter.(maintenanceStarter)
 	if !ok {

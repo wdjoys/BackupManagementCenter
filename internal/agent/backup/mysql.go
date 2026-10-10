@@ -322,8 +322,10 @@ func mysqlDumpQuoteNameHint(database string, stderrTail []string) string {
 // mysqlDumpNameCharsetHint 在"库名含非 ASCII 字符"且 mysqldump 报 1049 时给出
 // 可诊断提示。MySQL ≤5.7 的 character_set_server 默认为 latin1，官方 8.0 客户端
 // 请求 utf8mb4 会因 utf8mb4_0900_ai_ci 排序规则不存在而回退 latin1，于是库名被
-// 按 latin1 解释，服务端报 "Unknown database"——库其实存在，直接照字面理解会
-// 让运维误判。客户端侧无可用修复（改用 utf8mb3 会损坏 4 字节字符），因此只做提示。
+// 按 latin1 解释，服务端报 "Unknown database"——若该库确实存在，直接照字面理解会
+// 让运维误判。因此该提示只在官方 8.0 客户端路径下给出（见 mysqlDumpFailureHint）：
+// legacy 路径用的是 5.7 客户端，不可能发生这种回退，同样的报错就是库确实不存在。
+// 客户端侧无可用修复（改用 utf8mb3 会损坏 4 字节字符），因此只做提示。
 func mysqlDumpNameCharsetHint(database string, stderrTail []string) string {
 	if database == "" || database == "all" || isASCII(database) {
 		return ""

@@ -293,6 +293,18 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 恢复保护优先于"是否命中快照列表缓存"：未终结恢复的源快照/回滚来源可能是恢复期间
+	// 刚由 Agent 上传的（该仓库的后续命令被 dispatcher 暂缓，缓存刷新拿不到），此时按
+	// 缓存判定会返回 404 "not found"，而它其实存在且被保护——会误导运维以为快照没了。
+	// 先按引用判定，命中即按文档返回 409（与 QueueSnapshotDeletion 内的护栏同一判据）。
+	if protected, perr := s.ST.ProtectedRestoreSnapshotIDs(r.Context(), repoID); perr == nil {
+		if _, ok := protected[snapshotID]; ok {
+			writeErr(w, http.StatusConflict, model.ErrSnapshotRestoreProtected,
+				"snapshot is referenced by an unresolved restore; resolve it before deleting")
+			return
+		}
+	}
+
 	// 要求当前 repository 存在有效的快照列表缓存，并确认该 snapshotID 在缓存中；
 	// 避免对任意 ID 发起破坏性命令。
 	cs, hasCache := s.ST.(store.SnapshotCacheStore)

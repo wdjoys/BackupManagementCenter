@@ -306,7 +306,13 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(termSQL), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
 			return exitError("terminate postgres target connections", exit, err)
 		}
-		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE " + quoted), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
+		// DROP DATABASE 必须带 IF EXISTS：第一次尝试的 DROP 可能已被服务端执行完毕，
+		// 但 psql 客户端因取消/超时被杀（exit -1）而报错退出——此时库已不存在，回滚
+		// 重建时会再执行同一条 DROP 并因 "database does not exist" 失败，于是回滚在
+		// 用到保护快照之前就中止（实测：取消命中该步骤 → rollback_failed、目标库数据
+		// 丢失、全局数据库恢复互斥被占住直到人工 resolve）。下面的 CREATE DATABASE
+		// 仍不带 IF NOT EXISTS，并发创建者冲突失败的保护不变。
+		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE IF EXISTS " + quoted), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
 			return exitError("drop postgres target database", exit, err)
 		}
 	}

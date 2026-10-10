@@ -560,6 +560,19 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 		d.Progress(model.Progress{Phase: model.RestorePhasePreBackup})
 		snapID, backupErr := uploadProtectionBackup(ctx, d, opts, tempDir, task, &execDB, secrets)
 		if backupErr != nil {
+			// 与导入/校验阶段保持一致：用户取消会让 ctx 取消、保护备份随之失败，此时
+			// 必须报 cancelled——否则监控/审计按 error_code 判定会把主动取消误报成
+			// "保护备份失败"（实测：取消命中 pre_backup 时 run.status=cancelled 但
+			// error_code=pre_restore_backup_failed，与导入阶段的 cancelled 自相矛盾）。
+			// 目标未被改动，按 pre_backup_failed 这个安全终态释放占用。
+			if ctx.Err() != nil || errors.Is(backupErr, context.Canceled) {
+				return nil, &PipelineError{
+					Code:       model.ErrCancelled,
+					Message:    "database restore cancelled by request",
+					Cause:      backupErr,
+					ResultJSON: restoreResultJSON(model.RestorePhasePreBackupFailed, ""),
+				}
+			}
 			return nil, &PipelineError{
 				Code:       model.ErrPreRestoreBackupFailed,
 				Message:    "pre-restore protection backup failed; target was not modified",
@@ -587,9 +600,15 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 		// 用户主动取消（POST /runs/{id}/cancel）会取消 ctx，导入随之失败。这种情况必须
 		// 报 cancelled，而不是"校验/导入失败"——否则运维看到的是自己的取消被表述成数据问题。
 		if ctx.Err() != nil || errors.Is(importErr, context.Canceled) {
+			// 取消路径也必须带上回滚结果：回滚失败时目标可能已被删掉，只有把
+			// "rollback also failed" 写进消息，运维才不必读源码就知道要处理什么。
+			cancelMsg := "database restore cancelled by request: " + importErr.Error()
+			if rollbackErr != nil {
+				cancelMsg += "; rollback also failed: " + rollbackErr.Error()
+			}
 			return nil, &PipelineError{
 				Code:       model.ErrCancelled,
-				Message:    "database restore cancelled by request",
+				Message:    cancelMsg,
 				Cause:      importErr,
 				ResultJSON: restoreResultJSON(phase, protectionSnapshotID),
 			}

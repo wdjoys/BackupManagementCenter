@@ -9,6 +9,54 @@ import (
 	"backupmanagementcenter/internal/model"
 )
 
+// pgCmdRecorder 记录 psql/pg_restore 的参数，并对权限探测返回 ok。
+type pgCmdRecorder struct{ cmds [][]string }
+
+func (f *pgCmdRecorder) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (int, error) {
+	joined := strings.Join(c.Args, " ")
+	f.cmds = append(f.cmds, c.Args)
+	if onStdout != nil {
+		switch {
+		case strings.Contains(joined, "rolsuper"):
+			onStdout("ok")
+		case strings.Contains(joined, "version"):
+			onStdout("psql (PostgreSQL) 18.6")
+		}
+	}
+	return 0, nil
+}
+
+// 覆盖恢复的 DROP DATABASE 必须幂等（IF EXISTS）：第一次尝试的 DROP 可能已被服务端
+// 执行完毕，但 psql 客户端因取消/超时被杀（exit -1）而报错退出——此时库已不存在，
+// 回滚重建若再执行非幂等的 DROP 就会失败，回滚在用到保护快照之前中止（实测：
+// rollback_failed + 目标库数据丢失 + 全局数据库恢复互斥被占住直到人工 resolve）。
+// 紧随其后的 CREATE DATABASE 必须**不带** IF NOT EXISTS，保留并发创建者冲突失败的保护。
+func TestPostgreSQLOverwriteDropIsIdempotent(t *testing.T) {
+	rec := &pgCmdRecorder{}
+	spec := pgRestoreSpec(t)
+	spec.TargetIsNew = false // 覆盖恢复：走 DROP + CREATE 分支
+	spec.Exec = rec
+	if err := (&PostgreSQLAdapter{}).Import(context.Background(), spec); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	var drop, create string
+	for _, args := range rec.cmds {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "DROP DATABASE"):
+			drop = joined
+		case strings.Contains(joined, "CREATE DATABASE"):
+			create = joined
+		}
+	}
+	if drop == "" || !strings.Contains(drop, "DROP DATABASE IF EXISTS") {
+		t.Fatalf("覆盖恢复的 DROP 必须带 IF EXISTS（幂等），得到 %q", drop)
+	}
+	if create == "" || strings.Contains(create, "IF NOT EXISTS") {
+		t.Fatalf("CREATE 必须不带 IF NOT EXISTS 以保留并发创建者冲突保护，得到 %q", create)
+	}
+}
+
 // pgRestoreSpec 构造一个"目标已存在、走覆盖"的恢复 spec，使 Import 走到
 // pg_restore 调用。
 func pgRestoreSpec(t *testing.T) *RestoreSpec {

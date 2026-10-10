@@ -304,11 +304,17 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	}
 	snapshotID = summary.SnapshotID
 	d.logf("info", "上传完成：新增文件 %d，修改 %d，未变 %d；新增数据 %s（压缩后 %s）；共处理 %d 个文件 / %s，用时 %.1f 秒", summary.FilesNew, summary.FilesChanged, summary.FilesUnmodified, humanBytes(summary.DataAdded), humanBytes(summary.DataAddedPacked), summary.TotalFilesProcessed, humanBytes(summary.TotalBytesProcessed), summary.TotalDuration)
-	if snapshotID != "" {
-		d.logf("info", "快照已创建：%s", snapshotID)
-	} else {
-		d.logf("warn", "restic 未返回快照 ID")
+	if snapshotID == "" {
+		// 没有快照 ID 的运行既不可寻址也无法恢复；上报成功会让用户以为备份
+		// 已存在（此前只留一条 warn，服务端把 run 标成 succeeded 且
+		// snapshot_id 为空串）。
+		return nil, &PipelineError{
+			Code:    "backup_failed",
+			Message: "restic returned no snapshot id",
+			Cause:   errors.New("restic backup produced no snapshot id"),
+		}
 	}
+	d.logf("info", "快照已创建：%s", snapshotID)
 
 	if task.Kind != "filesystem" && artifact.StagingDir != "" {
 		os.RemoveAll(artifact.StagingDir)

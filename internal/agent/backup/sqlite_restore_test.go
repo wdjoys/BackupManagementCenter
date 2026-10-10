@@ -3,8 +3,10 @@ package backup
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"backupmanagementcenter/internal/model"
@@ -148,6 +150,62 @@ func TestSQLiteRemoveTargetOnlyRemovesOwnFile(t *testing.T) {
 	// 非新建目标拒绝清理。
 	if err := adapter.RemoveTarget(ctx, sqliteSpec(sibling, artifact, true, false)); err == nil {
 		t.Fatal("expected RemoveTarget to refuse a target this run did not create")
+	}
+}
+
+// 目标被并发独占事务占用时，预检必须报"目标被占用"，而不是"integrity check failed"
+// ——后者会被运维读成库损坏（实测：持 BEGIN EXCLUSIVE 时 error_message 显示
+// integrity check failed，真实原因 database is locked (5) 只在句尾）。
+func TestSQLiteErrBusyDistinguishesLockFromCorruption(t *testing.T) {
+	busy := []string{
+		"database is locked (5) (SQLITE_BUSY)",
+		"SQLITE_BUSY: database is locked",
+		"database table is locked: users",
+	}
+	for _, msg := range busy {
+		if !sqliteErrBusy(errors.New(msg)) {
+			t.Fatalf("%q 应判为被占用", msg)
+		}
+	}
+	notBusy := []string{
+		"database disk image is malformed",
+		"file is not a database",
+		"unable to open database file: no such file or directory",
+	}
+	for _, msg := range notBusy {
+		if sqliteErrBusy(errors.New(msg)) {
+			t.Fatalf("%q 不应判为被占用", msg)
+		}
+	}
+	if sqliteErrBusy(nil) {
+		t.Fatal("nil 不应判为被占用")
+	}
+}
+
+// 行为级验证：目标被同进程的独占事务占用时，预检返回的错误必须说"目标被占用"，
+// 而不是把 SQLITE_BUSY 误报成 integrity check failed。（同进程的不同连接之间
+// SQLite 仍会检测锁冲突，故该测试可稳定复现。）
+func TestSQLitePreflightReportsBusyNotCorruption(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	target := newSQLiteFixture(t, dir, "target.sqlite", "users")
+
+	writer, err := sql.Open("sqlite", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if _, err := writer.ExecContext(ctx, "BEGIN EXCLUSIVE"); err != nil {
+		t.Fatalf("begin exclusive: %v", err)
+	}
+	defer writer.ExecContext(ctx, "ROLLBACK")
+
+	err = sqliteCheckMaintenanceWindow(ctx, target)
+	if err == nil {
+		t.Fatal("目标被独占事务占用时预检必须失败")
+	}
+	if !strings.Contains(err.Error(), "target database is busy") {
+		t.Fatalf("预检应报\"目标被占用\"而不是损坏: %v", err)
 	}
 }
 

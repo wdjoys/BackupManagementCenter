@@ -336,10 +336,12 @@ func failureCodeAndMessage(err error, code, msg string) (string, string) {
 		if pe.Code != "" {
 			code = pe.Code
 		}
-		// Prefer the stable restic-mapped code (e.g. repository_missing) over
-		// the generic op failure code.
+		// restic 的"具体分类"（如 repository_missing）比 pipeline 的通用码更有价值；
+		// 但 restic 的兜底码 restic_failed 没有信息量，不能覆盖 pipeline 给出的明确
+		// 分类——否则保护备份失败会被报成 restic_failed，pre_restore_backup_failed
+		// 这类稳定码永远不会出现在 run.error_code 上（实测该码全仓无消费方）。
 		var re *restic.ResticError
-		if errors.As(err, &re) && re.Code != "" {
+		if errors.As(err, &re) && re.Code != "" && (re.Code != resticFailedCode || isGenericFailureCode(code)) {
 			code = re.Code
 		}
 		// Message 里往往已经写明了调用方的判定（例如"导入失败;回滚也失败"），
@@ -356,6 +358,21 @@ func failureCodeAndMessage(err error, code, msg string) (string, string) {
 		}
 	}
 	return code, msg
+}
+
+// resticFailedCode 是 restic 的兜底错误码：只说明"restic 退出非零"，不携带任何
+// 分类信息（具体分类如 repository_missing 才值得优先于通用码）。
+const resticFailedCode = "restic_failed"
+
+// isGenericFailureCode 判断错误码是否只是"操作失败"级别的兜底码。这类码不携带
+// 分类信息，可以被更有信息量的码覆盖；反之明确分类（如 pre_restore_backup_failed、
+// rollback_failed）必须保留，否则监控与 UI 依据 error_code 的判定会失效。
+func isGenericFailureCode(code string) bool {
+	switch code {
+	case "", "pipeline_error", "backup_failed", resticFailedCode:
+		return true
+	}
+	return false
 }
 
 func (r *Runner) repositoryLock(key string) *sync.Mutex {

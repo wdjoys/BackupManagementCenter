@@ -283,6 +283,16 @@ func sqliteTargetPath(spec *RestoreSpec) (string, error) {
 	return spec.Database.TargetDatabase, nil
 }
 
+// sqliteErrBusy 判断错误是否为 SQLite 的"被占用/加锁"类（SQLITE_BUSY/SQLITE_LOCKED），
+// 以便与真正的损坏区分开。预检只关心"现在拿不到维保窗口"，故 BUSY 与 LOCKED 都算。
+func sqliteErrBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "is locked") || strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "sqlite_locked")
+}
+
 // sqliteCheckMaintenanceWindow rejects the import unless the target has no live
 // WAL sidecars or open writers. It deliberately does not checkpoint for the
 // operator: the documented procedure is to stop the application first.
@@ -294,6 +304,12 @@ func sqliteCheckMaintenanceWindow(ctx context.Context, targetPath string) error 
 		return fmt.Errorf("stat sqlite target: %w", err)
 	}
 	if err := sqliteIntegrityCheck(ctx, targetPath); err != nil {
+		// 并发写入/独占事务会让 integrity_check 直接报 SQLITE_BUSY。把它当成"库损坏"
+		// 会让运维去修数据，而真实原因只是目标被占用（实测：持 BEGIN EXCLUSIVE 时
+		// 报 "integrity check failed"，真实原因 database is locked (5) 只在句尾）。
+		if sqliteErrBusy(err) {
+			return fmt.Errorf("target database is busy; close all target connections and retry: %w", err)
+		}
 		return fmt.Errorf("target database is not in a clean maintenance state (integrity check failed); close all connections, checkpoint and retry: %w", err)
 	}
 	// 尝试取得独占锁；活动写入/连接会立即失败。

@@ -18,6 +18,11 @@ import (
 	"backupmanagementcenter/internal/model"
 )
 
+// mysqlDropLockWaitSeconds 是覆盖恢复时 DROP DATABASE 的锁等待上限（秒）。MySQL
+// 客户端默认 lock_wait_timeout=31536000s，配合 12h 运行期限会让"预检之后才出现的锁"
+// 长期占住全局数据库恢复互斥。预检已排除已知占用，这里只需兜住竞态。
+const mysqlDropLockWaitSeconds = 30
+
 // MySQLAdapter implements Adapter for MySQL/MariaDB plans.
 type MySQLAdapter struct{}
 
@@ -543,7 +548,12 @@ func (a *MySQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 	// 新建不允许 IF NOT EXISTS：并发执行者创建的库必须冲突失败。
 	setup := "CREATE DATABASE " + quoted + suffix
 	if !spec.TargetIsNew {
-		setup = "DROP DATABASE IF EXISTS " + quoted + "; CREATE DATABASE " + quoted + suffix
+		// DROP 需要目标库上的 schema metadata lock，客户端默认 lock_wait_timeout 极大
+		// （31536000s）、运行期限 12h：预检之后才出现的锁（竞态）会让恢复长期占住全局
+		// 数据库恢复互斥。给这一批语句加有界等待，超时即失败——预检已排除已知占用，
+		// 这里只需兜住竞态，故 30s 足够；失败后回滚重新导入时锁通常已释放。
+		setup = fmt.Sprintf("SET SESSION lock_wait_timeout = %d; DROP DATABASE IF EXISTS %s; CREATE DATABASE %s%s",
+			mysqlDropLockWaitSeconds, quoted, quoted, suffix)
 	}
 	if err := c.runQuery(ctx, spec, setup, nil); err != nil {
 		return fmt.Errorf("prepare mysql target database: %w", err)

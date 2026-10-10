@@ -605,3 +605,55 @@ func TestMySQLPreflightToleratesMissingMetadataLocksTable(t *testing.T) {
 		t.Fatal("仍应照常检查连接默认库")
 	}
 }
+
+// 覆盖恢复的 DROP DATABASE 必须带有限的 lock_wait_timeout：MySQL 客户端默认值极大
+// （配合 12h 运行期限），预检之后才出现的锁（竞态）会让恢复长期占住全局恢复互斥。
+func TestMySQLOverwriteImportBoundsDropLockWait(t *testing.T) {
+	if mysqlDropLockWaitSeconds <= 0 || mysqlDropLockWaitSeconds > 300 {
+		t.Fatalf("DROP 锁等待上限必须是有限的合理秒数，得到 %d", mysqlDropLockWaitSeconds)
+	}
+	rec := &argRecorder{}
+	spec := &RestoreSpec{
+		Kind:         KindMySQL,
+		StagingDir:   t.TempDir(),
+		ArtifactFile: filepath.Join(t.TempDir(), "dump.sql"),
+		TargetIsNew:  false, // 走覆盖分支：DROP + CREATE
+		Database: &model.DatabaseRestore{
+			TargetDatabase: "appdb", TargetHost: "127.0.0.1", TargetPort: 3306, TargetUsername: "bmc",
+		},
+		Secrets: SecretBundle{DBPassword: "pw"},
+		Logf:    func(string, string, ...any) {},
+		Exec:    rec,
+	}
+	if err := (&MySQLAdapter{}).Import(context.Background(), spec); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	setup := ""
+	for _, c := range rec.calls {
+		for _, a := range c.Args {
+			if strings.Contains(a, "DROP DATABASE IF EXISTS") {
+				setup = a
+			}
+		}
+	}
+	if setup == "" {
+		t.Fatalf("未找到覆盖恢复的 DROP 语句，calls=%v", rec.calls)
+	}
+	if !strings.Contains(setup, "SET SESSION lock_wait_timeout =") {
+		t.Fatalf("DROP 前必须设置有限锁等待: %s", setup)
+	}
+	// 新建目标（TargetIsNew）没有 DROP，不应被强加该设置。
+	newRec := &argRecorder{}
+	spec.TargetIsNew = true
+	spec.Exec = newRec
+	if err := (&MySQLAdapter{}).Import(context.Background(), spec); err != nil {
+		t.Fatalf("Import(new): %v", err)
+	}
+	for _, c := range newRec.calls {
+		for _, a := range c.Args {
+			if strings.Contains(a, "lock_wait_timeout") {
+				t.Fatalf("新建目标不应设置 DROP 锁等待: %s", a)
+			}
+		}
+	}
+}

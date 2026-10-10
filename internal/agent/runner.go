@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -279,10 +280,17 @@ func failureCodeAndMessage(err error, code, msg string) (string, string) {
 		if errors.As(err, &re) && re.Code != "" {
 			code = re.Code
 		}
-		if pe.Cause != nil {
-			msg = pe.Cause.Error()
-		} else if pe.Message != "" {
+		// Message 里往往已经写明了调用方的判定（例如"导入失败;回滚也失败"），
+		// 直接换成 Cause 会把它吞掉——rollback_failed 这类需要人工判断的场景
+		// 恰好最需要那句话。保留 Message，必要时再补 Cause。
+		switch {
+		case pe.Message != "":
 			msg = pe.Message
+			if pe.Cause != nil && !strings.Contains(msg, pe.Cause.Error()) {
+				msg += ": " + pe.Cause.Error()
+			}
+		case pe.Cause != nil:
+			msg = pe.Cause.Error()
 		}
 	}
 	return code, msg

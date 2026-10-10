@@ -530,6 +530,20 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 		ArtifactCollation: artifact.collation,
 	}
 
+	// 写入前预检：适配器可声明"目标当前不可恢复"（如 sqlite 目标仍被其它连接占用）。
+	// 这类失败发生在任何写入之前，必须按安全失败处理——否则会被当成"可能改过目标"
+	// 而走回滚，回滚再失败就升级为 rollback_failed，把全局数据库恢复互斥一直占住
+	// 直到人工介入。
+	if pf, ok := adapter.(backup.PreflightRestorer); ok {
+		if err := pf.PreflightRestore(ctx, spec); err != nil {
+			var pe *PipelineError
+			if errors.As(err, &pe) {
+				return nil, restoreSafeWrap(err, "database restore preflight failed")
+			}
+			return nil, restoreSafeFail(model.ErrRestoreTargetBusy, "database restore target is not ready for restore", err)
+		}
+	}
+
 	// 存在性判断：权限/连接错误必须失败，不能被当作“目标不存在”。
 	exists, err := engine.TargetExists(ctx, spec)
 	if err != nil {

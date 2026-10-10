@@ -144,6 +144,16 @@ func (a *SQLiteAdapter) TargetExists(_ context.Context, spec *RestoreSpec) (bool
 // application so every connection is closed and the WAL is checkpointed before
 // the main file is replaced. A live -wal/-shm pair is never deleted or reused;
 // if the writer is still active the import fails before touching the target.
+// PreflightRestore 在任何写入之前确认目标处于可恢复状态：目标被其它连接占用时
+// 在这里就失败，运行按安全失败落地，不再走回滚（回滚本身也会因目标占用失败，
+// 进而升级为 rollback_failed 并阻塞全局数据库恢复）。
+func (a *SQLiteAdapter) PreflightRestore(ctx context.Context, spec *RestoreSpec) error {
+	if spec == nil || spec.Database == nil || spec.Database.TargetDatabase == "" {
+		return errors.New("target_database (path) is required for sqlite restore")
+	}
+	return sqliteCheckMaintenanceWindow(ctx, spec.Database.TargetDatabase)
+}
+
 func (a *SQLiteAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 	db := spec.Database
 	if db == nil {

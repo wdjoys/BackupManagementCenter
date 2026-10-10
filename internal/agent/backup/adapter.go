@@ -132,6 +132,13 @@ type Adapter interface {
 	Backup(ctx context.Context, rc *RunContext) (*BackupArtifact, error)
 }
 
+// PreflightRestorer 由适配器可选实现：在保护备份与任何写入之前检查"目标当前是否
+// 可恢复"（例如 sqlite 目标仍被其它连接占用）。这里的失败意味着目标尚未被触碰，
+// 运行会按安全失败落地，不进入回滚、也不产生保护快照。
+type PreflightRestorer interface {
+	PreflightRestore(ctx context.Context, spec *RestoreSpec) error
+}
+
 // DatabaseRestorer is the control plane of a database restore. Implementations
 // must be able to tell "target absent" apart from "target unreachable", and must
 // refuse destructive work they cannot prove safe.

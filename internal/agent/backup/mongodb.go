@@ -184,14 +184,29 @@ func (c *mongoCtx) runJS(ctx context.Context, spec *RestoreSpec, js string, scan
 	if err != nil {
 		return fmt.Errorf("write mongo check script: %w", err)
 	}
+	var stderrTail strings.Builder
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.shell, Args: []string{"--quiet", "--nodb", "--file", tmp}},
 		func(line string) {
 			if trimmed := strings.TrimSpace(line); trimmed != "" && scan != nil {
 				scan(trimmed)
 			}
-		}, c.logf)
+		}, func(line string) {
+			// mongosh 的失败原因只出现在 stderr（如 "MongoServerError: Authentication failed."），
+			// 只记日志会让运行错误停在 "mongosh query failed (exit 1)"，凭据错与网络错不可区分。
+			// 与 mysql 侧 runQuery 的处理保持一致。
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				stderrTail.WriteString(trimmed + "\n")
+			}
+			if c.logf != nil {
+				c.logf(line)
+			}
+		})
 	if err != nil || exit != 0 {
-		return exitError("mongosh query", exit, err)
+		base := exitError("mongosh query", exit, err)
+		if tail := strings.TrimSpace(stderrTail.String()); tail != "" {
+			return fmt.Errorf("%w: %s", base, tail)
+		}
+		return base
 	}
 	return nil
 }

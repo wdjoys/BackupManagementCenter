@@ -222,19 +222,33 @@ func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
 			continue
 		}
 		active := false
-		recent := false
 		for _, run := range runs {
 			if run.Operation == model.OpBackup && (run.Status == model.RunQueued || run.Status == model.RunDispatched || run.Status == model.RunRunning) {
 				active = true
+				break
 			}
-			if run.Operation == model.OpForget && forgetRunIsRetention(run) {
-				at := run.FinishedAt
-				if at == nil {
-					at = &run.QueuedAt
-				}
-				if now.Sub(*at) < 24*time.Hour {
-					recent = true
-				}
+		}
+		// 24h 节流只按 **forget** 运行判断：此前在最近 100 条**任意**运行里找守卫
+		// 运行，繁忙仓库（每次快照浏览都产生运行）会把守卫运行挤出窗口 —— 实测 17
+		// 分钟后即被挤出，保留策略于同日再次运行，与"每仓库每日至多一次"不符。
+		recent := false
+		forgetRuns, ferr := s.store.ListRuns(ctx, store.RunFilter{RepositoryID: repo.ID,
+			Operation: model.OpForget, Limit: 20,
+			Statuses: []string{model.RunQueued, model.RunDispatched, model.RunRunning, model.RunSucceeded}})
+		if ferr != nil {
+			continue
+		}
+		for _, run := range forgetRuns {
+			if !forgetRunIsRetention(run) {
+				continue
+			}
+			at := run.FinishedAt
+			if at == nil {
+				at = &run.QueuedAt
+			}
+			if now.Sub(*at) < 24*time.Hour {
+				recent = true
+				break
 			}
 		}
 		if active || recent {

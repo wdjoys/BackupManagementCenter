@@ -3,6 +3,8 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -255,6 +257,12 @@ func (f *fakeStore) ListRuns(_ context.Context, filter store.RunFilter) ([]model
 			continue
 		}
 		out = append(out, run)
+	}
+	// 与真实 store 一致：按排队时间倒序并应用 Limit（否则"最近 N 条"的窗口语义
+	// 在测试里不成立，回归测试无法复现被挤出窗口的场景）。
+	sort.Slice(out, func(i, j int) bool { return out[i].QueuedAt.After(out[j].QueuedAt) })
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
 	}
 	return out, nil
 }
@@ -852,5 +860,40 @@ func TestMaintenanceRetentionNotStarvedByOtherForgetRuns(t *testing.T) {
 				t.Fatalf("%s: retention must NOT be postponed by this forget run", tc.wantReason)
 			}
 		})
+	}
+}
+
+// 24h 节流只按 forget 运行判断：繁忙仓库（每次快照浏览都产生运行）会把守卫运行
+// 挤出"最近 100 条任意运行"的窗口，旧实现因此在同日重复派发保留策略。
+func TestTickMaintenanceRetentionThrottleSurvivesBusyRepository(t *testing.T) {
+	st := newFakeStore(t)
+	start := newFakeStarter()
+	now := time.Now().UTC()
+	repoID, agentID := "repo-1", "agent-1"
+	st.agents[agentID] = model.Agent{ID: agentID, Status: model.AgentOnline}
+	st.repos = append(st.repos, model.Repository{ID: repoID, AgentID: agentID, Status: "ready"})
+	// 保留策略 3 小时前跑过（在 24h 节流窗口内），随后 150 条 snapshots 运行把它
+	// 挤出"最近 100 条任意运行"的窗口 —— 旧实现因此会重复派发。
+	old := now.Add(-3 * time.Hour)
+	st.runs = append(st.runs, model.Run{
+		ID: "retention-old", RepositoryID: repoID, Operation: model.OpForget,
+		Status: model.RunSucceeded, QueuedAt: old, FinishedAt: &old,
+		ProgressJSON: `{"retention":{"keep_last":2},"tags":["plan:p1"]}`,
+	})
+	for i := 0; i < 150; i++ {
+		at := now.Add(-time.Duration(150-i) * time.Minute) // 全部晚于上面的保留策略运行
+		st.runs = append(st.runs, model.Run{
+			ID: fmt.Sprintf("snap-%d", i), RepositoryID: repoID, Operation: model.OpSnapshots,
+			Status: model.RunSucceeded, QueuedAt: at, FinishedAt: &at,
+		})
+	}
+	s := New(st, start, nil, 0)
+	s.now = func() time.Time { return now }
+	s.tickMaintenance(context.Background(), now)
+	start.mu.Lock()
+	calls := append([]string(nil), start.retentionCalls...)
+	start.mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("retention must stay throttled for 24h on a busy repository, got %v", calls)
 	}
 }

@@ -64,6 +64,12 @@ type Scheduler struct {
 	// planID -> next fire time (UTC). Re-computed every tick from the plan's
 	// schedule+timezone.
 	cursors map[string]time.Time
+
+	// retentionSkipMu/retentionSkipAt 给"保留策略被跳过"的日志限频：tick 每 15s 一次，
+	// 不限频会变成新的刷屏；同一仓库同一原因每小时最多记一条。此前因 active/recent
+	// 跳过时完全静默，运维无法判断保留为何没跑。
+	retentionSkipMu sync.Mutex
+	retentionSkipAt map[string]time.Time
 }
 
 // New builds a Scheduler. notifier may be nil; a no-op is used then.
@@ -199,6 +205,33 @@ func dedupKeyParams(key string) string {
 	return ""
 }
 
+// logRetentionSkip 记录一次"保留策略被跳过"，同一仓库同一原因每小时最多一条，
+// 返回是否真的记录了（便于测试断言限频语义）。
+func (s *Scheduler) logRetentionSkip(repoID, reason, message string) bool {
+	key := repoID + "|" + reason
+	now := time.Now()
+	s.retentionSkipMu.Lock()
+	if s.retentionSkipAt == nil {
+		s.retentionSkipAt = map[string]time.Time{}
+	}
+	if last, ok := s.retentionSkipAt[key]; ok && now.Sub(last) < time.Hour {
+		s.retentionSkipMu.Unlock()
+		return false
+	}
+	// 顺手清理过期条目，避免长时间运行后无界增长。
+	if len(s.retentionSkipAt) > 1024 {
+		for k, ts := range s.retentionSkipAt {
+			if now.Sub(ts) > 24*time.Hour {
+				delete(s.retentionSkipAt, k)
+			}
+		}
+	}
+	s.retentionSkipAt[key] = now
+	s.retentionSkipMu.Unlock()
+	slog.Info(message, "repositoryID", repoID)
+	return true
+}
+
 // tickMaintenance schedules forget (without prune) at most once per day per
 // repository. The repository queue serializes it after any active backup.
 func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
@@ -259,6 +292,14 @@ func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
 			}
 		}
 		if active || recent {
+			// 跳过原因必须可见（每仓库每原因每小时最多一条，避免 15s tick 刷屏）：
+			// 此前因 active/recent 跳过时完全静默，实测 keep_last=1 的每分钟计划在
+			// 24h 节流窗口内快照持续累积，而界面与日志都没有任何"保留被跳过"的提示。
+			if active {
+				s.logRetentionSkip(repo.ID, "active", "scheduler: skip retention while a backup is active")
+			} else {
+				s.logRetentionSkip(repo.ID, "recent", "scheduler: skip retention (already ran within 24h)")
+			}
 			continue
 		}
 		if err := ms.StartRetentionRun(ctx, repo.ID); err != nil {

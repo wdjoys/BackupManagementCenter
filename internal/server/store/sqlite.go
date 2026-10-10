@@ -1914,15 +1914,19 @@ func (s *sqliteStore) CreateDatabaseRestoreRun(ctx context.Context, run *model.R
 
 	kinds := databaseRestoreKindArgs()
 	safe := restoreSafePhaseArgs()
-	query := "SELECT rr.run_id, COALESCE(r.dedup_key, '') FROM restore_requests rr " +
+	query := "SELECT rr.run_id, COALESCE(r.dedup_key, ''), COALESCE(rr.phase, '') FROM restore_requests rr " +
 		"JOIN runs r ON r.id = rr.run_id WHERE rr.restore_kind IN (" + restorePlaceholders(len(kinds)) + ") " +
 		"AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ") ORDER BY rr.created_at LIMIT 1"
 	args := append(append([]any{}, kinds...), safe...)
-	var activeRunID, activeDedupKey string
-	err = tx.QueryRowContext(ctx, query, args...).Scan(&activeRunID, &activeDedupKey)
+	var activeRunID, activeDedupKey, activePhase string
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&activeRunID, &activeDedupKey, &activePhase)
 	switch {
 	case err == nil:
-		if activeDedupKey != "" && activeDedupKey == run.DedupKey {
+		// 等价任务且它仍在正常推进时才能复用；若它停在需要人工处理的占用型终态
+		// （manual_recovery_required / rollback_failed），复用一个已 failed 的 run
+		// 毫无意义——真正要做的是先 resolve。此处必须回占用中，否则调用方拿到
+		// duplicate_slot（"run already queued for this slot"）这一不实的文案。
+		if activeDedupKey != "" && activeDedupKey == run.DedupKey && !model.RestorePhaseNeedsManualResolution(activePhase) {
 			// 等价任务：复用已有 run，由调用方 join。
 			return ErrDuplicateRun
 		}
@@ -2190,7 +2194,7 @@ func updateRestoreRequestTx(ctx context.Context, tx *sql.Tx, in FinishRestoreRun
 	case model.RestorePhaseReleasesOccupancy(currentPhase.String) && currentPhase.String != phase:
 		// 已确认的安全终态保持原值。
 		phase = currentPhase.String
-	case currentPhase.String == model.RestorePhaseManualRecoveryNeeded || currentPhase.String == model.RestorePhaseRollbackFailed:
+	case model.RestorePhaseNeedsManualResolution(currentPhase.String):
 		// 需要人工确认的终态（占用型）同样不可被迟到/冲突结果改写：它们正是"等人
 		// 核验目标后再解除占用"的门槛，覆盖会绕过核验、静默释放全局数据库恢复占用，
 		// 并使 POST /restores/{id}/resolve 变成 409 restore_conflict（实测 Server

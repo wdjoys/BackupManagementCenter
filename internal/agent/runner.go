@@ -122,6 +122,14 @@ func NewRunner(deps pipeline.Deps, dataDir string, identity *Identity) *Runner {
 // SetProber wires the capability prober so tool paths stay fresh.
 func (r *Runner) SetProber(p *Prober) { r.prober = p }
 
+// InFlight 返回当前在执行的 run 数量。优雅关闭用它判断是否还有任务要收尾：
+// 空闲即可立即退出，不必等满固定宽限；cancel 之后也靠它等回滚真正结束。
+func (r *Runner) InFlight() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.running)
+}
+
 // Execute handles an ExecuteCommand from the server.
 func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectClient, cmd *bmcv1.ExecuteCommand) {
 	if r.currentStream() == nil {

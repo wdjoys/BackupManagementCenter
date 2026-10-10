@@ -2108,6 +2108,51 @@ func TestFinishRestoreRunKeepsBlockingPhasesAgainstLateResult(t *testing.T) {
 	}
 }
 
+// 等价参数的恢复请求若停在"需人工处理"的占用型终态，必须回占用中（提示先 resolve），
+// 而不是 duplicate_slot（"run already queued for this slot" 不实：该 run 已 failed）。
+// 仍在正常推进时，复用语义必须保持不变。
+func TestCreateDatabaseRestoreRunDoesNotDedupeBlockedRequest(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	mkRun := func(id string) *model.Run {
+		return &model.Run{
+			ID: id, AgentID: "agent-1", Operation: model.OpRestore,
+			Status: model.RunQueued, QueuedAt: now, ProgressJSON: "{}", DedupKey: "slot-key-1",
+		}
+	}
+	mkRR := func(runID, id, phase string) *model.RestoreRequest {
+		return &model.RestoreRequest{
+			ID: id, RunID: runID, SnapshotID: "snapshot-abc",
+			RestoreKind: model.KindPostgreSQL,
+			Target:      model.RestoreTarget{Host: "db", Port: 5432, Username: "u", Database: "appdb"},
+			TargetJSON:  targetJSON(), Phase: phase, CreatedAt: now,
+		}
+	}
+
+	first := mkRun("run-dedupe-1")
+	if err := ts.CreateDatabaseRestoreRun(ctx, first, mkRR(first.ID, "rr-dedupe-1", model.RestorePhaseRestoring)); err != nil {
+		t.Fatalf("CreateDatabaseRestoreRun(first): %v", err)
+	}
+	// 仍在正常推进：等价请求复用已有 run。
+	second := mkRun("run-dedupe-2")
+	if err := ts.CreateDatabaseRestoreRun(ctx, second, mkRR(second.ID, "rr-dedupe-2", model.RestorePhaseRestoring)); !errors.Is(err, ErrDuplicateRun) {
+		t.Fatalf("正常推进中的等价请求应返回 ErrDuplicateRun，得到 %v", err)
+	}
+	// 进入需人工处理的占用型终态后：等价请求必须回占用中。
+	if err := ts.FinishRestoreRun(ctx, FinishRestoreRunInput{
+		RunID: first.ID, ToStatus: model.RunFailed, FinishedAt: now,
+		ErrorCode: model.ErrAgentDisconnected, Phase: model.RestorePhaseManualRecoveryNeeded,
+	}); err != nil {
+		t.Fatalf("FinishRestoreRun: %v", err)
+	}
+	third := mkRun("run-dedupe-3")
+	if err := ts.CreateDatabaseRestoreRun(ctx, third, mkRR(third.ID, "rr-dedupe-3", model.RestorePhaseRestoring)); !errors.Is(err, ErrDatabaseRestoreBusy) {
+		t.Fatalf("阻塞中的等价请求应返回 ErrDatabaseRestoreBusy，得到 %v", err)
+	}
+}
+
 func TestAuditEvent(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)

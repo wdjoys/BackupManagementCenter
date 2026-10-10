@@ -73,6 +73,13 @@ func ValidateExtraArgs(kind string, args []string) error {
 	return nil
 }
 
+// RestorePhaseNeedsManualResolution 报告该相位是否在等人工处理（占用型终态）：
+// 这类相位只能由 POST /restores/{id}/resolve 推进，既不能被 Agent 的迟到/冲突结果
+// 覆盖，也不能被等价参数的请求复用。
+func RestorePhaseNeedsManualResolution(phase string) bool {
+	return phase == RestorePhaseManualRecoveryNeeded || phase == RestorePhaseRollbackFailed
+}
+
 // IsSystemDatabase 判断 name 是否是该类型的系统库。MySQL 库名大小写不敏感，
 // 其余类型按原样比较。
 func IsSystemDatabase(kind, name string) bool {

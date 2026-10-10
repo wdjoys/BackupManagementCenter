@@ -30,6 +30,21 @@ func (a cfgAdapter) GetProbeInterval() time.Duration {
 }
 func (a cfgAdapter) GetSourcePathMappings() []model.PathMapping  { return a.c.SourcePathMappings }
 func (a cfgAdapter) GetRestorePathMappings() []model.PathMapping { return a.c.RestorePathMappings }
+
+// waitForIdleOrSignal 等到在途任务数归零、或到达 deadline、或收到第二次信号。
+// 返回 false 表示收到了第二次信号（调用方应立即退出）。
+func waitForIdleOrSignal(inFlight func() int, sigCh <-chan os.Signal, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for inFlight() > 0 && time.Now().Before(deadline) {
+		select {
+		case <-sigCh:
+			return false
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return true
+}
+
 func main() {
 
 	agentLogSink := logging.NewSink(os.Stderr, 4096)
@@ -98,13 +113,19 @@ func main() {
 	go func() {
 		<-sigCh
 		log.Printf("[INFO] shutdown signal received")
-		// Give in-flight runs up to 20s to finish; a second signal exits immediately.
-		select {
-		case <-sigCh:
+		// 阶段一：让在途 run 自然收尾（导出/校验/结果上报都在这段时间）。空闲则
+		// 立即进入下一步，不必等满固定宽限（实测空闲重启会白等 20s）。
+		if !waitForIdleOrSignal(runner.InFlight, sigCh, 20*time.Second) {
 			log.Printf("[INFO] second shutdown signal received; exiting now")
-		case <-time.After(20 * time.Second):
+			cancel()
+			return
 		}
 		cancel()
+		// 阶段二：cancel 会触发取消路径的回滚（独立预算）。必须等它结束再退出，
+		// 否则回滚被打断，目标留在半导入状态、只能靠人工恢复（实测 >20s 的恢复）。
+		if !waitForIdleOrSignal(runner.InFlight, sigCh, 90*time.Second) {
+			log.Printf("[INFO] second shutdown signal received; exiting now")
+		}
 	}()
 
 	if err := client.Run(ctx); err != nil && ctx.Err() == nil {

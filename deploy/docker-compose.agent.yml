@@ -13,10 +13,11 @@ services:
         VERSION: ${VERSION:-0.1.0}
     user: "0:0"
     restart: unless-stopped
-    # 优雅关闭宽限：Agent 收到 SIGTERM 后会让在途 run 最多 20s 收尾（回滚/上报结果），
-    # Docker 默认只等 10s 就 SIGKILL，会把这段宽限腰斩——在途恢复会被硬中断并留在
-    # 半导入状态。这里放到 30s，给 20s 宽限留出余量。
-    stop_grace_period: 30s
+    # 优雅关闭宽限：Agent 收到 SIGTERM 后先让在途 run 收尾（最多 20s），再取消并等
+    # 取消触发的回滚结束（最多 90s）——空闲时会立即退出，不会白等。Docker 默认只等
+    # 10s 就 SIGKILL，会把这两段都腰斩（在途恢复被硬中断并留在半导入状态），故放到
+    # 150s 覆盖最坏情况。
+    stop_grace_period: 150s
     # network_mode: host
     environment:
       # 必填：Server gRPC 服务端地址，必须带 scheme（如 https://backup.example.com:9090 或 http://host:9090）

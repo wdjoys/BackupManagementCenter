@@ -238,7 +238,9 @@ func (d *Dispatcher) processJob(j *job) {
 
 	// Check if agent is connected
 	if !d.reg.IsConnected(j.agentID) {
-		log.Printf("dispatcher: agent %s not connected; requeue run %s", j.agentID, j.runID)
+		// 不再用裸 log.Printf（每 2s 一行，实测断连 10 分钟刷 322 行，淹没真实信号）：
+		// appendDispatchLog 对同 run 同消息 10 分钟内只记一条，且写入 run 日志这一
+		// 产品可见面。
 		d.appendDispatchLog(ctx, j.runID, "warn", "等待 Agent 连接，任务将自动重试")
 		d.requeueJob(j)
 		return

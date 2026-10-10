@@ -186,32 +186,7 @@ func main() {
 
 	// Restart recovery: retry idempotent work left in-flight, but fail
 	// destructive operations because their external side effects are unknown.
-	if stale, listErr := st.ListRunsByStatus(ctx, []string{model.RunDispatched, model.RunRunning}); listErr != nil {
-		log.Printf("[WARN] stale run recovery: %v", listErr)
-	} else {
-		for _, run := range stale {
-			if startupRetryable(run.Operation) {
-				_ = st.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) { r.StartedAt = nil; r.LeaseExpiresAt = nil; r.ErrorCode = ""; r.ErrorMessage = "" })
-				continue
-			}
-			finished := time.Now().UTC()
-			if err := st.TransitionRun(ctx, run.ID, run.Status, model.RunFailed, func(r *model.Run) {
-				r.FinishedAt = &finished
-				r.ErrorCode = model.ErrAgentDisconnected
-				r.ErrorMessage = "server restarted during non-retryable operation"
-				r.LeaseExpiresAt = nil
-			}); err == nil {
-				if rs, ok := st.(interface {
-					DeleteRunSecrets(context.Context, string) error
-				}); ok {
-					_ = rs.DeleteRunSecrets(ctx, run.ID)
-				}
-				if nerr := notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
-					notification.LogFailure(run.ID, nerr)
-				}
-			}
-		}
-	}
+	recoverStaleRuns(ctx, st, notifier)
 
 	// Rebuild the durable queue after a restart. Runs that were queued before
 	// the process exited must not depend on an in-memory enqueue call.
@@ -478,4 +453,67 @@ func (t terminalRunMetrics) ObserveRunTerminal(run model.Run) {
 		}
 	}
 	t.met.ObserveRun(run.Operation, run.Status, d)
+}
+
+// staleRunStore 是重启对账所需的最小 store 面（便于单测注入真实 store）。
+type staleRunStore interface {
+	ListRunsByStatus(ctx context.Context, statuses []string) ([]model.Run, error)
+	TransitionRun(ctx context.Context, id, from, to string, mutate func(*model.Run)) error
+	FinishRestoreRun(ctx context.Context, in store.FinishRestoreRunInput) error
+}
+
+type runFailureNotifier interface {
+	NotifyPlanFailure(ctx context.Context, runID string) error
+}
+
+// recoverStaleRuns 处理重启前遗留的在途 run：可重试的放回队列；破坏性操作
+// （备份/恢复）直接失败，并把被中断的恢复请求一并推进到可人工解除的安全终态。
+//
+// 此前只把恢复 run 置 failed 而不同步 restore_requests.phase，该行会永久停在
+// 中间态（如 restoring）：POST /restores/{id}/resolve 以 restore_conflict 拒绝，
+// 而中间态不是安全相位，全局数据库恢复占用会被一直占住，重启也不自愈。
+func recoverStaleRuns(ctx context.Context, st staleRunStore, notifier runFailureNotifier) {
+	stale, err := st.ListRunsByStatus(ctx, []string{model.RunDispatched, model.RunRunning})
+	if err != nil {
+		log.Printf("[WARN] stale run recovery: %v", err)
+		return
+	}
+	for _, run := range stale {
+		if startupRetryable(run.Operation) {
+			_ = st.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
+				r.StartedAt = nil
+				r.LeaseExpiresAt = nil
+				r.ErrorCode = ""
+				r.ErrorMessage = ""
+			})
+			continue
+		}
+		finished := time.Now().UTC()
+		if err := st.TransitionRun(ctx, run.ID, run.Status, model.RunFailed, func(r *model.Run) {
+			r.FinishedAt = &finished
+			r.ErrorCode = model.ErrAgentDisconnected
+			r.ErrorMessage = "server restarted during non-retryable operation"
+			r.LeaseExpiresAt = nil
+		}); err != nil {
+			continue
+		}
+		if run.Operation == model.OpRestore {
+			_ = st.FinishRestoreRun(ctx, store.FinishRestoreRunInput{
+				RunID:        run.ID,
+				ToStatus:     model.RunFailed,
+				FinishedAt:   finished,
+				ErrorCode:    model.ErrAgentDisconnected,
+				ErrorMessage: "server restarted during non-retryable operation",
+				Phase:        model.RestorePhaseManualRecoveryNeeded,
+			})
+		}
+		if rs, ok := st.(interface {
+			DeleteRunSecrets(context.Context, string) error
+		}); ok {
+			_ = rs.DeleteRunSecrets(ctx, run.ID)
+		}
+		if nerr := notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
+			notification.LogFailure(run.ID, nerr)
+		}
+	}
 }

@@ -98,7 +98,7 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 		// list databases
 		listArgs := []string{"-h", source.Host, "-p", strconv.Itoa(source.Port), "-U", source.Username, "-d", "postgres", "-t", "-c", "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn"}
 		var dbNames []string
-		_, err = rc.Exec.Run(ctx, Cmd{Exe: toolPath("psql"), Args: listArgs, Env: env},
+		listExit, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("psql"), Args: listArgs, Env: env},
 			func(line string) {
 				name := strings.TrimSpace(line)
 				if name != "" {
@@ -107,6 +107,15 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 			}, logLine)
 		if err != nil {
 			return nil, fmt.Errorf("list databases: %w", err)
+		}
+		// Executor 对非零退出返回 (exitCode, nil)，所以只看 err 会把"列库失败"
+		// 退化成"零个库"：循环不执行、manifest 只剩 globals、Backup 仍返回成功，
+		// 快照里一个业务库都没有却报 succeeded。退出码必须显式检查。
+		if listExit != 0 {
+			return nil, exitError("psql list databases", listExit, nil)
+		}
+		if len(dbNames) == 0 {
+			return nil, errors.New("no connectable databases were listed; refusing to upload an instance backup with no database export")
 		}
 
 		for _, db := range dbNames {
@@ -117,9 +126,13 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 				"--host", source.Host,
 				"--port", strconv.Itoa(source.Port),
 				"--username", source.Username,
-				db,
 			}
 			args = append(args, source.ExtraArgs...)
+			// 与单库分支同理：库名是位置参数，而合法库名可以以 '-' 开头，
+			// 必须以 -- 结束选项，否则 pg_dump 会把库名当选项解析
+			// （实测 "no matching extensions were found"），一个这种库就会让
+			// 整实例备份整体失败。
+			args = append(args, "--", db)
 			exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, logLine)
 			if err != nil || exitCode != 0 {
 				return nil, exitError(fmt.Sprintf("pg_dump %s", db), exitCode, err)

@@ -83,11 +83,17 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 	if source.Database == "all" {
 		// globals dump
 		globalsFile := filepath.Join(stagingDir, "globals.sql")
+		// extra_args 不传给 pg_dumpall：白名单里的选项是 pg_dump 的导出选项，
+		// 而 pg_dumpall 的选项集不同——实测整实例计划带 --blobs 时备份必然失败
+		// （pg_dumpall: unrecognized option '--blobs'）。globals 只含角色/表空间等
+		// 全局对象，这些导出选项在那里没有意义；它们仍作用于下面的逐库 pg_dump。
+		if len(source.ExtraArgs) > 0 {
+			rc.Logf("warn", "extra_args %v 不适用于整实例的 globals 导出（pg_dumpall 选项集与 pg_dump 不同），仅作用于各数据库导出", source.ExtraArgs)
+		}
 		args := []string{
 			"--globals-only", "--file=" + globalsFile,
 			"--host", source.Host, "--port", strconv.Itoa(source.Port), "--username", source.Username,
 		}
-		args = append(args, source.ExtraArgs...)
 		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dumpall"), Args: args, Env: env}, logLine, logLine)
 		if err != nil || exitCode != 0 {
 			return nil, exitError("pg_dumpall globals", exitCode, err)

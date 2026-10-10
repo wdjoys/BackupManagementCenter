@@ -70,6 +70,37 @@ func TestPostgreSQLInstanceBackupFailsWhenNoDatabaseListed(t *testing.T) {
 	}
 }
 
+// extra_args 是 pg_dump 的导出选项，不能传给 pg_dumpall：实测整实例计划带 --blobs 时
+// pg_dumpall 报 unrecognized option '--blobs'（选项集与 pg_dump 不同），备份必然失败。
+// globals 导出必须干净，而 extra_args 仍要作用于逐库 pg_dump。
+func TestPostgreSQLInstanceBackupKeepsExtraArgsOutOfGlobalsDump(t *testing.T) {
+	exec := &fakeListExec{listOut: []string{"appdb"}}
+	rc := pgInstanceRunContext(t, exec)
+	rc.Task.Source.ExtraArgs = []string{"--blobs"}
+	if _, err := (&PostgreSQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	var globalsArgs, dbArgs []string
+	for _, args := range exec.cmds {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "--globals-only"):
+			globalsArgs = args
+		case strings.Contains(joined, "appdb"):
+			dbArgs = args
+		}
+	}
+	if globalsArgs == nil {
+		t.Fatalf("未找到 globals 导出命令，cmds=%v", exec.cmds)
+	}
+	if strings.Contains(strings.Join(globalsArgs, " "), "--blobs") {
+		t.Fatalf("globals 导出不得携带 pg_dump 专属选项: %v", globalsArgs)
+	}
+	if dbArgs == nil || !strings.Contains(strings.Join(dbArgs, " "), "--blobs") {
+		t.Fatalf("逐库 pg_dump 必须携带 extra_args，dbArgs=%v cmds=%v", dbArgs, exec.cmds)
+	}
+}
+
 // 库名以 '-' 开头时必须作为位置参数出现在 `--` 之后：否则 pg_dump 把它当选项
 // 解析（实测 "no matching extensions were found"），实例上只要有一个这种库，
 // 整实例备份就整体失败。

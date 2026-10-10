@@ -406,7 +406,10 @@ func isSQLiteBusy(err error) bool {
 func (d *Dispatcher) appendDispatchLog(ctx context.Context, runID, level, message string) {
 	now := time.Now().UTC()
 	d.dispatchLogMu.Lock()
-	if previous, ok := d.dispatchLogState[runID]; ok && previous.message == message && now.Sub(previous.at) < 30*time.Second {
+	// 同一 run 的同一提示在窗口内只记一条：仓库被未安全终结的恢复长时间阻塞时
+	// 每次派发都会产生同样的告警，30s 窗口仍会以约 2 条/分钟无限增长（实测某运行
+	// 已积累 161 条）。10 分钟窗口对运维可见性没有损失，写入量降为原来的 1/20。
+	if previous, ok := d.dispatchLogState[runID]; ok && previous.message == message && now.Sub(previous.at) < 10*time.Minute {
 		d.dispatchLogMu.Unlock()
 		return
 	}

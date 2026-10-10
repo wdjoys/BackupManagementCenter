@@ -483,3 +483,71 @@ func TestValidCharsetName(t *testing.T) {
 		}
 	}
 }
+
+// rowsExec 回放预置的 stdout 行，用于驱动依赖查询结果的预检。
+type rowsExec struct {
+	rows []string
+	cmds [][]string
+}
+
+func (f *rowsExec) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (int, error) {
+	f.cmds = append(f.cmds, c.Args)
+	if strings.Contains(strings.Join(c.Args, " "), "processlist") && onStdout != nil {
+		for _, r := range f.rows {
+			onStdout(r)
+		}
+	}
+	return 0, nil
+}
+
+func mysqlRestoreSpecForPreflight(exec Executor, target string) *RestoreSpec {
+	return &RestoreSpec{
+		Kind:       KindMySQL,
+		StagingDir: "",
+		Database: &model.DatabaseRestore{
+			TargetDatabase: target, TargetHost: "127.0.0.1", TargetPort: 3306, TargetUsername: "bmc",
+		},
+		Secrets: SecretBundle{DBPassword: "pw"},
+		Logf:    func(string, string, ...any) {},
+		Exec:    exec,
+	}
+}
+
+// 目标库被其它会话占用时必须拒绝：DROP DATABASE 要拿 schema metadata lock，被占用
+// 时无界等待（实测阻塞 52s），且这一步失败后回滚会用同一个 DROP 再次失败，阶段机
+// 落到 rollback_failed 阻塞所有数据库恢复。
+func TestMySQLPreflightRejectsBusyTarget(t *testing.T) {
+	busy := &rowsExec{rows: []string{"7861\tbmc\t10.0.0.9:52355\tSleep\t12\tNULL"}}
+	err := (&MySQLAdapter{}).PreflightRestore(context.Background(), mysqlRestoreSpecForPreflight(busy, "appdb"))
+	if err == nil {
+		t.Fatal("目标库仍被占用时必须拒绝恢复")
+	}
+	if !strings.Contains(err.Error(), "active session") {
+		t.Fatalf("报错应说明目标库仍有会话: %v", err)
+	}
+	// 查询本身必须按目标库过滤，并排除检查自身的连接——否则要么拦不住占用，
+	// 要么把自己的连接当占用、永远拒绝恢复。
+	query := strings.Join(busy.cmds[0], " ")
+	if !strings.Contains(query, "db = 'appdb'") {
+		t.Fatalf("必须按目标库过滤: %s", query)
+	}
+	if !strings.Contains(query, "CONNECTION_ID()") {
+		t.Fatalf("必须排除自身连接: %s", query)
+	}
+
+	// 没有其它会话时必须放行。
+	idle := &rowsExec{}
+	if err := (&MySQLAdapter{}).PreflightRestore(context.Background(), mysqlRestoreSpecForPreflight(idle, "appdb")); err != nil {
+		t.Fatalf("无占用时不得拒绝: %v", err)
+	}
+	// 目标库名含单引号时必须安全转义，不能让查询结构被破坏。
+	quoted := &rowsExec{}
+	if err := (&MySQLAdapter{}).PreflightRestore(context.Background(), mysqlRestoreSpecForPreflight(quoted, "a'b")); err != nil {
+		t.Fatalf("含单引号的目标库名应能正常检查: %v", err)
+	}
+	q := strings.Join(quoted.cmds[0], " ")
+	// 断言转义后的形态：SQL 里应为两个连续单引号，避免注入。
+	if !strings.Contains(q, "db = 'a''b'") {
+		t.Fatalf("目标库名必须做单引号转义: %s", q)
+	}
+}

@@ -473,6 +473,34 @@ func (a *MySQLAdapter) TargetExists(ctx context.Context, spec *RestoreSpec) (boo
 	return found != "", nil
 }
 
+// PreflightRestore 在任何写入之前确认目标库没有被其它会话占用。
+//
+// MySQL 的 DROP DATABASE 需要目标库上的 schema metadata lock：占用方持有表 MDL 时
+// 会无界等待（实测阻塞 52s，整次恢复从 4-5s 变成 59s），而这一步一旦失败/被取消，
+// 回滚会用同一个 DROP 再失败一次，阶段机落到 rollback_failed 并阻塞**所有**数据库
+// 恢复。与 SQLite 的预检同一思路：写之前就拒绝，让运维先断开目标库的会话。
+func (a *MySQLAdapter) PreflightRestore(ctx context.Context, spec *RestoreSpec) error {
+	c, err := mysqlPrepare(spec)
+	if err != nil {
+		return err
+	}
+	target := c.db.TargetDatabase
+	if target == "" || strings.EqualFold(target, "all") {
+		return nil
+	}
+	var busy []string
+	// CONNECTION_ID() 排除本次检查自身的连接。
+	query := "SELECT id, user, host, command, time, state FROM information_schema.processlist WHERE db = '" +
+		strings.ReplaceAll(target, "'", "''") + "' AND id <> CONNECTION_ID()"
+	if err := c.runQuery(ctx, spec, query, func(line string) { busy = append(busy, line) }); err != nil {
+		return fmt.Errorf("check target database sessions: %w", err)
+	}
+	if len(busy) > 0 {
+		return fmt.Errorf("target database %q still has %d active session(s): close all target connections and retry", target, len(busy))
+	}
+	return nil
+}
+
 // Import creates (TargetIsNew) or fully replaces (overwrite) the target schema
 // and loads the dump through stdin.
 func (a *MySQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error {

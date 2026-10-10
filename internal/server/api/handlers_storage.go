@@ -64,6 +64,12 @@ func (s *Server) handleCreateStorageTarget(w http.ResponseWriter, r *http.Reques
 		writeErr(w, http.StatusBadRequest, "validation_failed", "name and remote_name are required")
 		return
 	}
+	// 空 rclone_conf 会在落库时变成 NULL 并撞 NOT NULL 约束，冒泡成 500 internal；
+	// 这是客户端输入问题，必须回 400。
+	if strings.TrimSpace(body.RcloneConf) == "" {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "rclone_conf is required")
+		return
+	}
 	t, err := s.Jobs.CreateStorageTargetWithAgent(r.Context(), actorID(r), body.Name, body.RcloneConf, body.RemoteName, body.RemotePath, body.ValidateAgentID, body.Validate)
 	if err != nil {
 		s.jobsErr(w, err)

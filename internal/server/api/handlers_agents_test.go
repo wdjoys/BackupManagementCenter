@@ -14,7 +14,9 @@ import (
 )
 
 // loginSession 登录测试管理员并返回可携带 CSRF 的请求构造器。
-func loginSession(t *testing.T, handler http.Handler) func(method, path string) *httptest.ResponseRecorder {
+// loginCookies 登录管理员并返回会话/CSRF cookie 与 CSRF token，供需要自定义请求体
+// 或方法的测试直接构造请求（loginSession 只支持无 body 的调用）。
+func loginCookies(t *testing.T, handler http.Handler) (*http.Cookie, *http.Cookie, string) {
 	t.Helper()
 	loginBody, _ := json.Marshal(map[string]string{
 		"username": "admin",
@@ -41,6 +43,12 @@ func loginSession(t *testing.T, handler http.Handler) func(method, path string) 
 	if sessionCookie == nil || csrfCookie == nil {
 		t.Fatalf("login did not set session/csrf cookies: %v", rec.Result().Cookies())
 	}
+	return sessionCookie, csrfCookie, csrf
+}
+
+func loginSession(t *testing.T, handler http.Handler) func(method, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	sessionCookie, csrfCookie, csrf := loginCookies(t, handler)
 	return func(method, path string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, nil)
 		r.AddCookie(sessionCookie)

@@ -2153,6 +2153,51 @@ func TestCreateDatabaseRestoreRunDoesNotDedupeBlockedRequest(t *testing.T) {
 	}
 }
 
+// 未终结的恢复必须同时保护它的**源快照**与回滚来源：此前只保护后者，实测恢复进行中
+// 可请求删除源快照并返回 202（仅靠 dispatcher 阻塞同仓库后续命令兜住，一旦放宽，
+// forget+prune 可能在恢复读盘期间删掉源快照的数据包）。
+func TestProtectedRestoreSnapshotIDsCoversSourceSnapshot(t *testing.T) {
+	ts := newTestStore(t)
+	defer ts.Close(t)
+	ctx := context.Background()
+
+	run := &model.Run{
+		ID: "run-prot-1", AgentID: "agent-1", Operation: model.OpRestore,
+		Status: model.RunQueued, QueuedAt: now, ProgressJSON: "{}", RepositoryID: "repo-1",
+	}
+	rr := &model.RestoreRequest{
+		ID: "rr-prot-1", RunID: run.ID, SnapshotID: "src-snap", RollbackSnapshotID: "rollback-snap",
+		RestoreKind: model.KindPostgreSQL,
+		Target:      model.RestoreTarget{Host: "db", Port: 5432, Username: "u", Database: "appdb"},
+		TargetJSON:  targetJSON(), Phase: model.RestorePhaseRestoring, CreatedAt: now,
+	}
+	if err := ts.CreateDatabaseRestoreRun(ctx, run, rr); err != nil {
+		t.Fatalf("CreateDatabaseRestoreRun: %v", err)
+	}
+	got, err := ts.ProtectedRestoreSnapshotIDs(ctx, "repo-1")
+	if err != nil {
+		t.Fatalf("ProtectedRestoreSnapshotIDs: %v", err)
+	}
+	if _, ok := got["src-snap"]; !ok {
+		t.Fatalf("恢复的源快照必须被保护: %v", got)
+	}
+	if _, ok := got["rollback-snap"]; !ok {
+		t.Fatalf("回滚来源必须被保护: %v", got)
+	}
+	if other, err := ts.ProtectedRestoreSnapshotIDs(ctx, "repo-2"); err != nil || len(other) != 0 {
+		t.Fatalf("其它仓库不应受影响: %v (err=%v)", other, err)
+	}
+	// 恢复安全终结后不再保护（操作者仍可按需删除）。
+	if err := ts.FinishRestoreRun(ctx, FinishRestoreRunInput{
+		RunID: run.ID, ToStatus: model.RunSucceeded, FinishedAt: now, Phase: model.RestorePhaseSucceeded,
+	}); err != nil {
+		t.Fatalf("FinishRestoreRun: %v", err)
+	}
+	if got, err = ts.ProtectedRestoreSnapshotIDs(ctx, "repo-1"); err != nil || len(got) != 0 {
+		t.Fatalf("恢复终结后不应再保护: %v (err=%v)", got, err)
+	}
+}
+
 func TestAuditEvent(t *testing.T) {
 	ts := newTestStore(t)
 	defer ts.Close(t)

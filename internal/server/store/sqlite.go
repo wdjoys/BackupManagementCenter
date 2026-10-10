@@ -2074,9 +2074,13 @@ func (s *sqliteStore) RequestRestoreStop(ctx context.Context, runID string, dead
 // ProtectedRestoreSnapshotIDs 返回该仓库中未安全终结的恢复所引用的保护快照 ID。
 func (s *sqliteStore) ProtectedRestoreSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error) {
 	safe := restoreSafePhaseArgs()
-	query := "SELECT rr.rollback_snapshot_id FROM restore_requests rr JOIN runs r ON r.id = rr.run_id " +
-		"WHERE r.repository_id = ? AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ") " +
-		"AND rr.rollback_snapshot_id IS NOT NULL AND rr.rollback_snapshot_id <> ''"
+	// 未终结的恢复同时保护两类快照：它正在读取的**源快照**(rr.snapshot_id)与回滚来源
+	// (rr.rollback_snapshot_id)。此前只保护后者——实测恢复进行中可请求删除源快照并返回
+	// 202（快照随即从列表消失），当前仅靠 dispatcher 的"未终结恢复阻塞同仓库后续命令"
+	// 兜住；一旦该阻塞放宽，forget+prune 可能在恢复读盘期间删掉源快照的数据包，导致
+	// 恢复失败或回滚来源缺失。
+	query := "SELECT rr.snapshot_id, COALESCE(rr.rollback_snapshot_id, '') FROM restore_requests rr JOIN runs r ON r.id = rr.run_id " +
+		"WHERE r.repository_id = ? AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ")"
 	args := append([]any{repositoryID}, safe...)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -2085,11 +2089,16 @@ func (s *sqliteStore) ProtectedRestoreSnapshotIDs(ctx context.Context, repositor
 	defer rows.Close()
 	out := make(map[string]struct{})
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var sourceID, rollbackID string
+		if err := rows.Scan(&sourceID, &rollbackID); err != nil {
 			return nil, fmt.Errorf("scan protected restore snapshot: %w", err)
 		}
-		out[id] = struct{}{}
+		if sourceID != "" {
+			out[sourceID] = struct{}{}
+		}
+		if rollbackID != "" {
+			out[rollbackID] = struct{}{}
+		}
 	}
 	return out, rows.Err()
 }

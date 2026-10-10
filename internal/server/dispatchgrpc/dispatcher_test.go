@@ -324,3 +324,33 @@ func TestCheckTimeoutsDispatchedTimeoutNotifies(t *testing.T) {
 		t.Fatalf("expected exactly one notification for run-d, got %v", got)
 	}
 }
+
+// 运行中超时必须同时通知 agent 停止，否则 dump/上传会继续跑完并创建快照，
+// 而 run 已是终态 failed，产出 run 记录里看不到的孤儿快照。
+func TestCheckTimeoutsRunningTimeoutCancelsAgent(t *testing.T) {
+	st := newFakeStore()
+	r := queuedRun("run-cancel")
+	r.Status = model.RunRunning
+	started := time.Now().UTC().Add(-2 * time.Hour)
+	r.StartedAt = &started
+	st.addRun(r)
+
+	d, _ := newTestDispatcher(st, &fakeSource{})
+	reg := agentreg.NewRegistry()
+	sendCh, _ := reg.Register(context.Background(), "agent-1")
+	d.reg = reg
+
+	d.checkTimeouts()
+
+	select {
+	case msg := <-sendCh:
+		if msg.GetCancelCommand().GetRunId() != "run-cancel" {
+			t.Fatalf("expected cancel command for run-cancel, got %+v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("running run timed out without telling the agent to stop (orphan snapshot risk)")
+	}
+	if run := st.snapshot("run-cancel"); run == nil || run.Status != model.RunFailed || run.ErrorCode != model.ErrTimeout {
+		t.Fatalf("run not marked as timeout failure: %+v", run)
+	}
+}

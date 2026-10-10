@@ -898,6 +898,18 @@ func (d *Dispatcher) checkTimeouts() {
 			if run.Status == model.RunRunning {
 				// Running but no response for 30s -> force fail
 				if elapsed > d.cfg.NoResponseTimeout {
+					// 判定超时后必须同时通知 agent 停止：否则 dump/上传会继续跑到
+					// 完成并创建快照，而 run 已是终态 failed(snapshot_id 为空)，
+					// 于是产出一个 run 记录里看不到的孤儿快照（实测超时判定后
+					// 53s 快照才被创建）。
+					if d.reg.IsConnected(run.AgentID) {
+						cancelMsg := &bmcv1.ServerMessage{
+							Payload: &bmcv1.ServerMessage_CancelCommand{
+								CancelCommand: &bmcv1.CancelCommand{RunId: run.ID},
+							},
+						}
+						_ = d.reg.Send(run.AgentID, cancelMsg)
+					}
 					if err := d.store.TransitionRun(ctx, run.ID, model.RunRunning, model.RunFailed, func(r *model.Run) {
 						now := time.Now().UTC()
 						r.FinishedAt = &now

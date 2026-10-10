@@ -85,15 +85,26 @@ func main() {
 	client := agent.NewConnectClient(cfgAdapter{cfg}, im, prober, runner)
 	client.SetLogSink(agentLogSink)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// 优雅关闭：收到 SIGTERM 后先让在途 run 收尾（回滚与结果上报都靠这段时间），
+	// 再取消 ctx 退出。不能把 signal.NotifyContext 的 ctx 直接当工作 ctx——它在收到
+	// 信号的瞬间就取消，client.Run 立即返回，宽限形同死代码（实测 docker restart
+	// 0.5s 返回、在途恢复被硬中断、既不回滚也不上报结果，目标库留在半导入状态）。
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	go func() {
-		<-ctx.Done()
+		<-sigCh
 		log.Printf("[INFO] shutdown signal received")
-		// Give in-flight runs up to 20s to finish.
-		time.Sleep(20 * time.Second)
-		stop()
+		// Give in-flight runs up to 20s to finish; a second signal exits immediately.
+		select {
+		case <-sigCh:
+			log.Printf("[INFO] second shutdown signal received; exiting now")
+		case <-time.After(20 * time.Second):
+		}
+		cancel()
 	}()
 
 	if err := client.Run(ctx); err != nil && ctx.Err() == nil {

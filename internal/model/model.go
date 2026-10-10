@@ -382,6 +382,8 @@ type SystemLog struct {
 // the restore explicitly.
 const (
 	RestorePhaseQueued      = "queued"
+	// RestorePhaseRunning 表示 run 已分发、Agent 已接单，尚未进入恢复各阶段。
+	RestorePhaseRunning     = "running"
 	RestorePhasePreBackup   = "pre_backup"
 	RestorePhaseRestoring   = "restoring"
 	RestorePhaseRollingBack = "rolling_back"

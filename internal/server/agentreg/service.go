@@ -494,7 +494,7 @@ func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca 
 			if rs, ok := s.store.(interface {
 				UpdateRestorePhase(context.Context, string, string) error
 			}); ok {
-				_ = rs.UpdateRestorePhase(ctx, runID, "running")
+				_ = rs.UpdateRestorePhase(ctx, runID, model.RestorePhaseRunning)
 			}
 		}
 		if err == nil {

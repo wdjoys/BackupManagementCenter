@@ -584,6 +584,16 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	}
 	if importErr := engine.Import(ctx, spec); importErr != nil {
 		phase, rollbackErr := rollbackDatabaseRestore(d, opts, tempDir, engine, spec, protectionSnapshotID)
+		// 用户主动取消（POST /runs/{id}/cancel）会取消 ctx，导入随之失败。这种情况必须
+		// 报 cancelled，而不是"校验/导入失败"——否则运维看到的是自己的取消被表述成数据问题。
+		if ctx.Err() != nil || errors.Is(importErr, context.Canceled) {
+			return nil, &PipelineError{
+				Code:       model.ErrCancelled,
+				Message:    "database restore cancelled by request",
+				Cause:      importErr,
+				ResultJSON: restoreResultJSON(phase, protectionSnapshotID),
+			}
+		}
 		message := "database import failed: " + importErr.Error()
 		if rollbackErr != nil {
 			message += "; rollback also failed: " + rollbackErr.Error()
@@ -598,6 +608,14 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	d.logf("info", "导入完成，开始校验")
 	if verifyErr := engine.VerifyRestored(ctx, spec); verifyErr != nil {
 		phase, rollbackErr := rollbackDatabaseRestore(d, opts, tempDir, engine, spec, protectionSnapshotID)
+		if ctx.Err() != nil || errors.Is(verifyErr, context.Canceled) {
+			return nil, &PipelineError{
+				Code:       model.ErrCancelled,
+				Message:    "database restore cancelled by request",
+				Cause:      verifyErr,
+				ResultJSON: restoreResultJSON(phase, protectionSnapshotID),
+			}
+		}
 		message := "database restore verification failed: " + verifyErr.Error()
 		if rollbackErr != nil {
 			message += "; rollback also failed: " + rollbackErr.Error()

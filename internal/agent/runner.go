@@ -50,18 +50,33 @@ type Runner struct {
 // SIGKILL 终止时 defer 不会执行：备份/恢复被中断后，半个 dump 会永久留在 DataDir
 // 下（实测每次中断泄漏 160MB–1.8GB，反复重启可写满容器磁盘）。启动时没有任何 run
 // 在跑，这些目录必定属于已死进程，可安全回收。返回清理的目录数。
-func SweepStaleRunDirs(dataDir string) int {
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		return 0
-	}
+func SweepStaleRunDirs(dataDir string, restoreRoots []string) int {
 	removed := 0
-	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), "bmc-run-") {
+	if entries, err := os.ReadDir(dataDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() || !strings.HasPrefix(e.Name(), "bmc-run-") {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(dataDir, e.Name())); err == nil {
+				removed++
+			}
+		}
+	}
+	// 恢复过程中被硬杀（SIGKILL）时 Import 的 defer 不会执行，恢复根目录会残留
+	// 半成品临时文件 .bmc-restore-*（实测一次 973MB）。启动时没有恢复在跑，这些
+	// 文件必定属于已死进程，可安全回收。
+	for _, root := range restoreRoots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(dataDir, e.Name())); err == nil {
-			removed++
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasPrefix(e.Name(), ".bmc-restore-") {
+				continue
+			}
+			if err := os.Remove(filepath.Join(root, e.Name())); err == nil {
+				removed++
+			}
 		}
 	}
 	return removed

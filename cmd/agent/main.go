@@ -66,7 +66,7 @@ func main() {
 		log.Printf("[INFO] enrolled as agent %s", agentID)
 	}
 
-	if n := agent.SweepStaleRunDirs(cfg.DataDir); n > 0 {
+	if n := agent.SweepStaleRunDirs(cfg.DataDir, cfg.RestoreRoots); n > 0 {
 		log.Printf("[INFO] cleaned %d stale run temp dir(s) left by a previous process under %s", n, cfg.DataDir)
 	}
 

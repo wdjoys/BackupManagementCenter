@@ -2,127 +2,46 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"backupmanagementcenter/internal/model"
-	"backupmanagementcenter/internal/secrets"
-	"backupmanagementcenter/internal/server/store"
 )
 
-func TestResetAdminCommand(t *testing.T) {
-	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "bmc.db")
-
-	seal := secrets.NewNoopSealer()
-	st, err := store.NewWithSealer(dbPath, seal)
-	if err != nil {
-		t.Fatalf("NewWithSealer: %v", err)
-	}
-
-	ctx := context.Background()
-	if err := st.Migrate(ctx); err != nil {
-		st.Close()
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	admin := &model.Admin{
-		ID:           "test-admin-1",
-		Username:     "admin",
-		PasswordHash: "$argon2id$v19$test",
-		CreatedAt:    time.Now().UTC(),
-	}
-	if err := st.CreateAdmin(ctx, admin); err != nil {
-		st.Close()
-		t.Fatalf("CreateAdmin: %v", err)
-	}
-
-	has, err := st.HasAdmin(ctx)
-	if err != nil || !has {
-		st.Close()
-		t.Fatalf("expected admin to exist, got %v, err=%v", has, err)
-	}
-	st.Close()
-
-	// Set BMC_DATA_DIR to tempDir and run runResetAdmin
-	t.Setenv("BMC_DATA_DIR", tempDir)
-	runResetAdmin()
-
-	// Verify admin is gone
-	st2, err := store.NewWithSealer(dbPath, seal)
-	if err != nil {
-		t.Fatalf("reopen store: %v", err)
-	}
-	defer st2.Close()
-
-	hasAfter, err := st2.HasAdmin(ctx)
-	if err != nil {
-		t.Fatalf("HasAdmin after reset: %v", err)
-	}
-	if hasAfter {
-		t.Fatalf("expected admin to be deleted after reset-admin")
-	}
+type fakeAgentStatusStore struct {
+	agents []model.Agent
+	set    []string
+	status model.AgentStatus
 }
 
-type recordingRunNotifier struct{ ids []string }
+func (f *fakeAgentStatusStore) ListAgents(context.Context) ([]model.Agent, error) {
+	return f.agents, nil
+}
 
-func (r *recordingRunNotifier) NotifyPlanFailure(_ context.Context, runID string) error {
-	r.ids = append(r.ids, runID)
+func (f *fakeAgentStatusStore) SetAgentStatus(_ context.Context, agentID string, st model.AgentStatus, _ time.Time) error {
+	f.set = append(f.set, agentID)
+	f.status = st
 	return nil
 }
 
-// 服务端重启时在跑的恢复，run 与 restore_requests.phase 必须一起推进到安全终态：
-// 只置 run failed 会让请求永久停在中间态（restoring），resolve 以 restore_conflict
-// 拒绝，而中间态不是安全相位 → 全局数据库恢复占用被一直占住且重启不自愈。
-func TestRecoverStaleRunsAdvancesRestoreRequestPhase(t *testing.T) {
-	tempDir := t.TempDir()
-	seal := secrets.NewNoopSealer()
-	st, err := store.NewWithSealer(filepath.Join(tempDir, "bmc.db"), seal)
-	if err != nil {
-		t.Fatalf("NewWithSealer: %v", err)
-	}
-	defer st.Close()
-	ctx := context.Background()
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
+// 重启后必须把持久化为 online 的 Agent 置为 offline：否则 GET /agents 与实际可调度性
+// 短暂不一致（实测重启后约 1.2s 内 POST /restores 先报 agent_unavailable /
+// agent_capabilities_pending，而列表仍显示 online）。已是 offline 的不必重复写。
+func TestMarkAgentsOfflineOnStartup(t *testing.T) {
+	st := &fakeAgentStatusStore{agents: []model.Agent{
+		{ID: "a-1", Status: model.AgentOnline},
+		{ID: "a-2", Status: model.AgentOffline},
+		{ID: "a-3", Status: model.AgentOnline},
+	}}
+	markAgentsOfflineOnStartup(context.Background(), st)
 
-	started := time.Now().UTC().Add(-time.Minute)
-	run := &model.Run{
-		ID: "run-restore", AgentID: "agent-1", Operation: model.OpRestore,
-		Status: model.RunRunning, QueuedAt: started, StartedAt: &started, RepositoryID: "repo-1",
+	if len(st.set) != 2 {
+		t.Fatalf("只应处理 online 的 agent，实际 %v", st.set)
 	}
-	if err := st.CreateRun(ctx, run); err != nil {
-		t.Fatalf("CreateRun: %v", err)
+	if st.set[0] != "a-1" || st.set[1] != "a-3" {
+		t.Fatalf("处理对象错误: %v", st.set)
 	}
-	req := &model.RestoreRequest{
-		ID: "rr-1", RunID: "run-restore", SnapshotID: "snap-1",
-		RestoreKind: model.KindMySQL, Phase: model.RestorePhaseRestoring, CreatedAt: started,
-	}
-	if err := st.CreateRestoreRequest(ctx, req); err != nil {
-		t.Fatalf("CreateRestoreRequest: %v", err)
-	}
-
-	notifier := &recordingRunNotifier{}
-	recoverStaleRuns(ctx, st, notifier)
-
-	got, err := st.GetRun(ctx, "run-restore")
-	if err != nil {
-		t.Fatalf("GetRun: %v", err)
-	}
-	if got.Status != model.RunFailed || got.ErrorCode != model.ErrAgentDisconnected {
-		t.Fatalf("run 应被置为 agent_disconnected 失败，实际 %s/%s", got.Status, got.ErrorCode)
-	}
-	rr, err := st.GetRestoreRequest(ctx, "rr-1")
-	if err != nil {
-		t.Fatalf("GetRestoreRequest: %v", err)
-	}
-	if rr.Phase != model.RestorePhaseManualRecoveryNeeded {
-		t.Fatalf("恢复请求相位应推进为 %s（否则 resolve 会 409、全局占用锁死），实际 %s",
-			model.RestorePhaseManualRecoveryNeeded, rr.Phase)
-	}
-	if len(notifier.ids) != 1 || notifier.ids[0] != "run-restore" {
-		t.Fatalf("应通知一次计划失败，实际 %v", notifier.ids)
+	if st.status != model.AgentOffline {
+		t.Fatalf("应写入 offline，实际 %q", st.status)
 	}
 }

@@ -187,6 +187,7 @@ func main() {
 	// Restart recovery: retry idempotent work left in-flight, but fail
 	// destructive operations because their external side effects are unknown.
 	recoverStaleRuns(ctx, st, notifier)
+	markAgentsOfflineOnStartup(ctx, st)
 
 	// Rebuild the durable queue after a restart. Runs that were queued before
 	// the process exited must not depend on an in-memory enqueue call.
@@ -465,6 +466,35 @@ type staleRunStore interface {
 
 type runFailureNotifier interface {
 	NotifyPlanFailure(ctx context.Context, runID string) error
+}
+
+// agentStatusStore 是启动对账需要的最小接口。
+type agentStatusStore interface {
+	ListAgents(ctx context.Context) ([]model.Agent, error)
+	SetAgentStatus(ctx context.Context, agentID string, st model.AgentStatus, at time.Time) error
+}
+
+// markAgentsOfflineOnStartup 把重启前持久化为 online 的 Agent 统一置为 offline。
+//
+// 重启后内存里的连接状态全没了，但 agents.status 仍是重启前的 online，于是
+// GET /agents 与实际可调度性会短暂不一致（实测重启后约 1.2s 内 POST /restores 先报
+// agent_unavailable / agent_capabilities_pending，而列表仍显示 online）。Agent 会在
+// ~1s 内重连并把状态翻回 online，因此启动时先置 offline 是安全且自愈的。
+func markAgentsOfflineOnStartup(ctx context.Context, st agentStatusStore) {
+	agents, err := st.ListAgents(ctx)
+	if err != nil {
+		log.Printf("[WARN] agent status reconciliation: %v", err)
+		return
+	}
+	now := time.Now().UTC()
+	for i := range agents {
+		if agents[i].Status == model.AgentOffline {
+			continue
+		}
+		if err := st.SetAgentStatus(ctx, agents[i].ID, model.AgentOffline, now); err != nil {
+			log.Printf("[WARN] mark agent %s offline on startup: %v", agents[i].ID, err)
+		}
+	}
 }
 
 // recoverStaleRuns 处理重启前遗留的在途 run：可重试的放回队列；破坏性操作

@@ -1228,10 +1228,54 @@ func isTerminal(status string) bool {
 // 因此不会像"包装 store"那样破坏其它可选接口的能力断言。
 func (s *sqliteStore) SetRunObserver(obs RunObserver) { s.runObserver = obs }
 
+// busyRetryAttempts/busyRetryBackoff 控制写事务遇到 SQLite 写锁冲突时的重试次数与退避。
+// WAL 下"先读后写"的延迟事务一旦快照过期就立刻返回 SQLITE_BUSY_SNAPSHOT(517)，
+// busy_timeout 对它无效——只能整事务重放。实测并发下发备份时终态转换曾因此被丢弃：
+// 备份成功、快照已入库，run 却停在 running 并被 watchdog 判成 run_timeout。
+const (
+	busyRetryAttempts = 8
+	busyRetryBackoff  = 25 * time.Millisecond
+)
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
+}
+
+// retryOnBusy 在写锁冲突时重放整个事务：fn 必须可安全重放（幂等的整事务）。
+// 非冲突错误立即返回；ctx 取消时返回最后一次错误。
+func retryOnBusy(ctx context.Context, attempts int, backoff time.Duration, fn func() error) error {
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return err
+			case <-time.After(time.Duration(attempt) * backoff):
+			}
+		}
+		if err = fn(); err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+	}
+	return err
+}
+
+// TransitionRun 重放整个事务以跨越写锁冲突。mutate 必须是幂等的字段赋值：
+// 所有调用方都只设置 run 的字段，不追加外部切片。
 func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mutate func(*model.Run)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return retryOnBusy(ctx, busyRetryAttempts, busyRetryBackoff, func() error {
+		return s.transitionRunOnce(ctx, id, from, to, mutate)
+	})
+}
+
+func (s *sqliteStore) transitionRunOnce(ctx context.Context, id, from, to string, mutate func(*model.Run)) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("transition run begin tx: %w", err)

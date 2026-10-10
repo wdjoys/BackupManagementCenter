@@ -80,7 +80,7 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 		// 整实例还原不开放：同步拒绝，避免来源快照的全部库写入目标实例。
 		if strings.EqualFold(strings.TrimSpace(body.Target.Database), "all") {
 			writeErr(w, http.StatusUnprocessableEntity, model.ErrUnsupportedRestoreManifest,
-				"restoring every database in the snapshot is not supported; pick a single database")
+				"restoring every database is not supported; set target.database to a single database name (the source snapshot must also contain exactly one database)")
 			return
 		}
 		// 每个 kind 在真实实例上完成预备份/回滚端到端验证前保持 503 禁用。

@@ -678,7 +678,7 @@ func singleDatabaseArtifact(manifest *backup.Manifest, artifactRoot string) (man
 	}
 	exp := manifest.Databases[0]
 	if exp.Database == "globals" || exp.Database == "all" {
-		return manifestArtifact{}, fmt.Errorf("snapshot scope %q is not supported", exp.Database)
+		return manifestArtifact{}, fmt.Errorf("snapshot scope %q is not supported: this snapshot contains every database; restore it from a plan scoped to a single database", exp.Database)
 	}
 	if exp.File == "" || exp.File == ".." || filepath.IsAbs(exp.File) || filepath.Clean(exp.File) != exp.File || strings.HasPrefix(exp.File, ".."+string(filepath.Separator)) {
 		return manifestArtifact{}, errors.New("manifest contains an unsafe artifact path")

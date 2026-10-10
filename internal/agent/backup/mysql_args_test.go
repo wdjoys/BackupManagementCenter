@@ -484,17 +484,25 @@ func TestValidCharsetName(t *testing.T) {
 	}
 }
 
-// rowsExec 分别回放 processlist 与 metadata_locks 两个查询的输出。
+// rowsExec 分别回放 processlist 与 metadata_locks 两个查询的输出；failWith 非空时
+// 对含 DROP DATABASE 的调用向 stderr 输出该文本并返回 exit 1（模拟锁等待超时等失败）。
 type rowsExec struct {
 	sessions []string
 	mdl      []string
 	mdlErr   bool
+	failWith string
 	cmds     [][]string
 }
 
-func (f *rowsExec) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (int, error) {
+func (f *rowsExec) Run(_ context.Context, c Cmd, onStdout, onStderr func(string)) (int, error) {
 	args := strings.Join(c.Args, " ")
 	f.cmds = append(f.cmds, c.Args)
+	if f.failWith != "" && strings.Contains(args, "DROP DATABASE") {
+		if onStderr != nil {
+			onStderr(f.failWith)
+		}
+		return 1, nil
+	}
 	switch {
 	case strings.Contains(args, "information_schema.processlist"):
 		for _, r := range f.sessions {
@@ -603,6 +611,35 @@ func TestMySQLPreflightToleratesMissingMetadataLocksTable(t *testing.T) {
 	}
 	if _, ok := exec.queryWith("information_schema.processlist"); !ok {
 		t.Fatal("仍应照常检查连接默认库")
+	}
+}
+
+// 竞态下的锁等待超时必须给出可操作的处置提示，而不是把原始 1205 直接抛给运维；
+// 非锁等待的失败（如权限不足）不得被误报成"目标被占用"。
+func TestMySQLOverwriteLockTimeoutMessageIsActionable(t *testing.T) {
+	exec := &rowsExec{failWith: "ERROR 1205 (HY000) at line 1: Lock wait timeout exceeded; try restarting transaction"}
+	spec := mysqlRestoreSpecForPreflight(exec, "appdb")
+	spec.ArtifactFile = filepath.Join(t.TempDir(), "dump.sql")
+	spec.TargetIsNew = false
+	err := (&MySQLAdapter{}).Import(context.Background(), spec)
+	if err == nil {
+		t.Fatal("锁等待超时必须让 Import 失败")
+	}
+	if !strings.Contains(err.Error(), "close all target connections and retry") {
+		t.Fatalf("应给出可操作的处置提示: %v", err)
+	}
+
+	other := &rowsExec{failWith: "ERROR 1044 (42000): Access denied for user 'bmc'@'%' to database 'appdb'"}
+	spec.Exec = other
+	err = (&MySQLAdapter{}).Import(context.Background(), spec)
+	if err == nil {
+		t.Fatal("权限错误必须失败")
+	}
+	if strings.Contains(err.Error(), "locked by another session") {
+		t.Fatalf("非锁等待失败不得被误报为占用: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Access denied") {
+		t.Fatalf("原始原因必须保留: %v", err)
 	}
 }
 

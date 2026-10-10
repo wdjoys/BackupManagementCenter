@@ -18,6 +18,16 @@ import (
 	"backupmanagementcenter/internal/model"
 )
 
+// mysqlErrLockWaitTimeout 判断是否为 MySQL 的锁等待超时（ERROR 1205），即本次覆盖
+// 恢复的 DROP 在有界等待内没拿到目标库的 schema metadata lock。
+func mysqlErrLockWaitTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "1205") || strings.Contains(strings.ToLower(msg), "lock wait timeout")
+}
+
 // mysqlDropLockWaitSeconds 是覆盖恢复时 DROP DATABASE 的锁等待上限（秒）。MySQL
 // 客户端默认 lock_wait_timeout=31536000s，配合 12h 运行期限会让"预检之后才出现的锁"
 // 长期占住全局数据库恢复互斥。预检已排除已知占用，这里只需兜住竞态。
@@ -556,6 +566,12 @@ func (a *MySQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 			mysqlDropLockWaitSeconds, quoted, quoted, suffix)
 	}
 	if err := c.runQuery(ctx, spec, setup, nil); err != nil {
+		// 有界等待超时（1205）说明目标库被其它会话锁住（预检之后才出现的锁，竞态）。
+		// 给出与预检一致的处置提示，而不是把原始 1205 直接抛给运维。
+		if mysqlErrLockWaitTimeout(err) {
+			return fmt.Errorf("target database %q is locked by another session (lock wait timeout %ds); close all target connections and retry: %w",
+				c.db.TargetDatabase, mysqlDropLockWaitSeconds, err)
+		}
 		return fmt.Errorf("prepare mysql target database: %w", err)
 	}
 	dumpArgs := []string{

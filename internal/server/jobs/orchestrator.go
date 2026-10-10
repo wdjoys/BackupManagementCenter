@@ -2310,9 +2310,30 @@ func (o *Orchestrator) assertSnapshotNotRestoreProtected(ctx context.Context, re
 		return err
 	}
 	if snapshotHasRestoreProtection(*snap) {
-		return fmt.Errorf("%w: snapshot carries a restore protection tag", ErrSnapshotRestoreProtected)
+		// 保护快照在"它服务的恢复还没安全终结"时必须保留；但恢复已安全终结后
+		// 它只是操作者可能想留的回滚点，不能变成永久不可删的垃圾——保护快照不带
+		// plan/run 标签，保留策略不会认领它，实测跨会话持续累积。
+		// 解析不出对应的恢复记录时仍然 fail-closed。
+		runID := protectionTagRunID(*snap)
+		rr, err := o.Store.GetRestoreRequestByRunID(ctx, runID)
+		switch {
+		case err != nil:
+			return fmt.Errorf("%w: snapshot carries a restore protection tag whose restore cannot be resolved", ErrSnapshotRestoreProtected)
+		case rr != nil && !model.RestorePhaseReleasesOccupancy(rr.Phase):
+			return fmt.Errorf("%w: snapshot backs an unresolved restore", ErrSnapshotRestoreProtected)
+		}
 	}
 	return nil
+}
+
+// protectionTagRunID 从保护标签中取出它服务的恢复 run id。
+func protectionTagRunID(snap model.Snapshot) string {
+	for _, tag := range snap.Tags {
+		if strings.HasPrefix(tag, restoreProtectionTag) {
+			return strings.TrimPrefix(tag, restoreProtectionTag)
+		}
+	}
+	return ""
 }
 
 // verifiedSnapshot 从已验证快照列表中定位单个快照。

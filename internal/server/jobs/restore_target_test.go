@@ -273,3 +273,28 @@ func TestQueueSnapshotDeletionRejectsRestoreProtectedSnapshot(t *testing.T) {
 
 // limitedStore 只暴露 Store 接口，用于验证缓存/隐藏状态不可用时的 fail-closed 行为。
 type limitedStore struct{ store.Store }
+
+// 保护快照在它服务的恢复已安全终结后必须可以删除：这类快照不带 plan/run 标签，
+// 保留策略不会认领它，若永久不可删会跨会话无限累积（实测仓库里已积累多个，
+// 包括更早会话留下的）。
+func TestQueueSnapshotDeletionAllowsResolvedProtectionSnapshot(t *testing.T) {
+	st, disp, o, repo := newRestoreEnv(t)
+	ctx := context.Background()
+	allowRestore(st, disp, o, repo, restoreSnapshot("snap-1", model.KindPostgreSQL))
+
+	run := &model.Run{ID: "run-prot-ok", AgentID: repo.AgentID, Operation: model.OpRestore, Status: model.RunSucceeded,
+		QueuedAt: time.Now().UTC(), RepositoryID: repo.ID}
+	if err := st.CreateRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	rr := &model.RestoreRequest{ID: "rr-prot-ok", RunID: run.ID, SnapshotID: "snap-src", RestoreKind: model.KindPostgreSQL,
+		Phase: model.RestorePhaseSucceeded, CreatedAt: time.Now().UTC()}
+	if err := st.CreateRestoreRequest(ctx, rr); err != nil {
+		t.Fatal(err)
+	}
+	st.seedVerifiedSnapshotCache(repo.ID, []model.Snapshot{{ID: "prot-ok", Tags: []string{"kind:postgresql", "restore-protection:run-prot-ok"}}})
+
+	if _, _, err := o.QueueSnapshotDeletion(ctx, "admin-1", repo.ID, "prot-ok"); err != nil {
+		t.Fatalf("恢复已安全终结的保护快照应可删除，实际 %v", err)
+	}
+}

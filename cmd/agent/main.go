@@ -66,6 +66,10 @@ func main() {
 		log.Printf("[INFO] enrolled as agent %s", agentID)
 	}
 
+	if n := agent.SweepStaleRunDirs(cfg.DataDir); n > 0 {
+		log.Printf("[INFO] cleaned %d stale run temp dir(s) left by a previous process under %s", n, cfg.DataDir)
+	}
+
 	runner := agent.NewRunner(pipeline.Deps{
 		Exec: agent.OSExecutor{}, SourceRoots: cfg.SourceRoots, RestoreRoots: cfg.RestoreRoots,
 		SourcePathMappings: cfg.SourcePathMappings, RestorePathMappings: cfg.RestorePathMappings,

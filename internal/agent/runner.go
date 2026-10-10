@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,29 @@ type Runner struct {
 	slots     chan struct{}
 
 	prober *Prober // optional; refreshed tool paths before each execution
+}
+
+// SweepStaleRunDirs 回收上一次进程遗留的 run 临时目录（bmc-run-*）。
+//
+// runner 用 defer os.RemoveAll(tempDir) 清理自己的临时目录，但进程被 SIGTERM/
+// SIGKILL 终止时 defer 不会执行：备份/恢复被中断后，半个 dump 会永久留在 DataDir
+// 下（实测每次中断泄漏 160MB–1.8GB，反复重启可写满容器磁盘）。启动时没有任何 run
+// 在跑，这些目录必定属于已死进程，可安全回收。返回清理的目录数。
+func SweepStaleRunDirs(dataDir string) int {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "bmc-run-") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dataDir, e.Name())); err == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 // NewRunner creates a new runner.

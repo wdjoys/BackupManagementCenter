@@ -83,7 +83,12 @@ func NewWithSealer(path string, seal secrets.Sealer) (Store, error) {
 	// db.Exec 只作用于连接池中的一条连接，其余连接会缺失这些设置，写竞争时
 	// 立刻返回 SQLITE_BUSY 而不是等待（实测并发下 POST /plans/{id}/backups/delete
 	// 报 500 "database is locked (5)"）。WAL 是文件级持久设置，仍单独设置一次。
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)")
+	//
+	// _txlock=immediate 让所有 BeginTx 以 BEGIN IMMEDIATE 开局：WAL 下"先读后写"的
+	// 延迟事务一旦读快照过期，SQLite 会立刻返回 SQLITE_BUSY_SNAPSHOT(517)，而
+	// busy_timeout 对这种冲突无效——只能靠调用方整事务重放（retryOnBusy）。开局即取
+	// 写锁可以从根上避免这类冲突，写入本身已由 s.mu 串行化，不引入额外争用。
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}

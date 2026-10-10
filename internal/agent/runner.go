@@ -36,6 +36,12 @@ type Runner struct {
 	slots     chan struct{}
 
 	prober *Prober // optional; refreshed tool paths before each execution
+
+	// stream 是当前活跃的上行流。run 的生命周期可能跨越多次重连（服务端重启/网络
+	// 抖动），日志、进度与结果必须发到**当前**连接：闭包捕获派发时的流会让重连后
+	// 的发送全部 EOF（实测进度与日志丢失，run 只能等下一次重派 + 结果重放才收敛）。
+	streamMu sync.Mutex
+	stream   bmcv1.AgentControl_ConnectClient
 }
 
 // SweepStaleRunDirs 回收上一次进程遗留的 run 临时目录（bmc-run-*）。
@@ -62,6 +68,20 @@ func SweepStaleRunDirs(dataDir string) int {
 }
 
 // NewRunner creates a new runner.
+// SetStream 记录当前活跃的上行流（客户端每次成功连接后调用）。
+func (r *Runner) SetStream(stream bmcv1.AgentControl_ConnectClient) {
+	r.streamMu.Lock()
+	r.stream = stream
+	r.streamMu.Unlock()
+}
+
+// currentStream 返回当前活跃的上行流。
+func (r *Runner) currentStream() bmcv1.AgentControl_ConnectClient {
+	r.streamMu.Lock()
+	defer r.streamMu.Unlock()
+	return r.stream
+}
+
 func NewRunner(deps pipeline.Deps, dataDir string, identity *Identity) *Runner {
 	if deps.Tools == nil {
 		deps.Tools = make(map[string]model.ToolInfo)
@@ -89,12 +109,15 @@ func (r *Runner) SetProber(p *Prober) { r.prober = p }
 
 // Execute handles an ExecuteCommand from the server.
 func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectClient, cmd *bmcv1.ExecuteCommand) {
+	if r.currentStream() == nil {
+		r.SetStream(stream)
+	}
 	runID := cmd.RunId
 
 	// Check idempotency cache first
 	if cached := r.finished.get(runID); cached != nil {
 		log.Printf("[INFO] run %s already finished, replaying result", runID)
-		r.sendRunResult(stream, cached)
+		r.sendRunResult(cached)
 		return
 	}
 
@@ -178,7 +201,7 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 					},
 				},
 			}
-			if err := stream.Send(batch); err != nil {
+			if err := r.currentStream().Send(batch); err != nil {
 				log.Printf("[WARN] send log batch run %s: %v", runID, err)
 			}
 		}
@@ -198,7 +221,7 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 					},
 				},
 			}
-			if err := stream.Send(msg); err != nil {
+			if err := r.currentStream().Send(msg); err != nil {
 				log.Printf("[WARN] send progress run %s: %v", runID, err)
 			}
 		}
@@ -277,7 +300,7 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 		r.finished.put(runID, runResult)
 
 		// Send RunResult
-		r.sendRunResult(stream, runResult)
+		r.sendRunResult(runResult)
 	}()
 }
 
@@ -362,14 +385,14 @@ func (r *Runner) Cancel(runID string) {
 }
 
 // sendRunResult sends a RunResult to the server.
-func (r *Runner) sendRunResult(stream bmcv1.AgentControl_ConnectClient, result *bmcv1.RunResult) {
+func (r *Runner) sendRunResult(result *bmcv1.RunResult) {
 	msg := &bmcv1.AgentMessage{
 		MessageId: newMessageID(),
 		Payload: &bmcv1.AgentMessage_RunResult{
 			RunResult: result,
 		},
 	}
-	if err := stream.Send(msg); err != nil {
+	if err := r.currentStream().Send(msg); err != nil {
 		log.Printf("[ERROR] send RunResult: %v", err)
 	}
 }
@@ -382,7 +405,7 @@ func (r *Runner) sendErrorResult(stream bmcv1.AgentControl_ConnectClient, runID 
 		ErrorCode:    code,
 		ErrorMessage: msg,
 	}
-	r.sendRunResult(stream, result)
+	r.sendRunResult(result)
 }
 
 // extractSecrets populates SecretBundle from the proto SecretSet.

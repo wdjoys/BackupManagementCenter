@@ -11,6 +11,7 @@ import (
 	bmcv1 "backupmanagementcenter/api/proto/v1"
 	"backupmanagementcenter/internal/agent/backup"
 	"backupmanagementcenter/internal/agent/pipeline"
+	"backupmanagementcenter/internal/model"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -523,5 +524,71 @@ func TestRunner_MaxConcurrencyZeroMeansUnlimited(t *testing.T) {
 	defer mu.Unlock()
 	if peak != total {
 		t.Fatalf("MaxConcurrency=0 must not serialize: peak=%d, want %d", peak, total)
+	}
+}
+
+type streamProbeExecute struct{ onRun func(pipeline.Deps) }
+
+func (p *streamProbeExecute) Execute(_ context.Context, d pipeline.Deps, _ string, _ bmcv1.ExecuteCommand_Operation, _ []byte, _ backup.SecretBundle) (*pipeline.Result, error) {
+	if p.onRun != nil {
+		p.onRun(d)
+	}
+	return &pipeline.Result{SnapshotIDs: []string{"snap-1"}}, nil
+}
+
+func sentKinds(s *fakeStream) map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]int{}
+	for _, m := range s.sent {
+		switch {
+		case m.GetRunLogBatch() != nil:
+			out["log"]++
+		case m.GetRunProgress() != nil:
+			out["progress"]++
+		case m.GetRunResult() != nil:
+			out["result"]++
+		default:
+			out["other"]++
+		}
+	}
+	return out
+}
+
+// run 可能跨越重连（服务端重启/网络抖动）：日志、进度与结果必须发到**当前**连接。
+// 闭包捕获派发时的流会让重连后的发送全部 EOF（实测进度与日志丢失，run 只能等下一次
+// 重派 + 结果重放才收敛）。
+func TestRunnerSinksFollowCurrentStreamAfterReconnect(t *testing.T) {
+	ident := &Identity{
+		AgentID:   "test-agent",
+		SecretHex: "aabbccddee0011223344556677889900aabbccddee0011223344556677889900",
+	}
+	runner := NewRunner(pipeline.Deps{Tools: make(map[string]backup.ToolInfo)}, t.TempDir(), ident)
+
+	streamA := &fakeStream{}
+	streamB := &fakeStream{}
+	runner.SetStream(streamA)
+
+	runner.executeFn = (&streamProbeExecute{onRun: func(d pipeline.Deps) {
+		runner.SetStream(streamB) // 模拟重连成功
+		d.Logf("info", "after-reconnect-log")
+		d.Progress(model.Progress{Phase: "dumping", Percent: 50})
+	}}).Execute
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runner.Execute(ctx, streamA, &bmcv1.ExecuteCommand{
+		CommandId: "cmd-1", RunId: "run-1",
+		Operation: bmcv1.ExecuteCommand_BACKUP, ParamsJson: []byte(`{}`),
+	})
+	time.Sleep(300 * time.Millisecond)
+
+	gotB := sentKinds(streamB)
+	if gotB["log"] == 0 || gotB["progress"] == 0 || gotB["result"] == 0 {
+		t.Fatalf("重连后的日志/进度/结果必须发到新连接，实际 %v", gotB)
+	}
+	gotA := sentKinds(streamA)
+	if gotA["log"] != 0 || gotA["progress"] != 0 || gotA["result"] != 0 {
+		t.Fatalf("旧连接不应再收到日志/进度/结果，实际 %v", gotA)
 	}
 }

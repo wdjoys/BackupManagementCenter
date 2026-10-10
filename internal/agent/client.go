@@ -220,6 +220,9 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 		return fmt.Errorf("connect: %w", err)
 	}
 	ss := newSafeStream(stream)
+	// 每次连上都把"当前上行流"交给 runner：run 可能跨越重连，日志/进度/结果必须
+	// 发到新连接，否则重连后仍往已死的流里写（实测全部 EOF、进度与日志丢失）。
+	c.runner.SetStream(ss)
 
 	// Reset heartbeat interval
 	c.mu.Lock()

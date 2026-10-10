@@ -412,6 +412,17 @@ func firstToken(s string) string {
 	return ""
 }
 
+// mongoURIEscape 按 RFC 3986 对 MongoDB URI 里的组件做百分号编码。
+//
+// 不能直接用 url.QueryEscape：它按 form 语义把空格编码成 "+"，而 URI 的 userinfo
+// 与查询值里 "+" 是字面加号，服务端不会还原成空格——含空格的密码因此永远认证失败
+// （实测：密码 "p a s s" 的计划备份 100% 失败，且去掉配置文件里的 password 字段后
+// 仍失败，证明问题就在 uri）。QueryEscape 除空格外的编码都是合法的百分号编码，
+// 所以只需把 "+" 换回 "%20"。
+func mongoURIEscape(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
+}
+
 // mongoURI 构造带凭据的连接串。只会写进 0600 配置文件，绝不进入 argv。
 func mongoURI(host string, port int, username, password, authSource string) string {
 	if authSource == "" {
@@ -420,10 +431,10 @@ func mongoURI(host string, port int, username, password, authSource string) stri
 	// 无凭据时不能省略 "@"：否则解析出空用户信息段。
 	creds := ""
 	if username != "" {
-		creds = url.QueryEscape(username) + ":" + url.QueryEscape(password) + "@"
+		creds = mongoURIEscape(username) + ":" + mongoURIEscape(password) + "@"
 	}
 	return fmt.Sprintf("mongodb://%s%s:%d/?authSource=%s",
-		creds, host, port, url.QueryEscape(authSource))
+		creds, host, port, mongoURIEscape(authSource))
 }
 
 // buildMongoConfig builds the YAML config for mongodump/mongorestore.

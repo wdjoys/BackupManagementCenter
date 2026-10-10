@@ -98,6 +98,22 @@ func TestMongoURIOmitsEmptyCredentials(t *testing.T) {
 	}
 }
 
+// 空格必须编码成 %20。url.QueryEscape 按 form 语义会给出 "+"，而 URI 的 userinfo
+// 与查询值里 "+" 是字面加号，服务端不会还原成空格——含空格的密码因此永远认证失败
+// （实测：密码 "p a s s" 的计划备份 100% 失败，去掉 config 的 password 字段后仍失败）。
+func TestMongoURIEncodesSpaceAsPercent20(t *testing.T) {
+	uri := mongoURI("db.internal", 27017, "bmc", "p a s s", "my db")
+	if strings.Contains(uri, "+") {
+		t.Fatalf("uri must not contain '+': %s", uri)
+	}
+	if !strings.Contains(uri, "bmc:p%20a%20s%20s@") {
+		t.Fatalf("space in password must be %%20: %s", uri)
+	}
+	if !strings.Contains(uri, "authSource=my%20db") {
+		t.Fatalf("space in authSource must be %%20: %s", uri)
+	}
+}
+
 // TargetExists 的 listDatabases 必须挂在 Database 对象上：Mongo(uri) 返回的
 // 连接对象没有 adminCommand，调用会抛 TypeError。
 func TestMongoTargetExistsCallsAdminCommandOnDatabase(t *testing.T) {

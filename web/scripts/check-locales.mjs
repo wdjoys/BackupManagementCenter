@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readdirSync, readFileSync } from 'node:fs'
+import { extname, join } from 'node:path'
 import enUSModule from '../src/i18n/locales/en-US.ts'
 import zhCNModule from '../src/i18n/locales/zh-CN.ts'
 
@@ -45,8 +47,39 @@ if (missingInEn.length > 0) {
   }
 }
 
+// 代码引用检查：t('key') 必须能在两种语言里按精确路径解析。
+// parity 检查抓不到"路径写错但 key 在别的层级存在"的情况（例如代码写
+// plans.rules.captureOplogRequiresAll，而 locale 里是 plans.form.*），
+// 此时 i18next 会把原始 key 直接显示到界面上。
+const usedKeys = new Map()
+const walk = (dir) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name !== 'i18n' && entry.name !== 'node_modules') walk(p)
+    } else if (['.ts', '.tsx'].includes(extname(entry.name))) {
+      const src = readFileSync(p, 'utf8')
+      for (const m of src.matchAll(/\bt\(\s*['"]([A-Za-z0-9_.]+)['"]/g)) {
+        if (!usedKeys.has(m[1])) usedKeys.set(m[1], p)
+      }
+    }
+  }
+}
+walk(new URL('../src/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
+
+const unresolved = [...usedKeys.entries()].filter(([k]) => !zhKeys.has(k) || !enKeys.has(k))
+if (unresolved.length > 0) {
+  hasError = true
+  console.error(`Unresolved t() keys (${unresolved.length}):`)
+  for (const [key, file] of unresolved) {
+    console.error(`  - ${key}  (used in ${file})`)
+  }
+}
+
 if (hasError) {
   process.exit(1)
 }
 
-console.log(`Locale parity check passed: ${enKeys.size} keys in sync across en-US and zh-CN.`)
+console.log(
+  `Locale parity check passed: ${enKeys.size} keys in sync across en-US and zh-CN; ${usedKeys.size} t() keys resolved.`,
+)

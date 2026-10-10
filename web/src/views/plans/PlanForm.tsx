@@ -164,7 +164,7 @@ export const PlanForm: React.FC<PlanFormProps> = ({
         model.source.capture_oplog === true &&
         (model.source.database ?? '').trim().toLowerCase() !== 'all'
       ) {
-        errs['source.capture_oplog'] = t('plans.rules.captureOplogRequiresAll')
+        errs['source.capture_oplog'] = t('plans.form.captureOplogRequiresAll')
       }
     }
     // 上限对 sqlite 同样生效（后端在 kind 分支之外检查）。

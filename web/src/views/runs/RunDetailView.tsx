@@ -401,6 +401,13 @@ export const RunDetailView: React.FC = () => {
               <Radio className="h-3 w-3 animate-pulse" aria-hidden="true" />
               <span>{t('runDetail.liveConnected')}</span>
             </div>
+          ) : run && isTerminal(run.status) ? (
+            // 运行终态时服务端会正常关闭日志流（close 1000），此时显示"连接已中断"
+            // 会让人以为出错了；终态给中性文案。
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-border bg-muted/40 text-[11px] text-muted-foreground">
+              <span className="h-2 w-2 rounded-full bg-muted-foreground/50" aria-hidden="true" />
+              <span>{t('runDetail.streamEnded')}</span>
+            </div>
           ) : (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-border bg-muted/40 text-[11px] text-muted-foreground">
               <span className="h-2 w-2 rounded-full bg-muted-foreground/50" aria-hidden="true" />

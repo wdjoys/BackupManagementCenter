@@ -627,6 +627,7 @@ export default {
     "snapshotPending": "Available after the backup finishes",
     "loadFailed": "Failed to load run",
     "liveConnected": "Live stream connected",
+    "streamEnded": "Run finished",
     "disconnected": "Live connection closed"
   },
   "logs": {

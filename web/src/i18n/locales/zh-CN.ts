@@ -627,6 +627,7 @@ export default {
     "snapshotPending": "备份完成后生成",
     "loadFailed": "加载运行详情失败",
     "liveConnected": "实时日志流已连接",
+    "streamEnded": "运行已结束",
     "disconnected": "实时连接已中断"
   },
   "logs": {

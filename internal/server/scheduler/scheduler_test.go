@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -254,6 +255,16 @@ func (f *fakeStore) ListRuns(_ context.Context, filter store.RunFilter) ([]model
 			continue
 		}
 		if len(statusSet) > 0 && !statusSet[run.Status] {
+			continue
+		}
+		excluded := false
+		for _, sub := range filter.ExcludeDedupKeySubstrings {
+			if strings.Contains(run.DedupKey, sub) {
+				excluded = true
+				break
+			}
+		}
+		if excluded {
 			continue
 		}
 		out = append(out, run)
@@ -895,5 +906,46 @@ func TestTickMaintenanceRetentionThrottleSurvivesBusyRepository(t *testing.T) {
 	start.mu.Unlock()
 	if len(calls) != 0 {
 		t.Fatalf("retention must stay throttled for 24h on a busy repository, got %v", calls)
+	}
+}
+
+// 定向删除（delete_all / snapshot_ids）产生的 forget 运行与保留无关，但数量一多就会
+// 把保留型运行挤出"最近 20 条 forget"的守卫窗口 —— 实测同一仓库同日会再次执行保留
+// 策略，与"每仓库每日至多一次"不符。
+func TestTickMaintenanceRetentionThrottleSurvivesDirectedDeletionTraffic(t *testing.T) {
+	st := newFakeStore(t)
+	start := newFakeStarter()
+	now := time.Now().UTC()
+	repoID, agentID := "repo-1", "agent-1"
+	st.agents[agentID] = model.Agent{ID: agentID, Status: model.AgentOnline}
+	st.repos = append(st.repos, model.Repository{ID: repoID, AgentID: agentID, Status: "ready"})
+
+	// 保留策略 2 小时前跑过（在 24h 窗口内）。
+	old := now.Add(-2 * time.Hour)
+	st.runs = append(st.runs, model.Run{
+		ID: "retention-recent", RepositoryID: repoID, Operation: model.OpForget,
+		Status: model.RunSucceeded, QueuedAt: old, FinishedAt: &old,
+		ProgressJSON: `{"retention":{"keep_last":2},"tags":["plan:p1"]}`,
+		DedupKey:     `sysforget|agent-1|repo-1|{"plan_id":"p1","retention":{"keep_last":2}}`,
+	})
+	// 30 条定向删除型 forget，全部比保留运行更新；旧实现的窗口里只剩它们。
+	for i := 0; i < 30; i++ {
+		at := now.Add(-time.Duration(30-i) * time.Minute)
+		st.runs = append(st.runs, model.Run{
+			ID: fmt.Sprintf("del-%d", i), RepositoryID: repoID, Operation: model.OpForget,
+			Status: model.RunSucceeded, QueuedAt: at, FinishedAt: &at,
+			DedupKey: fmt.Sprintf(`sysforget|agent-1|repo-1|{"delete_all":true,"plan_id":"p%d"}`, i),
+		})
+	}
+
+	s := New(st, start, nil, 0)
+	s.now = func() time.Time { return now }
+	s.tickMaintenance(context.Background(), now)
+
+	start.mu.Lock()
+	calls := append([]string(nil), start.retentionCalls...)
+	start.mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("定向删除流量不应让保留策略在一个节流窗口内重复执行，got %v", calls)
 	}
 }

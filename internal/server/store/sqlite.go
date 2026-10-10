@@ -1177,6 +1177,10 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 		}
 		where = append(where, fmt.Sprintf("status IN (%s)", strings.Join(placeholders, ",")))
 	}
+	for _, sub := range f.ExcludeDedupKeySubstrings {
+		where = append(where, "INSTR(dedup_key, ?) = 0")
+		args = append(args, sub)
+	}
 
 	if f.Limit <= 0 {
 		f.Limit = 100

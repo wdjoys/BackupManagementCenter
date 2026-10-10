@@ -231,10 +231,17 @@ func (s *Scheduler) tickMaintenance(ctx context.Context, now time.Time) {
 		// 24h 节流只按 **forget** 运行判断：此前在最近 100 条**任意**运行里找守卫
 		// 运行，繁忙仓库（每次快照浏览都产生运行）会把守卫运行挤出窗口 —— 实测 17
 		// 分钟后即被挤出，保留策略于同日再次运行，与"每仓库每日至多一次"不符。
+		// 同理，只取 forget 仍不够：定向删除（delete_all / snapshot_ids）产生的
+		// forget 运行与保留无关，实测 20 条就能把保留型运行挤出窗口，因此这里把
+		// 它们从窗口里排除，窗口只留保留型（以及初始化型）forget 运行。
 		recent := false
 		forgetRuns, ferr := s.store.ListRuns(ctx, store.RunFilter{RepositoryID: repo.ID,
 			Operation: model.OpForget, Limit: 20,
-			Statuses: []string{model.RunQueued, model.RunDispatched, model.RunRunning, model.RunSucceeded}})
+			Statuses: []string{model.RunQueued, model.RunDispatched, model.RunRunning, model.RunSucceeded},
+			ExcludeDedupKeySubstrings: []string{
+				`"delete_all":true`, `"snapshot_ids":[`,
+			},
+		})
 		if ferr != nil {
 			continue
 		}

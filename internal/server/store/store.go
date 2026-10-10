@@ -281,6 +281,11 @@ type RunFilter struct {
 	Operation    string
 	Limit        int
 	Offset       int
+	// ExcludeDedupKeySubstrings 排除 dedup_key 命中任一子串的运行。保留策略的
+	// 仓库级 24h 节流用它把定向删除（delete_all / snapshot_ids）产生的 forget
+	// 挡在守卫窗口之外：这些删除与保留无关，却能把保留型运行挤出窗口，导致同一
+	// 仓库同日重复执行保留策略。
+	ExcludeDedupKeySubstrings []string
 }
 
 var (

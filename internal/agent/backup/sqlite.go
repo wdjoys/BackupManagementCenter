@@ -62,7 +62,14 @@ func (a *SQLiteAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArti
 		// 退一步：把 db 与 -wal/-shm 侧车文件复制到可写的临时目录（三者合起来
 		// 才是一份有效的 SQLite 状态），再对副本做一致性导出。副本若被并发写
 		// 撕裂，紧随其后的 integrity_check 会拒绝它，不会静默产出坏备份。
-		copied, copyErr := copySQLiteForBackup(source.Path, stagingDir)
+		//
+		// 副本必须放在 staging 之外：staging 目录会被整体上传进快照，放里面会
+		// 把源库原始文件（含 -wal/-shm）一并打包，白白撑大快照。
+		copyDir := filepath.Join(rc.TempDir, "source-copy")
+		if mkErr := os.MkdirAll(copyDir, 0o700); mkErr != nil {
+			return nil, fmt.Errorf("sqlite online backup failed: %w", err)
+		}
+		copied, copyErr := copySQLiteForBackup(source.Path, copyDir)
 		if copyErr != nil {
 			return nil, fmt.Errorf("sqlite online backup failed: %w", err)
 		}

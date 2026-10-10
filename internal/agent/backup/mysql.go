@@ -83,14 +83,16 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 		nonTransactionalQuery += " AND table_schema = '" + strings.ReplaceAll(source.Database, "'", "''") + "'"
 	}
 	var nonTransactional string
-	if _, checkErr := rc.Exec.Run(ctx, Cmd{Exe: tools.client, Args: append([]string{"--defaults-extra-file=" + cnfFile}, "-N", "-s", "-e", nonTransactionalQuery)}, func(line string) {
+	if checkExit, checkErr := rc.Exec.Run(ctx, Cmd{Exe: tools.client, Args: append([]string{"--defaults-extra-file=" + cnfFile}, "-N", "-s", "-e", nonTransactionalQuery)}, func(line string) {
 		nonTransactional = strings.TrimSpace(line)
-	}, logLine); checkErr == nil {
-		if count, parseErr := strconv.Atoi(nonTransactional); parseErr == nil && count > 0 {
-			rc.Logf("warn", "detected %d non-transactional MySQL tables; dump may be inconsistent", count)
-		}
-	} else {
+	}, logLine); checkErr != nil {
 		rc.Logf("warn", "could not check non-transactional MySQL tables: %v", checkErr)
+	} else if checkExit != 0 {
+		// Executor 对非零退出返回 (exitCode, nil)：不检查退出码会把查询失败
+		// 当成"没有非事务表"，静默丢掉这条一致性告警。
+		rc.Logf("warn", "could not check non-transactional MySQL tables: mysql client exit %d", checkExit)
+	} else if count, parseErr := strconv.Atoi(nonTransactional); parseErr == nil && count > 0 {
+		rc.Logf("warn", "detected %d non-transactional MySQL tables; dump may be inconsistent", count)
 	}
 
 	dumpFile := filepath.Join(stagingDir, fmt.Sprintf("%s.sql", rc.Task.PlanID))
@@ -160,11 +162,11 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 		schemaQuery := "SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '" +
 			strings.ReplaceAll(source.Database, "'", "''") + "'"
 		var charset, collation string
-		if _, qErr := rc.Exec.Run(ctx, Cmd{Exe: tools.client, Args: append([]string{"--defaults-extra-file=" + cnfFile}, "-N", "-s", "-e", schemaQuery)}, func(line string) {
+		if qExit, qErr := rc.Exec.Run(ctx, Cmd{Exe: tools.client, Args: append([]string{"--defaults-extra-file=" + cnfFile}, "-N", "-s", "-e", schemaQuery)}, func(line string) {
 			if f := strings.Fields(strings.TrimSpace(line)); len(f) >= 2 {
 				charset, collation = f[0], f[1]
 			}
-		}, logLine); qErr == nil {
+		}, logLine); qErr == nil && qExit == 0 {
 			if validCharsetName(charset) {
 				restoreHints["charset"] = charset
 			}

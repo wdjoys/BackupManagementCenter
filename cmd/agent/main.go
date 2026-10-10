@@ -110,26 +110,38 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-sigCh
 		log.Printf("[INFO] shutdown signal received")
-		// 阶段一：让在途 run 自然收尾（导出/校验/结果上报都在这段时间）。空闲则
-		// 立即进入下一步，不必等满固定宽限（实测空闲重启会白等 20s）。
+		// 阶段一：等在途 run 自然收尾（≤20s，空闲立即返回，不白等宽限）。
 		if !waitForIdleOrSignal(runner.InFlight, sigCh, 20*time.Second) {
 			log.Printf("[INFO] second shutdown signal received; exiting now")
 			cancel()
 			return
 		}
-		cancel()
-		// 阶段二：cancel 会触发取消路径的回滚（独立预算）。必须等它结束再退出，
-		// 否则回滚被打断，目标留在半导入状态、只能靠人工恢复（实测 >20s 的恢复）。
+		// 阶段二：取消仍在跑的 run（触发取消路径的回滚），再等回滚与结果上报结束
+		// （≤90s）。**不能**先 cancel()：那会让 client.Run 立刻返回、main 退出，
+		// 回滚被杀（实测阶段二因此是死代码），结果也无法上报。
+		if n := runner.CancelAll(); n > 0 {
+			log.Printf("[INFO] cancelled %d in-flight run(s) for graceful shutdown", n)
+		}
 		if !waitForIdleOrSignal(runner.InFlight, sigCh, 90*time.Second) {
 			log.Printf("[INFO] second shutdown signal received; exiting now")
 		}
+		cancel()
 	}()
 
 	if err := client.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("[FATAL] run loop: %v", err)
+	}
+	// 等排空结束再退出：否则回滚与结果上报会被进程退出打断（上面的 goroutine 会在
+	// 收到信号后接管，最坏 20s+90s；这里再兜一层上限，避免异常情况下卡死）。
+	select {
+	case <-shutdownDone:
+	case <-time.After(3 * time.Minute):
+		log.Printf("[WARN] shutdown drain did not finish in time; exiting")
 	}
 	log.Printf("[INFO] agent stopped")
 }

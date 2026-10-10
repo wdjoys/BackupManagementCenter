@@ -130,6 +130,22 @@ func (r *Runner) InFlight() int {
 	return len(r.running)
 }
 
+// CancelAll 取消当前所有在执行的 run，返回取消的数量。优雅关闭用它触发取消路径
+// （回滚 + 结果上报），而不是直接断开流——断流会让 client.Run 立刻返回、进程退出，
+// 回滚被杀（实测阶段二因此成为死代码），且结果无法上报。
+func (r *Runner) CancelAll() int {
+	r.mu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(r.running))
+	for _, c := range r.running {
+		cancels = append(cancels, c)
+	}
+	r.mu.Unlock()
+	for _, c := range cancels {
+		c()
+	}
+	return len(cancels)
+}
+
 // Execute handles an ExecuteCommand from the server.
 func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectClient, cmd *bmcv1.ExecuteCommand) {
 	if r.currentStream() == nil {

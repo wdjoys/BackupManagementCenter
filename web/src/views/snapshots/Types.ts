@@ -1,3 +1,4 @@
+import { sha256Bytes } from '@/lib/sha256'
 import type { Snapshot, Plan } from '@/api/types'
 import type { BadgeTone } from '@/components/StatusBadge'
 
@@ -42,8 +43,14 @@ export function formatSize(bytes: number): string {
 /** 与后端 secrets.HashToken 等价的 SHA-256 十六进制摘要（用于覆盖/新建确认）。 */
 export async function hashConfirmation(value: string): Promise<string> {
   const data = new TextEncoder().encode(value)
-  const digest = await crypto.subtle.digest('SHA-256', data)
-  return Array.from(new Uint8Array(digest))
+  // 明文 HTTP 部署（TLS 由反向代理终止，或本地 BMC_DEV_INSECURE=1）下
+  // window.isSecureContext=false → crypto.subtle 为 undefined，必须回退到纯 JS
+  // 实现；否则数据库恢复在前端直接抛错（此前被吞成通用 toast，功能完全不可用）。
+  const digest =
+    typeof crypto !== 'undefined' && crypto.subtle
+      ? new Uint8Array(await crypto.subtle.digest('SHA-256', data))
+      : sha256Bytes(data)
+  return Array.from(digest)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
 }

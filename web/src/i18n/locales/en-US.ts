@@ -801,7 +801,7 @@ export default {
       "portInvalid": "Port must be an integer between 1 and 65535."
     },
     "prompt": {
-      "message": "Confirm restore by typing the snapshot ID or a plan name:",
+      "message": "Type the target name to confirm the restore (database / SQLite path / snapshot ID):",
       "title": "Confirm Restore",
       "execute": "Execute",
       "inputPlaceholder": "e.g. {{example}}",

@@ -801,7 +801,7 @@ export default {
       "portInvalid": "端口必须是 1-65535 的整数。"
     },
     "prompt": {
-      "message": "请输入快照 ID 或计划名称以确认恢复：",
+      "message": "请输入目标名称以确认恢复（数据库名 / SQLite 文件路径 / 快照 ID）：",
       "title": "确认恢复",
       "execute": "执行",
       "inputPlaceholder": "例如：{{example}}",

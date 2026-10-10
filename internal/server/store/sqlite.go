@@ -2772,9 +2772,18 @@ func (s *sqliteStore) SnapshotCacheGeneration(ctx context.Context, repositoryID 
 	return generation, nil
 }
 
+// SaveSnapshotListCache 写入已验证快照列表缓存。并发刷新（多个仓库同时 refresh，
+// 或删除计划时内部强制刷新）实测会撞 WAL 快照过期：SQLITE_BUSY 在 busy_timeout
+// 到期后直接冒泡成 500，导致 DELETE /plans/{id} 失败。与其它写事务一样整事务重放。
 func (s *sqliteStore) SaveSnapshotListCache(ctx context.Context, repositoryID string, generation int64, snapshotsJSON, fingerprint string, verifiedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return retryOnBusy(ctx, busyRetryAttempts, busyRetryBackoff, func() error {
+		return s.saveSnapshotListCacheOnce(ctx, repositoryID, generation, snapshotsJSON, fingerprint, verifiedAt)
+	})
+}
+
+func (s *sqliteStore) saveSnapshotListCacheOnce(ctx context.Context, repositoryID string, generation int64, snapshotsJSON, fingerprint string, verifiedAt time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("save snapshot list cache begin tx: %w", err)

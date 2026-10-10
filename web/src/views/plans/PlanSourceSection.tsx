@@ -264,6 +264,11 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
                 <p className="text-[11px] text-muted-foreground">
                   {t('plans.form.captureOplogHint')}
                 </p>
+                {/* PlanForm 会在 capture_oplog 与 database != all 时设置该错误；
+                    此前没有渲染点，提交被静默拦住、用户看不到原因。 */}
+                {errors['source.capture_oplog'] && (
+                  <p className="text-[11px] text-destructive">{errors['source.capture_oplog']}</p>
+                )}
               </div>
               <Switch
                 checked={source.capture_oplog === true}

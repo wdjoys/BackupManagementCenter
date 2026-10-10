@@ -56,7 +56,20 @@ func (a *SQLiteAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArti
 	backupFile := filepath.Join(stagingDir, fmt.Sprintf("%s.sqlite", rc.Task.PlanID))
 
 	if err := sqliteVacuumInto(ctx, source.Path, backupFile); err != nil {
-		return nil, fmt.Errorf("sqlite online backup failed: %w", err)
+		// 只读挂载下 SQLite 无法创建/打开 -shm 来索引 WAL：源库是 WAL 模式且
+		// -shm 缺失（例如所在主机被 kill -9 后未重建）时，VACUUM INTO 直接报
+		// "unable to open database file (14)"，与数据本身无关。
+		// 退一步：把 db 与 -wal/-shm 侧车文件复制到可写的临时目录（三者合起来
+		// 才是一份有效的 SQLite 状态），再对副本做一致性导出。副本若被并发写
+		// 撕裂，紧随其后的 integrity_check 会拒绝它，不会静默产出坏备份。
+		copied, copyErr := copySQLiteForBackup(source.Path, stagingDir)
+		if copyErr != nil {
+			return nil, fmt.Errorf("sqlite online backup failed: %w", err)
+		}
+		if retryErr := sqliteVacuumInto(ctx, copied, backupFile); retryErr != nil {
+			return nil, fmt.Errorf("sqlite online backup failed (retry against a writable copy also failed: %v): %w", retryErr, err)
+		}
+		rc.Logf("warn", "源库 %s 无法直接打开（挂载只读或 -shm 缺失），已复制主库与 WAL 侧车文件后再做一致性导出", source.Path)
 	}
 	if err := sqliteIntegrityCheck(ctx, backupFile); err != nil {
 		return nil, fmt.Errorf("sqlite integrity_check failed: %w", err)
@@ -319,6 +332,48 @@ func sqliteSchemaObjects(ctx context.Context, databasePath string) (map[string]s
 		out[name] = typ
 	}
 	return out, rows.Err()
+}
+
+// copySQLiteForBackup 把主库及其 -wal/-shm/-journal 侧车文件复制到可写目录，
+// 返回副本主文件路径。主库与侧车文件合起来才构成一份有效的 SQLite 状态；
+// 只复制主文件会丢掉尚未 checkpoint 的 WAL 帧。
+func copySQLiteForBackup(sourcePath, dir string) (string, error) {
+	dst := filepath.Join(dir, "source-copy.sqlite")
+	if err := copySQLiteFile(sourcePath, dst); err != nil {
+		return "", err
+	}
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		side := sourcePath + suffix
+		if _, err := os.Stat(side); err != nil {
+			continue
+		}
+		if err := copySQLiteFile(side, dst+suffix); err != nil {
+			return "", err
+		}
+	}
+	return dst, nil
+}
+
+// copySQLiteFile 复制单个文件并 fsync；副本权限固定 0600，不继承源权限。
+func copySQLiteFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dst, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return fmt.Errorf("copy %s: %w", src, err)
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return fmt.Errorf("sync %s: %w", dst, err)
+	}
+	return out.Close()
 }
 
 func sqliteVacuumInto(ctx context.Context, sourcePath, backupPath string) error {

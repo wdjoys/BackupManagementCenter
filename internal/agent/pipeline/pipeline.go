@@ -459,6 +459,10 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	if !ok {
 		return nil, restoreSafeFail("invalid_plan", "adapter does not support database restore: "+task.Kind, nil)
 	}
+	// 恢复过程此前只有 progress 阶段、没有日志行，mysql/sqlite 这类不产生外部命令
+	// 输出的适配器在运行日志里只剩"运行成功"，事后无法回看做了什么。这里在共享
+	// 恢复路径补齐阶段日志，四种 kind 一致。
+	d.logf("info", "开始恢复：类型 %s，快照 %s，目标 %s", task.Kind, execDB.SnapshotID, execDB.TargetDatabase)
 
 	stagingDir := filepath.Join(tempDir, "restore_staging")
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
@@ -488,6 +492,7 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 	if err != nil {
 		return nil, restoreSafeFail(model.ErrUnsupportedRestoreManifest, err.Error(), err)
 	}
+	d.logf("info", "快照清单已就绪：将导入数据库 %s（格式 %s）", artifact.database, artifact.format)
 
 	if dryRun {
 		resultJSON, _ := json.Marshal(map[string]any{
@@ -554,9 +559,15 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 			Phase:      model.RestorePhasePreBackup,
 			DetailJSON: string(restoreResultJSON(model.RestorePhasePreBackup, snapID)),
 		})
+		d.logf("info", "覆盖前已保存保护快照 %s（可用于回滚）", protectionSnapshotID)
 	}
 
 	d.Progress(model.Progress{Phase: model.RestorePhaseRestoring})
+	if spec.TargetIsNew {
+		d.logf("info", "开始导入数据到新建目标 %s", execDB.TargetDatabase)
+	} else {
+		d.logf("info", "开始覆盖导入目标 %s", execDB.TargetDatabase)
+	}
 	if importErr := engine.Import(ctx, spec); importErr != nil {
 		phase, rollbackErr := rollbackDatabaseRestore(d, opts, tempDir, engine, spec, protectionSnapshotID)
 		message := "database import failed: " + importErr.Error()
@@ -570,6 +581,7 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 			ResultJSON: restoreResultJSON(phase, protectionSnapshotID),
 		}
 	}
+	d.logf("info", "导入完成，开始校验")
 	if verifyErr := engine.VerifyRestored(ctx, spec); verifyErr != nil {
 		phase, rollbackErr := rollbackDatabaseRestore(d, opts, tempDir, engine, spec, protectionSnapshotID)
 		message := "database restore verification failed: " + verifyErr.Error()
@@ -583,6 +595,7 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 			ResultJSON: restoreResultJSON(phase, protectionSnapshotID),
 		}
 	}
+	d.logf("info", "恢复校验通过：%s", execDB.TargetDatabase)
 
 	os.RemoveAll(stagingDir)
 	return &Result{

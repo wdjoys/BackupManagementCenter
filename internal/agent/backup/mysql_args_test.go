@@ -307,13 +307,68 @@ func TestMySQLDumpTableNamesHandlesEscapedBackticks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]struct{}{"it's": {}, "back`tick": {}, "plain": {}}
+	want := []string{"it's", "back`tick", "plain"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
-	for name := range want {
-		if _, ok := got[name]; !ok {
-			t.Fatalf("missing %q in %v", name, got)
+	for i, name := range want {
+		if got[i] != name {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+// 表名折叠必须跟随服务端大小写敏感性。折叠时（lower_case_table_names != 0）服务端
+// 自身会折叠名字，不折叠会误报缺表；不折叠时（Linux 默认 0）折叠会让"只恢复了同名
+// 异大小写表之一"永远通过校验（实测 p_hint_Foo/p_hint_foo 被折叠成 1，日志显示
+// "1 tables present, 1 expected"，漏检）。
+func TestVerifyTableSetsFoldsOnlyWhenServerIsCaseInsensitive(t *testing.T) {
+	// 大小写敏感服务端：dump 有两张仅大小写不同的表，目标只剩一张 -> 必须报缺失。
+	missing := verifyTableSets([]string{"p_Foo", "p_foo"}, []string{"p_foo"}, false)
+	if len(missing) != 1 || missing[0] != "p_Foo" {
+		t.Fatalf("case-sensitive compare must report p_Foo missing, got %v", missing)
+	}
+	// 大小写不敏感服务端：服务端把 dump 的 p_Foo 存成 p_foo -> 不得误报。
+	if missing := verifyTableSets([]string{"p_Foo", "p_foo"}, []string{"p_foo"}, true); len(missing) != 0 {
+		t.Fatalf("case-insensitive compare must not report missing, got %v", missing)
+	}
+	// 敏感服务端：两边完全一致 -> 无缺失，且缺失列表升序。
+	if missing := verifyTableSets([]string{"b", "a"}, []string{"a", "b"}, false); len(missing) != 0 {
+		t.Fatalf("identical sets must not report missing, got %v", missing)
+	}
+	if missing := verifyTableSets([]string{"z", "a"}, []string{}, false); len(missing) != 2 || missing[0] != "a" || missing[1] != "z" {
+		t.Fatalf("missing list must be sorted, got %v", missing)
+	}
+}
+
+// 字符集提示只在官方 8.0 客户端路径下成立：legacy（5.7 客户端）下不可能发生
+// utf8mb4 排序规则回退，同样的 "Unknown database" 就是库确实不存在——实测
+// bmc-mysql56 上不存在的非 ASCII 库名被误诊为"库实际存在"的字符集问题。
+func TestMysqlDumpFailureHintSkipsCharsetHintOnLegacyClient(t *testing.T) {
+	unknown := []string{"mysqldump: Got error: 1049: Unknown database 'p_中文库' when selecting the database"}
+	if got := mysqlDumpFailureHint("p_中文库", unknown, true); got != "" {
+		t.Fatalf("legacy client must not get the charset hint, got %q", got)
+	}
+	if got := mysqlDumpFailureHint("p_中文库", unknown, false); got == "" {
+		t.Fatal("modern client with a non-ASCII name must get the charset hint")
+	}
+	// 含单引号的库名在任何客户端下都优先给更具体的原因（该缺陷与客户端版本无关）。
+	quoted := []string{"mysqldump: Got error: 1049: Unknown database 'a\\'b' when selecting the database"}
+	if got := mysqlDumpFailureHint("a'b", quoted, true); !strings.Contains(got, "--skip-routines") {
+		t.Fatalf("quote hint must fire on the legacy client too, got %q", got)
+	}
+	// 与库名无关的错误（如连不上）不给任何提示。
+	if got := mysqlDumpFailureHint("p_中文库", []string{"mysqldump: Got error: 2003: Can't connect"}, false); got != "" {
+		t.Fatalf("unrelated error must not produce a hint, got %q", got)
+	}
+	// 提示不得再断言库一定存在（曾因此把"库不存在"误诊为字符集问题）。
+	for _, db := range []string{"p_中文库", "a'b"} {
+		hint := mysqlDumpFailureHint(db, unknown, false)
+		if hint == "" {
+			hint = mysqlDumpFailureHint(db, quoted, false)
+		}
+		if strings.Contains(hint, "（库实际存在）") {
+			t.Fatalf("hint must not assert the database exists: %q", hint)
 		}
 	}
 }

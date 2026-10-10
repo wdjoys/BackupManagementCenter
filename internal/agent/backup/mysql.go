@@ -139,10 +139,8 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, captureStderr)
 	if err != nil || exitCode != 0 {
-		// 单引号库名的原因更具体，优先给出（含单引号且非 ASCII 时避免被字符集提示误导）。
-		if hint := mysqlDumpQuoteNameHint(source.Database, stderrTail); hint != "" {
-			rc.Logf("warn", "%s", hint)
-		} else if hint := mysqlDumpNameCharsetHint(source.Database, stderrTail); hint != "" {
+		// 单引号库名的原因更具体，优先给出；字符集提示只在 8.0 客户端路径下成立。
+		if hint := mysqlDumpFailureHint(source.Database, stderrTail, tools.legacy); hint != "" {
 			rc.Logf("warn", "%s", hint)
 		}
 		return nil, exitError("mysqldump", exitCode, err)
@@ -280,6 +278,22 @@ func mysqlMajorVersion(version string) int {
 	return n
 }
 
+// mysqlDumpFailureHint 选出与失败原因匹配的诊断提示（无匹配返回空串）。
+//
+// legacy 表示本次用的是 5.7 客户端：此时不可能发生 8.0 客户端的 utf8mb4 排序规则
+// 回退，同样的 "Unknown database" 就是库确实不存在，不能再提示字符集问题（实测
+// bmc-mysql56 上不存在的非 ASCII 库名被误诊为"库实际存在"的字符集问题）。
+func mysqlDumpFailureHint(database string, stderrTail []string, legacy bool) string {
+	// 单引号库名的原因更具体，优先给出（含单引号且非 ASCII 时避免被字符集提示误导）。
+	if hint := mysqlDumpQuoteNameHint(database, stderrTail); hint != "" {
+		return hint
+	}
+	if legacy {
+		return ""
+	}
+	return mysqlDumpNameCharsetHint(database, stderrTail)
+}
+
 // mysqlDumpQuoteNameHint 在"库名含单引号"且 mysqldump 报 1049 时给出可诊断提示。
 // mysqldump 的 --routines 会把库名里的单引号转义成反斜杠形式（形如 use `a\'b`，反引号内本不需要转义），
 // 转义单引号），属上游缺陷；BMC 默认传 --routines，因此这类库目前无法直接备份。
@@ -300,7 +314,7 @@ func mysqlDumpQuoteNameHint(database string, stderrTail []string) string {
 		return ""
 	}
 	return fmt.Sprintf("数据库名 %q 含单引号：mysqldump 在 --routines 下把它错误转义成 use `a\\'b`，"+
-		"服务端因此报 \"Unknown database\"（库实际存在），属 mysqldump 上游缺陷。"+
+		"服务端因此报 \"Unknown database\"（若该库确实存在，则属 mysqldump 上游缺陷；库名拼写错误同样会报这个错，请先确认库名）。"+
 		"规避：在该计划 extra_args 中加入 \"--skip-routines\"（后置参数覆盖默认的 --routines），"+
 		"代价是本次备份不含存储过程/函数；彻底解决需重命名数据库去掉单引号。", database)
 }
@@ -326,7 +340,7 @@ func mysqlDumpNameCharsetHint(database string, stderrTail []string) string {
 	}
 	return fmt.Sprintf("数据库名 %q 含非 ASCII 字符，而目标 MySQL 服务端字符集为 latin1（MySQL ≤5.7 的默认值）："+
 		"官方 8.0 客户端请求 utf8mb4 时因排序规则 utf8mb4_0900_ai_ci 在旧服务端不存在而回退 latin1，"+
-		"库名被错误解释，服务端因此报 \"Unknown database\"（库实际存在）。"+
+		"库名被错误解释，服务端因此报 \"Unknown database\"（仅当该库确实存在时才是此原因；库名拼写错误同样会报这个错）。"+
 		"请将该服务端/库改为 utf8mb4（如启动参数 --character-set-server=utf8mb4），或改用 ASCII 库名。"+
 		"不要改用 utf8mb3 规避：它会损坏 4 字节字符（如 emoji）。", database)
 }
@@ -512,23 +526,28 @@ func (a *MySQLAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) er
 	if err != nil {
 		return err
 	}
-	present := map[string]struct{}{}
+	// 是否折叠表名由服务端大小写敏感性决定：lower_case_table_names=0（Linux 默认）
+	// 下表名区分大小写，必须按原始名字比对，否则"只恢复了同名异大小写表之一"会被
+	// 折叠掩盖；=1/2 时服务端自身折叠名字，必须折叠后再比以免误报缺表。
+	// 读取失败时按不敏感处理（保守，等价于此前的行为）。
+	fold := true
+	if err := c.runQuery(ctx, spec, "SELECT @@lower_case_table_names", func(line string) {
+		if n, convErr := strconv.Atoi(strings.TrimSpace(line)); convErr == nil {
+			fold = n != 0
+		}
+	}); err != nil {
+		spec.Logf("warn", "mysql verification: 无法读取 lower_case_table_names，按大小写不敏感比对表名")
+	}
+	var present []string
 	// 只统计基表：information_schema.tables 也包含视图，而 want 来自 dump 的
 	// CREATE TABLE（不含 CREATE VIEW），否则含视图的库两个数字永不相等、日志易被
 	// 误读成"多出表"（实测 9 tables present, 8 expected）。
 	query := "SELECT table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_schema = '" +
 		strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "'"
-	if err := c.runQuery(ctx, spec, query, func(line string) { present[strings.ToLower(line)] = struct{}{} }); err != nil {
+	if err := c.runQuery(ctx, spec, query, func(line string) { present = append(present, line) }); err != nil {
 		return err
 	}
-	var missing []string
-	for name := range want {
-		if _, ok := present[name]; !ok {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) > 0 {
-		sort.Strings(missing)
+	if missing := verifyTableSets(want, present, fold); len(missing) > 0 {
 		return fmt.Errorf("mysql restore verification failed: missing tables %v", missing)
 	}
 	spec.Logf("info", "mysql verification: %d tables present, %d expected", len(present), len(want))
@@ -551,16 +570,16 @@ func (a *MySQLAdapter) RemoveTarget(ctx context.Context, spec *RestoreSpec) erro
 	return nil
 }
 
-// mysqlDumpTableNames 从 mysqldump 输出里抽取 CREATE TABLE 的表名。
-// 表名用反引号包围，且名字内部的反引号用两个反引号转义（合法表名可以含反引号），
-// 因此不能简单地"取第一个反引号前的内容"，必须按转义规则扫描到真正的结束反引号。
-func mysqlDumpTableNames(path string) (map[string]struct{}, error) {
+// mysqlDumpTableNames 从 mysqldump 输出里抽取 CREATE TABLE 的表名（保留原始大小写，
+// 由调用方按服务端大小写敏感性决定是否折叠）。表名用反引号包围，且名字内部的反引号
+// 用两个反引号转义（合法表名可以含反引号）。
+func mysqlDumpTableNames(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open mysql dump: %w", err)
 	}
 	defer f.Close()
-	names := map[string]struct{}{}
+	var names []string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
@@ -575,13 +594,41 @@ func mysqlDumpTableNames(path string) (map[string]struct{}, error) {
 		rest = strings.TrimPrefix(rest, "`")
 		name, ok := mysqlUnquoteIdentifier(rest)
 		if ok {
-			names[strings.ToLower(name)] = struct{}{}
+			names = append(names, name)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan mysql dump: %w", err)
 	}
 	return names, nil
+}
+
+// verifyTableSets 比对 dump 的表集合与目标库实际表集合，返回缺失的表名（升序）。
+//
+// fold 表示服务端表名大小写不敏感（lower_case_table_names != 0）：此时服务端自身
+// 会把名字折叠，dump 里的原始大小写与 information_schema 返回的必然不同，必须折叠
+// 后再比，否则误报缺表。fold=false（Linux 默认 0）时按原始名字比较——折叠会让
+// "只恢复了其中一张同名异大小写的表"永远通过校验（实测 p_hint_Foo/p_hint_foo 被
+// 折叠成 1，日志显示 "1 tables present, 1 expected"，漏检）。
+func verifyTableSets(want, present []string, fold bool) []string {
+	norm := func(s string) string {
+		if fold {
+			return strings.ToLower(s)
+		}
+		return s
+	}
+	have := make(map[string]struct{}, len(present))
+	for _, p := range present {
+		have[norm(p)] = struct{}{}
+	}
+	var missing []string
+	for _, w := range want {
+		if _, ok := have[norm(w)]; !ok {
+			missing = append(missing, w)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 // mysqlUnquoteIdentifier 读取 s 开头（已去掉起始反引号）的反引号标识符，

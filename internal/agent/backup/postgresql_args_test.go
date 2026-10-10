@@ -9,12 +9,28 @@ import (
 	"backupmanagementcenter/internal/model"
 )
 
-// pgCmdRecorder 记录 psql/pg_restore 的参数，并对权限探测返回 ok。
-type pgCmdRecorder struct{ cmds [][]string }
+// pgCmdRecorder 记录 psql/pg_restore 的参数，并对权限探测返回 ok；pgRestoreExit/
+// pgRestoreErr 用于模拟恢复本体（含 --dbname= 的 pg_restore）的退出码与 stderr。
+type pgCmdRecorder struct {
+	pgRestoreExit int
+	pgRestoreErr  []string
+	cmds          [][]string
+}
 
-func (f *pgCmdRecorder) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (int, error) {
+func (f *pgCmdRecorder) Run(_ context.Context, c Cmd, onStdout, onStderr func(string)) (int, error) {
 	joined := strings.Join(c.Args, " ")
 	f.cmds = append(f.cmds, c.Args)
+	if strings.Contains(joined, "--dbname=") {
+		if onStderr != nil {
+			for _, line := range f.pgRestoreErr {
+				onStderr(line)
+			}
+		}
+		if f.pgRestoreExit != 0 {
+			return f.pgRestoreExit, nil
+		}
+		return 0, nil
+	}
 	if onStdout != nil {
 		switch {
 		case strings.Contains(joined, "rolsuper"):
@@ -54,6 +70,35 @@ func TestPostgreSQLOverwriteDropIsIdempotent(t *testing.T) {
 	}
 	if create == "" || strings.Contains(create, "IF NOT EXISTS") {
 		t.Fatalf("CREATE 必须不带 IF NOT EXISTS 以保留并发创建者冲突保护，得到 %q", create)
+	}
+}
+
+// 被信号杀死的 pg_restore（ExitCode() = -1 且 err 为 nil）即使 stderr 里只有已知的
+// 版本偏斜行，也必须判为失败：实测被 ctx 取消杀死的 pg_restore 曾被判成"导入完成，
+// 开始校验"（同 run 里随后被杀的 VerifyRestored 把结果兜到 cancelled，故取消场景仍
+// 安全；但外部 SIGKILL/OOM 时会静默产出不完整数据——VerifyRestored 只比对关系集合、
+// 不比对行数）。正常 exit 1 + 只有偏斜行仍必须放行。
+func TestPostgreSQLRestoreRejectsSignalKilledPgRestore(t *testing.T) {
+	skew := []string{
+		`pg_restore: error: could not execute query: ERROR:  unrecognized configuration parameter "transaction_timeout"`,
+		"Command was: SET transaction_timeout = 0;",
+		"pg_restore: warning: errors ignored on restore: 1",
+	}
+
+	killed := &pgCmdRecorder{pgRestoreExit: -1, pgRestoreErr: skew}
+	spec := pgRestoreSpec(t)
+	spec.TargetIsNew = true
+	spec.Exec = killed
+	if err := (&PostgreSQLAdapter{}).Import(context.Background(), spec); err == nil {
+		t.Fatal("被信号杀死的 pg_restore 不得判为导入完成")
+	}
+
+	clean := &pgCmdRecorder{pgRestoreExit: 1, pgRestoreErr: skew}
+	spec2 := pgRestoreSpec(t)
+	spec2.TargetIsNew = true
+	spec2.Exec = clean
+	if err := (&PostgreSQLAdapter{}).Import(context.Background(), spec2); err != nil {
+		t.Fatalf("正常 exit 1 且仅已知版本偏斜时必须放行: %v", err)
 	}
 }
 

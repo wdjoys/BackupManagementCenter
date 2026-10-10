@@ -347,7 +347,13 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 		return exitError("pg_restore", exit, err)
 	}
 	if exit != 0 {
-		if nurr := pgIgnorableRestoreErrors(stderrLines); nurr > 0 && pgOnlyIgnorableRestoreErrors(stderrLines) {
+		// 放行版本偏斜的前提是"正常退出但忽略过错误"：pg_restore 的约定是 exit 1。
+		// 被信号杀死的子进程 ExitCode() = -1 且 err 为 nil，stderr 里可能恰好只有那条
+		// 已知偏斜行——实测被 ctx 取消杀死的 pg_restore 曾被判成"导入完成，开始校验"
+		// （同 run 里随后被杀的 VerifyRestored 把结果兜到 cancelled，故取消场景仍安全；
+		// 但换成外部 SIGKILL/OOM 就会静默产出不完整数据：VerifyRestored 只比对关系集合、
+		// 不比对行数）。因此只在 exit == 1 时才走偏斜放行。
+		if nurr := pgIgnorableRestoreErrors(stderrLines); exit == 1 && nurr > 0 && pgOnlyIgnorableRestoreErrors(stderrLines) {
 			spec.Logf("warn", "pg_restore 报告 %d 处版本偏斜错误（目标服务端低于归档客户端），已忽略；由恢复校验兜底", nurr)
 		} else {
 			return exitError("pg_restore", exit, nil)

@@ -32,6 +32,9 @@ type Server struct {
 	PublicURL string
 	// Reg is the agent connection registry; revoke kicks live streams.
 	Reg *agentreg.Registry
+	// AgentSvc 处理 Agent 连接生命周期（在线状态与在途 run 的对账）。撤销 Agent 时
+	// 会直接踢流，必须显式让它按断连处理，否则在途 run 会卡在 running。
+	AgentSvc *agentreg.Service
 	// DatabaseRestoreKinds lists the database kinds whose restore path has been
 	// verified on this deployment. Anything else is refused with 503: database
 	// restores overwrite data and stay opt-in.

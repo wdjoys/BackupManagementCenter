@@ -108,6 +108,11 @@ func (s *Server) handleRevokeAgent(w http.ResponseWriter, r *http.Request) {
 	if s.Reg != nil {
 		s.Reg.Unregister(id)
 	}
+	// 踢流后必须显式走一次断连处理：Service 的 defer UnregisterIf 在外部 Unregister
+	// 之后不再生效，否则在途 run 会一直停在 running 并占住仓库队列。
+	if s.AgentSvc != nil {
+		s.AgentSvc.HandleAgentRevoked(id)
+	}
 	s.Jobs.Audit(r.Context(), "admin", actorID(r), "agent.revoke", "agent", id, nil)
 	w.WriteHeader(http.StatusNoContent)
 }

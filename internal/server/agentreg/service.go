@@ -924,6 +924,12 @@ func isTerminal(status string) bool {
 // Disconnect handling
 // ---------------------------------------------------------------------------
 
+// HandleAgentRevoked 在撤销 Agent（DELETE /agents/{id}）后按断连处理其状态：
+// 撤销路径会直接踢掉活跃 stream，此时 Service 自己的 defer UnregisterIf 不再生效，
+// 若不显式调用，在途 run 会一直停在 running（实测 300s+ 只能靠 plan 超时兜底），
+// 并占住该仓库的队列槽位（同仓库后续 run 被 head-of-line 阻塞）。
+func (s *Service) HandleAgentRevoked(agentID string) { s.handleDisconnect(agentID) }
+
 func (s *Service) handleDisconnect(agentID string) {
 	log.Printf("[WARN] agent disconnected id=%s", agentID)
 	ctx := context.Background()

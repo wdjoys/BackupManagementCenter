@@ -231,7 +231,8 @@ func main() {
 		}
 	}()
 	handler := api.New(&api.Server{
-		ST: st, Bus: bus, Met: met, Jobs: orch,
+		AgentSvc: svc,
+		ST:       st, Bus: bus, Met: met, Jobs: orch,
 		Version:              version.Version,
 		PublicURL:            cfg.PublicURL,
 		Reg:                  reg,

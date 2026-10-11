@@ -885,3 +885,106 @@ func (f *failingGrantsExec) Run(_ context.Context, c Cmd, onStdout, onStderr fun
 	return f.inner.Run(context.Background(), c, onStdout, onStderr)
 }
 
+// 备份失败时 error_message 必须直接带上 DB 工具 stderr 的原因（此前只出现在 run
+// 日志流里，列表/详情页只剩 "mysqldump failed (exit 2)"，权限错与网络错不可区分）。
+func TestMySQLBackupErrorMessageCarriesStderrReason(t *testing.T) {
+	exec := &grantsExec{
+		grants:   []string{"GRANT SELECT ON *.* TO `u`@`%`"},
+		dumpExit: 2,
+		dumpErr: []string{
+			"mysqldump: [Warning] Using a password on the command line interface can be insecure.",
+			"mysqldump: Couldn't execute 'show events': Access denied for user 'u'@'%' to database 'appdb' (1044)",
+		},
+	}
+	rc := grantsRC(exec, "appdb")
+	rc.TempDir = t.TempDir()
+	_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+	if err == nil {
+		t.Fatal("mysqldump 非零退出必须失败")
+	}
+	if !strings.Contains(err.Error(), "exit 2") {
+		t.Fatalf("必须保留退出码: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Access denied for user 'u'@'%' to database 'appdb' (1044)") {
+		t.Fatalf("必须并入 stderr 的可操作原因: %v", err)
+	}
+}
+
+// PG 的 stderr 里原因行在前、detail 行在后：必须挑出 error 行而不是最后一行。
+func TestStderrReasonPrefersErrorLine(t *testing.T) {
+	tail := []string{
+		"pg_dump: error: query failed: ERROR:  permission denied for table p2",
+		"pg_dump: detail: Query was: LOCK TABLE public.p1, public.p2 IN ACCESS SHARE MODE",
+	}
+	if got := stderrReason(tail); !strings.Contains(got, "permission denied for table p2") {
+		t.Fatalf("必须挑出原因行，得到 %q", got)
+	}
+	// 没有 error/denied/failed 字样时退回最后一行。
+	if got := stderrReason([]string{"first", "last"}); got != "last" {
+		t.Fatalf("无关键字时必须退回最后一行，得到 %q", got)
+	}
+	if got := stderrReason(nil); got != "" {
+		t.Fatalf("空 stderr 不得产生内容，得到 %q", got)
+	}
+	err := exitErrorWithStderr("pg_dump", 1, nil, tail)
+	if !strings.Contains(err.Error(), "pg_dump failed (exit 1)") || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("错误必须同时含工具与原因: %v", err)
+	}
+}
+
+// 各代服务端 root 的 SHOW GRANTS 原文（实测 bmc-mysql55/56/57/84-test、
+// bmc-mariadb106-test、bmc-mysql-test）。这些账号被用于现网整库/整实例计划，
+// 解析必须判为全局 SELECT——否则新检查会把所有既有备份计划拒掉。
+func TestMySQLSelectScopeRealServerOutputs(t *testing.T) {
+	cases := map[string][]string{
+		"mysql55/56": {
+			"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY PASSWORD '*AFA7207C4C299D26E88C6F4197958E4D49BDC65C' WITH GRANT OPTION",
+			"GRANT PROXY ON ''@'' TO 'root'@'localhost' WITH GRANT OPTION",
+		},
+		"mysql57": {
+			"GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION",
+			"GRANT PROXY ON ''@'' TO 'root'@'localhost' WITH GRANT OPTION",
+		},
+		"mysql8.4": {
+			"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, SHUTDOWN, PROCESS, FILE, REFERENCES, INDEX, ALTER, SHOW DATABASES, SUPER, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `root`@`localhost` WITH GRANT OPTION",
+			"GRANT ALLOW_NONEXISTENT_DEFINER,APPLICATION_PASSWORD_ADMIN,SYSTEM_USER,SYSTEM_VARIABLES_ADMIN ON *.* TO `root`@`localhost` WITH GRANT OPTION",
+			"GRANT PROXY ON ``@`` TO `root`@`localhost` WITH GRANT OPTION",
+		},
+		"mariadb10.6": {
+			"GRANT ALL PRIVILEGES ON *.* TO `root`@`localhost` IDENTIFIED BY PASSWORD '*ED084723F7D9E67F477711729C6641018F12B972' WITH GRANT OPTION",
+			"GRANT PROXY ON ``@`%` TO `root`@`localhost` WITH GRANT OPTION",
+		},
+		"mysql8.0": {
+			"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, SHUTDOWN, PROCESS, FILE, REFERENCES, INDEX, ALTER, SHOW DATABASES, SUPER, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `root`@`localhost` WITH GRANT OPTION",
+			"GRANT PROXY ON ``@`` TO `root`@`localhost` WITH GRANT OPTION",
+		},
+		// 库级授权（真实 SHOW GRANTS 形态）也必须判为完整。
+		"库级 SELECT+EVENT": {
+			"GRANT USAGE ON *.* TO `u`@`%`",
+			"GRANT SELECT, EVENT ON `appdb`.* TO `u`@`%`",
+		},
+		// 部分授权（本次修复针对的形态）。
+		"表级子集": {
+			"GRANT USAGE ON *.* TO `u`@`%`",
+			"GRANT EVENT ON `appdb`.* TO `u`@`%`",
+			"GRANT SELECT ON `appdb`.`t1` TO `u`@`%`",
+			"GRANT SELECT ON `appdb`.`t3` TO `u`@`%`",
+		},
+	}
+	wantGlobal := map[string]bool{
+		"mysql55/56": true, "mysql57": true, "mysql8.4": true, "mariadb10.6": true,
+		"mysql8.0": true, "库级 SELECT+EVENT": false, "表级子集": false,
+	}
+	for name, lines := range cases {
+		sc := mysqlSelectScope(lines)
+		if sc.global != wantGlobal[name] {
+			t.Fatalf("%s: global=%v want %v (%+v)", name, sc.global, wantGlobal[name], sc)
+		}
+		if name == "库级 SELECT+EVENT" && !sc.schemas["appdb"] {
+			t.Fatalf("%s: 必须识别库级授权: %+v", name, sc)
+		}
+		if name == "表级子集" && len(sc.schemas) != 0 {
+			t.Fatalf("%s: 不得识别出库级授权: %+v", name, sc)
+		}
+	}
+}

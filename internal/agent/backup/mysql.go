@@ -149,23 +149,14 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	// 非 ASCII 库名被按 latin1 解释、报 "Unknown database"（库其实存在）。
 	// 该场景无法在客户端修复（utf8mb3 会损坏 4 字节字符），因此把误导性的
 	// "库不存在" 转成可诊断的错误。
-	var stderrTail []string
-	captureStderr := func(line string) {
-		if trimmed := strings.TrimSpace(line); trimmed != "" {
-			stderrTail = append(stderrTail, trimmed)
-			if len(stderrTail) > 20 {
-				stderrTail = stderrTail[len(stderrTail)-20:]
-			}
-		}
-		logLine(line)
-	}
-	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, captureStderr)
+	capture := &stderrCapture{logf: logLine}
+	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, capture.line)
 	if err != nil || exitCode != 0 {
 		// 单引号库名的原因更具体，优先给出；字符集提示只在 8.0 客户端路径下成立。
-		if hint := mysqlDumpFailureHint(source.Database, stderrTail, tools.legacy); hint != "" {
+		if hint := mysqlDumpFailureHint(source.Database, capture.tail, tools.legacy); hint != "" {
 			rc.Logf("warn", "%s", hint)
 		}
-		return nil, exitError("mysqldump", exitCode, err)
+		return nil, exitErrorWithStderr("mysqldump", exitCode, err, capture.tail)
 	}
 	toolVersions["mysqldump"] = getToolVersion(ctx, rc.Exec, mysqldumpPath, nil)
 

@@ -94,9 +94,10 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 			"--globals-only", "--file=" + globalsFile,
 			"--host", source.Host, "--port", strconv.Itoa(source.Port), "--username", source.Username,
 		}
-		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dumpall"), Args: args, Env: env}, logLine, logLine)
+		cap := &stderrCapture{logf: logLine}
+		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dumpall"), Args: args, Env: env}, logLine, cap.line)
 		if err != nil || exitCode != 0 {
-			return nil, exitError("pg_dumpall globals", exitCode, err)
+			return nil, exitErrorWithStderr("pg_dumpall globals", exitCode, err, cap.tail)
 		}
 		dbExports = append(dbExports, DbExport{Database: "globals", File: "globals.sql", Format: "sql"})
 		toolVersions["pg_dumpall"] = getToolVersion(ctx, rc.Exec, toolPath("pg_dumpall"), env)
@@ -139,9 +140,10 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 			// （实测 "no matching extensions were found"），一个这种库就会让
 			// 整实例备份整体失败。
 			args = append(args, "--", db)
-			exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, logLine)
+			cap := &stderrCapture{logf: logLine}
+			exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, cap.line)
 			if err != nil || exitCode != 0 {
-				return nil, exitError(fmt.Sprintf("pg_dump %s", db), exitCode, err)
+				return nil, exitErrorWithStderr(fmt.Sprintf("pg_dump %s", db), exitCode, err, cap.tail)
 			}
 			dbExports = append(dbExports, DbExport{Database: db, File: filepath.Base(dumpFile), Format: "pgdump"})
 		}
@@ -161,9 +163,10 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 		// 以 -- 结束选项：库名是位置参数，且合法库名可以以 '-' 开头，否则 pg_dump
 		// 会把库名当选项解析（实测报 "no matching extensions were found"）。
 		args = append(args, "--", source.Database)
-		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, logLine)
+		cap := &stderrCapture{logf: logLine}
+		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, cap.line)
 		if err != nil || exitCode != 0 {
-			return nil, exitError("pg_dump", exitCode, err)
+			return nil, exitErrorWithStderr("pg_dump", exitCode, err, cap.tail)
 		}
 		dbExports = append(dbExports, DbExport{Database: source.Database, File: filepath.Base(dumpFile), Format: "pgdump"})
 		toolVersions["pg_dump"] = getToolVersion(ctx, rc.Exec, toolPath("pg_dump"), env)

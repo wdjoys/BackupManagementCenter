@@ -7,6 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { AppEmptyState } from '@/components/AppEmptyState'
 import { AppErrorState } from '@/components/AppErrorState'
 import { StatusBadge, type BadgeTone } from '@/components/StatusBadge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageLoadingState } from '@/components/PageLoadingState'
 import { formatDateTime, translateEnum } from '@/i18n'
 import type { Repository } from '@/api/types'
@@ -124,9 +125,23 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                               </code>
                             </TableCell>
                             <TableCell className="text-xs">
-                              <StatusBadge tone={getRepoStatusTone(repo.status)} dot>
-                                {translateEnum('status', repo.status)}
-                              </StatusBadge>
+                              <div className="flex items-center gap-1.5">
+                                <StatusBadge tone={getRepoStatusTone(repo.status)} dot>
+                                  {translateEnum('status', repo.status)}
+                                </StatusBadge>
+                                {repo.status === 'error' && repo.error_message && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className="truncate block max-w-[180px] cursor-help text-[11px] text-rose-600 dark:text-rose-400 underline decoration-dotted">
+                                        {repo.error_message}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="max-w-md text-[11px] break-all">
+                                      {repo.error_message}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                              </div>
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground">
                               {repo.last_check_at ? formatDateTime(repo.last_check_at) : t('common.never')}
@@ -189,6 +204,11 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                             {repo.repository_path}
                           </code>
                         </div>
+                        {repo.status === 'error' && repo.error_message && (
+                          <div className="truncate text-[11px] text-rose-600 dark:text-rose-400" title={repo.error_message}>
+                            {repo.error_message}
+                          </div>
+                        )}
                         <div className="flex items-center justify-end gap-2 pt-1">
                           {repo.status !== 'ready' && (
                             <Button

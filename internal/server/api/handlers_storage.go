@@ -144,9 +144,12 @@ type repositoryView struct {
 	StorageTargetName string  `json:"storage_target_name,omitempty"`
 	RepositoryPath    string  `json:"repository_path"`
 	Status            string  `json:"status"`
-	LastCheckAt       *string `json:"last_check_at,omitempty"`
-	CreatedAt         string  `json:"created_at"`
-	UpdatedAt         string  `json:"updated_at"`
+	// ErrorMessage 是最近一次失败 run 的原因（仓库检查/初始化/浏览等），供 UI 在
+	// error 状态下展示，避免只显示一个没有原因的「错误」徽标。
+	ErrorMessage string  `json:"error_message,omitempty"`
+	LastCheckAt  *string `json:"last_check_at,omitempty"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
 }
 
 // POST /repositories {agent_id, storage_target_id}
@@ -219,6 +222,19 @@ func (s *Server) repoView(r *http.Request, repo *model.Repository) repositoryVie
 	}
 	if t, err := s.ST.GetStorageTarget(r.Context(), repo.StorageTargetID); err == nil {
 		v.StorageTargetName = t.Name
+	}
+	// 最近一次失败 run 的原因（按 queued_at 倒序取最新一条）。仓库处于 error 时
+	// 这是用户唯一能看到根因的地方。
+	if runs, err := s.ST.ListRuns(r.Context(), store.RunFilter{
+		RepositoryID: repo.ID,
+		Statuses:     []string{model.RunFailed},
+		Limit:        1,
+	}); err == nil && len(runs) > 0 {
+		if msg := strings.TrimSpace(runs[0].ErrorMessage); msg != "" {
+			v.ErrorMessage = msg
+		} else {
+			v.ErrorMessage = runs[0].ErrorCode
+		}
 	}
 	return v
 }

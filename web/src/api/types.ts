@@ -49,6 +49,7 @@ export interface Repository {
   storage_target_id: string
   repository_path: string
   status: 'ready' | 'pending' | 'error'
+  error_message?: string
   last_check_at: string | null
   agent_name?: string
   storage_target_name?: string

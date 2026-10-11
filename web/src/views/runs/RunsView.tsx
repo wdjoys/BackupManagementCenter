@@ -429,7 +429,7 @@ export const RunsView: React.FC = () => {
                                 tone={statusTagType(run.status)}
                                 dot={run.status === 'running' || run.status === 'dispatched'}
                               >
-                                {translateEnum('status', run.status)}
+                                {translateEnum('runs.status', run.status)}
                               </StatusBadge>
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground font-mono">
@@ -492,7 +492,7 @@ export const RunsView: React.FC = () => {
                             tone={statusTagType(run.status)}
                             dot={run.status === 'running' || run.status === 'dispatched'}
                           >
-                            {translateEnum('status', run.status)}
+                            {translateEnum('runs.status', run.status)}
                           </StatusBadge>
                         </div>
                         <div className="grid grid-cols-2 gap-1 text-[11px] text-muted-foreground font-mono">

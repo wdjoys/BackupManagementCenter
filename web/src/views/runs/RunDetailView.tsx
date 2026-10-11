@@ -388,7 +388,7 @@ export const RunDetailView: React.FC = () => {
                 tone={statusTagType(run.status)}
                 dot={run.status === 'running' || run.status === 'dispatched'}
               >
-                {translateEnum('status', run.status)}
+                {translateEnum('runs.status', run.status)}
               </StatusBadge>
             </div>
             <p className="text-xs text-muted-foreground">{planName}</p>
@@ -598,7 +598,7 @@ export const RunDetailView: React.FC = () => {
                       取消/超时/中断时会停在 dumping 之类的进行中相位。终态一律显示运行状态，
                       否则详情页会把已经结束的运行渲染成「导出中」。 */}
                   {isTerminal(run.status)
-                    ? translateEnum('status', run.status)
+                    ? translateEnum('runs.status', run.status)
                     : run.operation === 'restore'
                       ? translateEnum('restore.phases', run.progress.phase, 'runDetail.phases')
                       : translateEnum('runDetail.phases', run.progress.phase, 'restore.phases')}

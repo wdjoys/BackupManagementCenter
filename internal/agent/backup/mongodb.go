@@ -92,9 +92,10 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 	args = append(args, source.ExtraArgs...)
 
 	logLine := func(l string) { rc.Logf("info", "%s", l) }
-	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mongodumpPath, Args: args, Env: nil}, logLine, logLine)
+	capture := &stderrCapture{logf: logLine}
+	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mongodumpPath, Args: args, Env: nil}, logLine, capture.line)
 	if err != nil || exitCode != 0 {
-		return nil, exitError("mongodump", exitCode, err)
+		return nil, exitErrorWithStderr("mongodump", exitCode, err, capture.tail)
 	}
 	toolVersions["mongodump"] = getToolVersion(ctx, rc.Exec, mongodumpPath, nil)
 
@@ -388,9 +389,10 @@ func (a *MongoDBAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 			"--nsFrom="+spec.ArtifactDatabase+".*",
 			"--nsTo="+c.db.TargetDatabase+".*")
 	}
-	exit, err := spec.Exec.Run(ctx, Cmd{Exe: toolPath("mongorestore"), Args: args}, c.logf, c.logf)
+	capture := &stderrCapture{logf: c.logf}
+	exit, err := spec.Exec.Run(ctx, Cmd{Exe: toolPath("mongorestore"), Args: args}, c.logf, capture.line)
 	if err != nil || exit != 0 {
-		return exitError("mongorestore", exit, err)
+		return exitErrorWithStderr("mongorestore", exit, err, capture.tail)
 	}
 	return nil
 }
@@ -410,11 +412,12 @@ func (a *MongoDBAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) 
 	// mongorestore 把 "found collection ..." 与 "archive prelude ..." 全部写到
 	// stderr，只收集 stdout 会得到空输出并把每次恢复都判成失败。
 	collect := func(line string) { out.WriteString(line); out.WriteString("\n") }
+	capture := &stderrCapture{logf: c.logf}
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: toolPath("mongorestore"),
 		Args: []string{"--archive=" + spec.ArtifactFile, "--gzip", "--config=" + c.config, "--dryRun", "--verbose"}},
-		collect, func(line string) { collect(line); c.logf(line) })
+		collect, func(line string) { collect(line); capture.line(line) })
 	if err != nil || exit != 0 {
-		return exitError("mongorestore dry run", exit, err)
+		return exitErrorWithStderr("mongorestore dry run", exit, err, capture.tail)
 	}
 	parsed := mongoDumpNamespaces(out.String())
 	if len(parsed) == 0 {

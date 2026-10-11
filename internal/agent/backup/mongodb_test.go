@@ -369,3 +369,33 @@ func TestMongoBackupSingleDatabaseSkipsScopeCheck(t *testing.T) {
 		}
 	}
 }
+
+// mongodump 失败时 error_message 必须带上 stderr 原因（与 mysql/pg 一致）。
+func TestMongoDumpFailureCarriesStderrReason(t *testing.T) {
+	exec := &mongodbExecutor{
+		dumpExit: 1,
+		dumpErr: []string{
+			"2026-10-11T00:00:00.000+0000\tFailed: error creating intents to dump: error counting p_f2.c1: (Unauthorized) not authorized on p_f2 to execute command",
+		},
+	}
+	_, err := (&MongoDBAdapter{}).Backup(context.Background(), mongodbBackupRC(t, exec, "p_f2"))
+	if err == nil {
+		t.Fatal("mongodump 非零退出必须失败")
+	}
+	if !strings.Contains(err.Error(), "error creating intents to dump") {
+		t.Fatalf("error_message 必须并入 stderr 原因: %v", err)
+	}
+}
+
+// mongorestore 失败时最后一行是统计（"0 document(s) ... failed to restore"），
+// 真正的原因行在它上面：error_message 必须带上原因行，而不是统计行。
+func TestStderrReasonSkipsMongorestoreSummary(t *testing.T) {
+	tail := []string{
+		"2026-10-11T05:50:15.778+0000\tFailed: p_f2_m2_ro.c1: error creating collection p_f2_m2_ro.c1: error running create command: (Unauthorized) not authorized on p_f2_m2_ro to execute command { create: \"c1\" }",
+		"2026-10-11T05:50:15.778+0000\t0 document(s) restored successfully. 0 document(s) failed to restore.",
+	}
+	got := stderrReason(tail)
+	if !strings.Contains(got, "not authorized on p_f2_m2_ro") {
+		t.Fatalf("必须挑出原因行，得到 %q", got)
+	}
+}

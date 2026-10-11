@@ -70,14 +70,26 @@ func (s *stderrCapture) line(l string) {
 }
 
 // stderrReason 从捕获的 stderr 里挑出最能说明失败原因的一行：优先最后一条含
-// error/denied/failed 的行（MySQL 的 1044/1142、PostgreSQL 的 "pg_dump: error:"
-// 都命中），否则退回最后一行。返回空串表示没有可用内容。
+// error/denied/unauthorized/fatal 等「原因」关键字的行（MySQL 的 1044/1142、
+// PostgreSQL 的 "pg_dump: error:"、mongorestore 的 "(Unauthorized) not authorized"
+// 都命中），其次才看只含 failed 的行，否则退回最后一行。
+//
+// 两轮扫描是必要的：mongorestore 失败时最后一行是
+// "0 document(s) restored successfully. 0 document(s) failed to restore."（统计，
+// 不含原因），真正的原因行在它上面一行；只看 failed 会把这条统计当原因写进
+// error_message，运维仍然看不出为什么失败。
 func stderrReason(lines []string) string {
 	const maxLen = 400
-	for i := len(lines) - 1; i >= 0; i-- {
-		l := strings.ToLower(lines[i])
-		if strings.Contains(l, "error") || strings.Contains(l, "denied") || strings.Contains(l, "failed") {
-			return truncateReason(lines[i], maxLen)
+	reason := func(l string) bool {
+		return strings.Contains(l, "error") || strings.Contains(l, "denied") ||
+			strings.Contains(l, "unauthorized") || strings.Contains(l, "fatal")
+	}
+	soft := func(l string) bool { return strings.Contains(l, "failed") }
+	for _, match := range []func(string) bool{reason, soft} {
+		for i := len(lines) - 1; i >= 0; i-- {
+			if match(strings.ToLower(lines[i])) {
+				return truncateReason(lines[i], maxLen)
+			}
 		}
 	}
 	if len(lines) == 0 {

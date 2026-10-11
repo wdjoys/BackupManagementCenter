@@ -279,11 +279,14 @@ export const RunDetailView: React.FC = () => {
               setRun(msg.run)
               terminalRef.current = isTerminal(msg.run.status)
               if (terminalRef.current) {
+                // 终态后不再重连（onclose 里靠 terminalRef 拦住），但**不要**在这里主动
+                // close：服务端推完终态还会继续回放 backlog 再以 1000 关闭，客户端提前
+                // close 会丢弃仍在途的回放帧——重连后恰好赶上终态时，末尾日志
+                // （上传完成/快照已创建/运行成功）会永久缺失。
                 if (reconnectTimerRef.current) {
                   clearTimeout(reconnectTimerRef.current)
                   reconnectTimerRef.current = null
                 }
-                socket.close()
               }
             } else if (msg.type === 'progress') {
               setRun((prev) => (prev ? { ...prev, progress: msg.progress } : prev))

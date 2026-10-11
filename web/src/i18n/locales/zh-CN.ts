@@ -78,7 +78,7 @@ export default {
     "login_subtitle": "输入凭据以访问控制台",
     "login_desc": "使用系统管理员账户登录",
     "login_success": "登录成功",
-    "login_failed": "用户名或密码错误",
+    "login_failed": "登录失败，请稍后重试",
     "invalid_credentials": "用户名或密码错误",
     "rate_limited": "尝试操作过于频繁，请稍后再试",
     "setup_already_completed": "初始配置已完成，请直接登录",

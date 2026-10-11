@@ -78,7 +78,7 @@ export default {
     "login_subtitle": "Enter your credentials to access the console",
     "login_desc": "Sign in with your administrator account",
     "login_success": "Signed in successfully",
-    "login_failed": "Invalid username or password",
+    "login_failed": "Login failed, please try again later",
     "invalid_credentials": "Invalid username or password",
     "rate_limited": "Too many attempts, please try again later",
     "setup_already_completed": "Setup has already been completed, please sign in",

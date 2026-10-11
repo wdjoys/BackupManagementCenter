@@ -1177,6 +1177,11 @@ func (o *Orchestrator) EnsureRepository(ctx context.Context, repo *model.Reposit
 		switch term.ErrorCode {
 		case model.ErrRepositoryMissing:
 			// restic exit 10 — repository does not exist; fall through to init.
+			// 这是新装首次绑定的正常分支（UI 也预告了"先检查仓库，再执行初始化"），
+			// 不是运行失败。留下这条探测运行会让新装用户在仪表盘看到
+			// 「近 24 小时失败 1」、在运行列表看到「失败 / snapshots」，误以为初始化
+			// 出了问题 —— 紧随其后的 init 运行才代表本次绑定的结果，故丢弃探测记录。
+			o.dropProbeRun(ctx, probeRun.ID)
 		case model.ErrWrongRepositoryPassword:
 			return ErrRepoPassword
 		case model.ErrRepositoryLocked:
@@ -1200,6 +1205,18 @@ func (o *Orchestrator) EnsureRepository(ctx context.Context, repo *model.Reposit
 		return o.Store.UpdateRepositoryStatus(ctx, repo.ID, "ready")
 	}
 	return fmt.Errorf("ensure repository init failed: %s %s", term.ErrorCode, term.ErrorMessage)
+}
+
+// dropProbeRun 丢弃一条"结果符合预期"的内部探测运行（见 EnsureRepository 的
+// repository_missing 分支）。探测失败属于正常控制流，不该作为失败运行暴露给用户；
+// 真正的绑定失败（密码错误、仓库锁定、Agent 离线）仍保留运行记录便于排查。
+// 走可选能力断言，避免为一个清理动作改动 store.Store 接口与各测试替身。
+func (o *Orchestrator) dropProbeRun(ctx context.Context, runID string) {
+	if rs, ok := o.Store.(interface {
+		DeleteRun(context.Context, string) error
+	}); ok {
+		_ = rs.DeleteRun(ctx, runID)
+	}
 }
 
 // StartRetentionRun queues a non-pruning forget operation. Prune is reserved

@@ -920,6 +920,18 @@ func (s *sqliteStore) ClearRunProgress(ctx context.Context, runID string) error 
 	return nil
 }
 
+// DeleteRun 删除单条运行（run_logs / run_secrets 级联删除、snapshot_deletions 置
+// NULL）。用于丢弃内部探测运行：它们的失败属于预期控制流（如新装首次绑定前的
+// 仓库探测，restic exit 10 = 仓库尚不存在），留在历史里只会让用户以为初始化失败。
+func (s *sqliteStore) DeleteRun(ctx context.Context, runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM runs WHERE id = ?", runID); err != nil {
+		return fmt.Errorf("delete run: %w", err)
+	}
+	return nil
+}
+
 func (s *sqliteStore) PruneHistory(ctx context.Context, cutoff time.Time) (HistoryPruneResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

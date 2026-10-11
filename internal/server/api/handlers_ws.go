@@ -29,7 +29,11 @@ func (s *Server) serveRunWS(w http.ResponseWriter, r *http.Request, runID string
 		return
 	}
 	defer c.Close(websocket.StatusNormalClosure, "")
-	ctx := r.Context()
+	// 本连接只写不读，但控制帧（pong/close）只在读循环里派发：没有读循环时
+	// c.Ping 永远等不到 pong，会在 20s ticker + 5s 超时后把活跃订阅断掉。
+	// CloseRead 起一个丢弃客户端帧的读 goroutine，pong/close 由此正常处理，
+	// 返回的 ctx 在连接关闭时取消。
+	ctx := c.CloseRead(r.Context())
 
 	run, err := s.ST.GetRun(ctx, runID)
 	if err != nil {

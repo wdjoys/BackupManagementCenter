@@ -1,7 +1,6 @@
 export default {
   "common": {
     "retry": "Retry",
-    "loading": "Loading...",
     "refresh": "Refresh",
     "cancel": "Cancel",
     "delete": "Delete",
@@ -18,18 +17,12 @@ export default {
     "copied": "Copied to clipboard",
     "copyFailed": "Failed to copy to clipboard",
     "tagInputPlaceholder": "Type a value and press Enter to add",
-    "on": "On",
-    "off": "Off",
     "confirm": "Confirm",
     "error_occurred": "An error occurred",
     "switch_language": "Switch Language",
     "allAgents": "All Agents",
     "all": "All",
     "load_failed": "Failed to load",
-    "theme": "Theme",
-    "theme_light": "Light Mode",
-    "theme_dark": "Dark Mode",
-    "theme_system": "System",
     "preference": "Preference",
     "removeTag": "Remove {{tag}}",
     "toggle_menu": "Toggle menu",
@@ -51,21 +44,6 @@ export default {
   },
   "settings": {
     "title": "Settings",
-    "telegram": {
-      "title": "Telegram Failure Notifications",
-      "configured": "Telegram failure notifications enabled",
-      "currentTarget": "Current target chat: {{chatId}}",
-      "notConfigured": "Not configured. Once set, only plan-bound failed runs are pushed.",
-      "botToken": "Bot Token",
-      "chatId": "Chat ID",
-      "tokenPlaceholderConfigured": "Saved (enter a new value to replace)",
-      "save": "Save",
-      "clear": "Clear configuration",
-      "pairRequired": "Bot Token and Chat ID must be provided together",
-      "saved": "Saved — takes effect immediately",
-      "cleared": "Telegram notification settings cleared",
-      "help": "Create a bot via @BotFather to get the token; add the bot to the target group/channel (or message it first) to obtain the chat ID. Notifications are sent after a failure is persisted; Telegram outages never affect job results."
-    },
     "subtitle": "Global alert notifications and credential management",
     "load_failed": "Failed to load settings",
     "saved_success": "Settings saved successfully",
@@ -89,33 +67,9 @@ export default {
     "dark": "Dark",
     "system": "System"
   },
-  "layout": {
-    "defaultUser": "User",
-    "logout": "Logout",
-    "logoutSuccess": "Logout successful",
-    "logoutFailed": "Logout failed"
-  },
   "auth": {
-    "loginTitle": "Login",
-    "loginButton": "Login",
-    "setupTitle": "Create Admin Account",
-    "setupButton": "Create Admin",
     "username": "Username",
     "password": "Password",
-    "confirmPassword": "Confirm Password",
-    "usernamePlaceholder": "Enter username",
-    "adminUsernamePlaceholder": "Enter admin username",
-    "passwordPlaceholder": "Enter password",
-    "confirmPlaceholder": "Confirm password",
-    "usernameRequired": "Username is required",
-    "passwordRequired": "Password is required",
-    "passwordTooShort": "Password must be at least 8 characters",
-    "confirmationRequired": "Password confirmation is required",
-    "passwordMismatch": "Passwords do not match",
-    "loginSuccess": "Login successful",
-    "loginFailed": "Login failed",
-    "setupSuccess": "Admin account created",
-    "setupFailed": "Setup failed",
     "login": "Login",
     "login_button": "Login",
     "login_subtitle": "Enter your credentials to access the console",
@@ -160,7 +114,6 @@ export default {
     "allReposHealthy": "All repositories are healthy",
     "reposError": "Repositories in error state: {{count}}",
     "reposError_desc": "Some backup repositories are unavailable; check the Storage page for the reason",
-    "loadFailed": "Failed to load dashboard data. Is the server running?",
     "subtitle": "System overview, agents, and schedules",
     "agents_active_desc": "Agents currently reporting status",
     "runs_succeeded_desc": "Completed runs in the past 24 hours",
@@ -181,7 +134,6 @@ export default {
     "renameDialog": {
       "title": "Rename Agent",
       "message": "Enter the new agent name:",
-      "empty": "Name cannot be empty"
     },
     "loadFailed": "Failed to load agents. Is the server running?",
     "columns": {
@@ -204,7 +156,6 @@ export default {
       "token": "Token",
       "takeoverHint": "This token is specifically for taking over and restoring existing repositories and plans for Agent \"{{id}}\".",
       "envConfig": "Agent Host Environment Configuration Example",
-      "clickToCopy": "Click to copy",
       "copyButton": "Copy Token",
       "expiresAt": "Expires At",
       "generateFailed": "Failed to generate token",
@@ -220,28 +171,6 @@ export default {
     "restored": "Agent restored",
     "restoreFailed": "Restore failed",
     "restoreDialog": {
-      "targetAgent": "Target Agent",
-      "targetAgentPlaceholder": "Select the Agent that runs the restore",
-      "sourceAgentBadge": "source",
-      "sourceOfflineHint": "Source Agent is offline: the snapshot list verified by the server is used and the run is delivered to the selected online Agent.",
-      "credentialWarning": "Repository credentials (rclone config and restic password) are handed to the target Agent.",
-      "maintenanceTitle": "Maintenance window required",
-      "databaseMaintenance": "External writes must be isolated: the target database is protected-backed up first, then fully replaced, with automatic rollback on failure.",
-      "sqliteMaintenance": "SQLite requires every target connection closed (not just paused writes) and the application WAL checkpointed; the restore is refused when an exclusive maintenance state cannot be established.",
-      "sqlitePath": "Target SQLite path",
-      "host": "Host",
-      "port": "Port",
-      "username": "Username",
-      "database": "Target database",
-      "authSource": "Auth source",
-      "allNotAllowed": "Whole-instance restore (all) is not supported; specify a single database.",
-      "targetPassword": "Target database password",
-      "targetPasswordHint": "Used for this restore only and never persisted in the UI or configuration.",
-      "overwriteExisting": "Overwrite an existing target (protected backup first)",
-      "databaseRequired": "Provide the target database name and connection details.",
-      "portInvalid": "Port must be an integer between 1 and 65535.",
-      "absolutePathRequired": "Enter an absolute host target path.",
-      "pathOutsideAllowedRoots": "The target path must be within the selected Agent's allowed host restore directories.",
       "title": "Restore Agent",
       "confirm": "Restore agent \"{{name}}\" ({{hostname}})? It can reconnect with its original identity, and its repositories and plans stay valid."
     },
@@ -259,14 +188,6 @@ export default {
     "pending": "Pending",
     "error": "Error",
     "unknown": "Unknown"
-  },
-  "placeholder": {
-    "storageTargets": "Storage Targets",
-    "backupPlans": "Backup Plans",
-    "runHistory": "Run History",
-    "snapshotsRestore": "Snapshots & Restore",
-    "underConstruction": "Under Construction",
-    "description": "This page is under construction. It will be available in a future release."
   },
   "plans": {
     "newPlan": "New Plan",
@@ -288,7 +209,6 @@ export default {
     "columns": {
       "kind": "Kind",
       "schedule": "Schedule",
-      "timezone": "Timezone",
       "enabled": "Enabled",
       "repository": "Repository",
       "path": "Backup Path",
@@ -296,18 +216,10 @@ export default {
       "timeout": "Timeout"
     },
     "deleted": "Plan deleted",
-    "backupsDeleted": "Historical backups deleted",
-    "deleteBackupsDialog": {
-      "title": "Delete historical backups",
-      "confirm": "Historical backups for this plan will be permanently deleted. They must be deleted before the plan. Continue?",
-      "required": "The plan cannot be deleted until its historical backups are deleted."
-    },
     "created": "Plan created",
-    "updated": "Plan updated",
     "saved": "Plan saved",
     "enabled": "Plan enabled",
     "disabled": "Plan disabled",
-    "validationFailed": "Plan validation failed",
     "deleteDialog": {
       "title": "Delete plan",
       "confirm": "Delete plan \"{{name}}\"? This cannot be undone.",
@@ -337,12 +249,9 @@ export default {
       "paths": "Paths",
       "pathsPlaceholder": "/absolute/path",
       "availableHostPaths": "Available host directories",
-      "pathMappingCompatibilityHint": "This Agent has no path mappings configured; use an absolute host path.",
       "excludes": "Excludes",
       "excludesPlaceholder": "/path/to/exclude (glob ok)",
       "oneFileSystem": "One filesystem",
-      "yes": "Yes",
-      "no": "No",
       "databasePath": "Database path",
       "databasePathPlaceholder": "/absolute/path/to/database.sqlite",
       "estimatedDumpSize": "Estimated dump size",
@@ -378,7 +287,6 @@ export default {
       "timeoutRequired": "Timeout is required",
       "timeoutRange": "Timeout must be between 60 and 21600 seconds",
       "hostRequired": "Host is required",
-      "portRequired": "Port is required",
       "portRange": "Port must be between 1 and 65535",
       "usernameRequired": "Username is required",
       "databaseRequired": "Database is required, or 'all'",
@@ -391,11 +299,9 @@ export default {
       "pathOutsideAllowedRoots": "Path must be within an available host directory",
       "pathsOutsideAllowedRoots": "Every path must be within an available host directory",
       "excludesOutsideAllowedRoots": "Absolute exclude paths must be within an available host directory",
-      "greaterThanZero": "Must be greater than 0"
     },
     "subtitle": "Scheduled and manual backup execution policies",
     "loadFailed": "Failed to load plans",
-    "statusUpdated": "Plan status updated",
     "statusUpdateFailed": "Failed to update plan status",
     "runDispatched": "Run dispatched successfully",
     "runFailed": "Failed to trigger run",
@@ -411,18 +317,11 @@ export default {
     },
     "importRcloneConfig": "Import rclone Config",
     "bindRepository": "Bind Repository",
-    "targetsLoadFailed": "Failed to load storage targets.",
-    "reposLoadFailed": "Failed to load repositories.",
     "emptyTargets": "No storage targets. Import an rclone config to start.",
     "emptyRepositories": "No repositories. Bind one by selecting an Agent and a Storage Target.",
     "repositoryHelp": {
       "title": "Repository binding",
       "description": "Binding makes the Agent create or adopt an isolated Restic repository under the selected remote path. The first bind checks the repository and may initialize it, which can take several seconds; binding is not a full integrity check. “Last Integrity Check” is recorded only after restic check succeeds. Failed binds can be retried. Unbinding hides only the Server record; remote data is preserved and can be adopted again later."
-    },
-    "repositoryStatus": {
-      "pending": "Initializing",
-      "ready": "Ready",
-      "error": "Initialization failed"
     },
     "columns": {
       "type": "Type",
@@ -440,23 +339,13 @@ export default {
       "namePlaceholder": "e.g. My Google Drive",
       "validationAgent": "Validation Agent",
       "validationAgentPlaceholder": "Select an online agent to validate config",
-      "offlineSuffix": "{{name}} ({{hostname}}) — offline",
-      "noAgents": "No agents available. Ensure at least one agent is enrolled and online.",
       "remoteName": "Remote Name",
       "remoteNamePlaceholder": "e.g. mydrive",
       "remotePath": "Remote Path",
       "remotePathPlaceholder": "Root path inside the remote (optional)",
       "lsdEntries": "lsd entries:",
-      "moreEntries": "... and {{count}} more",
-      "isDir": "Is Dir",
-      "dir": "dir",
-      "file": "file",
       "validateFirst": "Validate First",
       "confirmImport": "Confirm Import",
-      "validateSucceeded": "Validation succeeded",
-      "validateFailedCode": "Validation failed (code: {{code}})",
-      "imported": "Storage target imported",
-      "importFailedCode": "Import failed (code: {{code}})",
       "description": "Paste rclone.conf text to import remote storage backends",
       "validationSuccess": "Rclone configuration validated",
       "validationFailed": "Invalid rclone configuration format",
@@ -466,19 +355,11 @@ export default {
     "editDialog": {
       "title": "Edit Storage Target",
       "notice": "Only the display name is editable here. Connection details and remote path stay unchanged; import a new target to rotate credentials.",
-      "name": "Name",
-      "namePlaceholder": "Enter a storage target name",
-      "saved": "Storage target updated",
-      "failedCode": "Update failed (code: {{code}})",
       "renamedSuccessfully": "Storage target renamed",
       "renameFailed": "Failed to rename storage target"
     },
     "deleteDialog": {
-      "title": "Delete Storage Target",
-      "confirm": "Delete storage target \"{{name}}\"?",
-      "deleted": "Storage target deleted",
       "conflict": "Cannot delete: this storage target is still referenced by one or more repositories",
-      "failedCode": "Delete failed (code: {{code}})"
     },
     "bindDialog": {
       "agent": "Agent",
@@ -486,26 +367,18 @@ export default {
       "storageTarget": "Storage Target",
       "selectTarget": "Select a storage target",
       "boundSuccessfully": "Repository bound successfully",
-      "bound": "Repository bound",
-      "bindFailedCode": "Bind failed (code: {{code}})",
       "description": "Bind an agent to a storage target to initialize or connect a repository",
-      "bindButton": "Confirm Bind",
       "bindFailed": "Failed to bind repository"
     },
     "repositoryDialog": {
-      "unbindTitle": "Unbind Repository Record",
-      "confirmUnbind": "Unbind the repository record for “{{name}}”? Only the Server binding is removed; remote backup data is preserved.",
       "unbind": "Unbind",
-      "unbound": "Repository record unbound; remote backup data preserved",
       "conflict": "Cannot unbind: the repository is referenced by a plan or has an active run",
-      "unbindFailedCode": "Unbind failed (code: {{code}})",
       "retried": "Repository check/initialization was retried",
       "retryFailedCode": "Retry failed (code: {{code}})",
       "unbindConfirmTitle": "Unbind Repository",
       "unbindConfirmDesc": "Unbinding will remove this repository from BMC without deleting remote data.",
       "unboundSuccessfully": "Repository unbound successfully",
       "unbindFailed": "Failed to unbind repository",
-      "retryDispatched": "Retry task dispatched successfully",
       "retryFailed": "Failed to dispatch retry task"
     },
     "subtitle": "Rclone storage targets and restic repositories",
@@ -525,7 +398,6 @@ export default {
     "filters": {
       "plan": "Plan",
       "allPlans": "All Plans",
-      "planIdPlaceholder": "All Plans",
       "agent": "Agent",
       "status": "Status",
       "operation": "Operation"
@@ -549,16 +421,8 @@ export default {
       "agent": "Agent",
       "snapshot": "Snapshot",
       "duration": "Duration",
-      "error": "Error"
     },
     "cancel": "Cancel",
-    "cancelDialog": {
-      "title": "Cancel Run",
-      "confirm": "Are you sure you want to cancel this run?",
-      "confirmButton": "Cancel Run",
-      "keepRunning": "Keep Running"
-    },
-    "cancellationRequested": "Run cancellation requested",
     "cancelFailed": "Failed to cancel run",
     "loadFailed": "Failed to load runs",
     "subtitle": "Backup, restore, and check execution history",
@@ -570,21 +434,13 @@ export default {
     "rowsPerPage": "Rows per page:",
     "offset": "Offset:"
   },
-  "time": {
-    "hourShort": "h",
-    "minShort": "m",
-    "secShort": "s"
-  },
   "runDetail": {
     "title": "Run Detail",
     "labels": {
-      "status": "Status",
       "operation": "Operation",
-      "plan": "Plan",
       "agent": "Agent",
       "snapshot": "Snapshot",
       "error": "Error",
-      "message": "Message"
     },
     "timeline": {
       "queued": "Queued",
@@ -598,7 +454,6 @@ export default {
       "bytesDone": "Completed",
       "bytesTotal": "Total size",
       "files": "Files",
-      "elapsed": "Elapsed:"
     },
     "phases": {
       "dry_run": "Dry-run",
@@ -614,15 +469,10 @@ export default {
       "title": "Logs ({{count}})",
       "autoScroll": "Auto-scroll",
       "loadMore": "Load more",
-      "loading": "Loading...",
-      "streaming": "Streaming",
-      "connected": "Connected",
-      "offline": "Offline",
       "sourceAgent": "Agent",
       "sourceServer": "Server",
       "source": "Source",
       "time": "Time",
-      "level": "Level",
       "message": "Message",
       "empty": "No logs recorded yet"
     },
@@ -636,7 +486,6 @@ export default {
     "title": "Process Logs",
     "server": "Server Logs",
     "agent": "Agent Logs",
-    "agentTitle": "Agent Logs — {{name}}",
     "agentPlaceholder": "Select an agent",
     "filters": {
       "level": "Level",
@@ -668,7 +517,6 @@ export default {
     "columns": {
       "id": "ID",
       "type": "Type",
-      "sourceSeq": "Source #",
       "seq": "Seq",
       "time": "Time",
       "level": "Level",
@@ -684,32 +532,21 @@ export default {
   },
   "snapshots": {
     "title": "Snapshots",
-    "selectRepository": "Select Repository",
     "repositoryPlaceholder": "Choose a repository to browse snapshots",
-    "snapshotsCard": "Snapshots",
-    "refresh": "Refresh",
     "count": "snapshots",
     "deletedPlan": "Deleted plan",
     "unassignedPlan": "Unassigned",
     "unknownType": "Unknown type",
     "viewDetails": "View details",
-    "snapshotInfo": "Snapshot information",
     "snapshotId": "Snapshot ID",
     "copySnapshotId": "Copy snapshot ID",
-    "extraTags": "Additional tags",
     "viewRun": "View run",
     "noFilteredSnapshots": "No snapshots match the current filter",
-    "filesystemRestoreOnly": "This page only supports filesystem snapshot restore",
     "cache": {
-      "hit": "Verified",
-      "miss": "Verified",
       "stale": "Pending verification",
       "verifying": "Verifying",
       "verified": "Verified",
       "verifiedAt": "Verified at {{time}}",
-      "status": "{{status}}; verified at {{time}}",
-      "unknownTime": "unknown time",
-      "unverifiedWarning": "Data is pending background verification; deletion and restore are disabled",
       "deleteDisabled": "Snapshot list is pending verification; deletion is disabled",
       "restoreDisabled": "Snapshot or directory tree is pending verification; restore is disabled",
       "retryLoad": "Retry"
@@ -717,7 +554,6 @@ export default {
     "noSnapshots": "No snapshots",
     "emptyDirectory": "Empty directory",
     "fileBrowser": "File Browser",
-    "snapshotPrefix": "snapshot {{id}}",
     "restoreThisSnapshot": "Restore this Snapshot",
     "selectSnapshotHint": "Select a snapshot to browse its contents",
     "planFilter": {
@@ -727,13 +563,11 @@ export default {
       "unassigned": "Unassigned"
     },
     "delete": {
-      "action": "Delete",
       "title": "Delete Snapshot",
       "message": "The snapshot will immediately be hidden from the list and its space reclaimed in the background. Type the full snapshot ID to confirm deletion.",
       "targetId": "Target ID: ",
       "confirmHint": "Type the full snapshot ID to confirm deletion:",
       "confirm": "Delete Snapshot",
-      "inputPlaceholder": "Type the full snapshot ID",
       "inputMismatch": "Enter the complete matching snapshot ID",
       "initiated": "Snapshot deletion task dispatched",
       "failed": "Failed to delete snapshot"
@@ -750,19 +584,11 @@ export default {
       "path": "Path"
     },
     "selectedItems": "Selected Included Items ({{count}})",
-    "fileTypes": {
-      "dir": "dir",
-      "file": "file"
-    },
     "restoreDialog": {
       "title": "Restore Snapshot (Filesystem)",
       "databaseTitle": "Restore Snapshot (Database)",
-      "snapshot": "Snapshot",
       "targetPath": "Host Target Path",
-      "targetPathPlaceholder": "/backup-restore/job-1",
-      "targetPathHint": "Absolute host path to restore into.",
       "availableHostPaths": "Available host restore directories:",
-      "pathMappingCompatibilityHint": "This agent has not reported restore path mappings. For bare-metal and legacy agent compatibility, absolute paths are used as entered.",
       "absolutePathRequired": "Enter an absolute host target path.",
       "pathOutsideAllowedRoots": "The target path must be within an available host restore directory.",
       "overwriteMode": "Overwrite Mode",
@@ -770,16 +596,11 @@ export default {
       "never": "Never",
       "ifChanged": "If Changed",
       "always": "Always",
-      "includePaths": "Include Paths",
-      "allEntries": "/ (all entries in current directory)",
-      "includePathsHint": "Select items to restore. Leave empty to restore everything under the snapshot.",
       "dryRunResult": "Dry-run Result",
       "add": "Add",
       "changed": "Changed",
       "skipped": "Skipped",
       "deleteStat": "Delete",
-      "sampleChanges": "Sample changes:",
-      "moreChanges": "... and {{count}} more",
       "dryRunButton": "Dry-run",
       "confirmExecute": "Confirm Execute",
       "subtitle": "Restore files or databases from the selected snapshot",
@@ -814,25 +635,15 @@ export default {
     },
     "messages": {
       "reposLoadFailed": "Failed to load repositories.",
-      "loadSnapshotsFailedCode": "Failed to load snapshots (code: {{code}})",
-      "loadTreeFailedCode": "Failed to load tree (code: {{code}})",
       "dryRunCompleted": "Dry-run completed",
-      "dryRunFailedCode": "Dry-run failed (code: {{code}})",
       "restoreInitiated": "Restore initiated, redirecting to run detail...",
-      "restoreFailedCode": "Restore failed (code: {{code}})",
-      "deleteQueued": "Snapshot removed from the list; space is being reclaimed in the background",
-      "deleteRefreshRequired": "Refresh the snapshot list before deleting; refreshing now",
-      "deleteFailed": "Failed to delete snapshot",
       "snapshotsLoadFailed": "Failed to load snapshots",
       "treeLoadFailed": "Failed to load snapshot tree",
       "dryRunFailed": "Dry run restoration failed",
       "restoreFailed": "Failed to trigger restore",
-      "confirmationMismatch": "The confirmation must match the target name/path exactly.",
       "dryRunRequired": "Run the dry-run before executing the restore."
     },
     "subtitle": "Snapshot exploration and point-in-time recovery wizard",
-    "selectRepoPrompt": "Select a repository above to view snapshots",
-    "noSnapshotsDesc": "No snapshots have been created for this repository yet"
   },
   "restore": {
     "phases": {

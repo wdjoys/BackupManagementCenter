@@ -1,7 +1,6 @@
 export default {
   "common": {
     "retry": "重试",
-    "loading": "加载中...",
     "refresh": "刷新",
     "cancel": "取消",
     "delete": "删除",
@@ -18,18 +17,12 @@ export default {
     "copied": "已复制到剪贴板",
     "copyFailed": "复制到剪贴板失败",
     "tagInputPlaceholder": "输入内容后按回车添加",
-    "on": "开",
-    "off": "关",
     "confirm": "确认",
     "error_occurred": "发生错误",
     "switch_language": "切换语言",
     "allAgents": "全部 Agent",
     "all": "全部",
     "load_failed": "加载失败",
-    "theme": "主题",
-    "theme_light": "浅色模式",
-    "theme_dark": "暗黑模式",
-    "theme_system": "跟随系统",
     "preference": "首选项",
     "removeTag": "移除 {{tag}}",
     "toggle_menu": "切换菜单",
@@ -51,21 +44,6 @@ export default {
   },
   "settings": {
     "title": "设置",
-    "telegram": {
-      "title": "Telegram 失败通知",
-      "configured": "已启用 Telegram 失败通知",
-      "currentTarget": "当前目标会话：{{chatId}}",
-      "notConfigured": "未配置。配置后将仅推送绑定计划的失败运行。",
-      "botToken": "Bot Token",
-      "chatId": "Chat ID",
-      "tokenPlaceholderConfigured": "已保存（输入新值可更换）",
-      "save": "保存",
-      "clear": "清除配置",
-      "pairRequired": "Bot Token 与 Chat ID 必须同时填写",
-      "saved": "已保存，立即生效",
-      "cleared": "已清除 Telegram 通知配置",
-      "help": "通过 @BotFather 创建 Bot 获取 Token；将 Bot 加入目标群组/频道或先向其发送消息以获取 Chat ID。通知在失败状态落库后发送，Telegram 不可用不影响任务结果。"
-    },
     "subtitle": "系统全局通知与管理员凭据配置",
     "load_failed": "加载系统设置失败",
     "saved_success": "设置已保存并生效",
@@ -89,33 +67,9 @@ export default {
     "dark": "暗黑模式",
     "system": "跟随系统"
   },
-  "layout": {
-    "defaultUser": "用户",
-    "logout": "退出登录",
-    "logoutSuccess": "退出登录成功",
-    "logoutFailed": "退出登录失败"
-  },
   "auth": {
-    "loginTitle": "登录",
-    "loginButton": "登录",
-    "setupTitle": "创建管理员账户",
-    "setupButton": "创建管理员",
     "username": "用户名",
     "password": "密码",
-    "confirmPassword": "确认密码",
-    "usernamePlaceholder": "请输入用户名",
-    "adminUsernamePlaceholder": "请输入管理员用户名",
-    "passwordPlaceholder": "请输入密码",
-    "confirmPlaceholder": "请再次输入密码",
-    "usernameRequired": "请输入用户名",
-    "passwordRequired": "请输入密码",
-    "passwordTooShort": "密码长度至少为 8 个字符",
-    "confirmationRequired": "请再次输入密码进行确认",
-    "passwordMismatch": "两次输入的密码不一致",
-    "loginSuccess": "登录成功",
-    "loginFailed": "登录失败",
-    "setupSuccess": "管理员账户创建成功",
-    "setupFailed": "初始化失败",
     "login": "登录",
     "login_button": "登录",
     "login_subtitle": "输入凭据以访问控制台",
@@ -160,7 +114,6 @@ export default {
     "allReposHealthy": "所有仓库状态正常",
     "reposError": "{{count}} 个仓库处于错误状态",
     "reposError_desc": "存在不可用的备份仓库，请在「存储」页查看失败原因并处理",
-    "loadFailed": "加载仪表盘数据失败，请确认服务端是否在运行。",
     "subtitle": "系统状态、Agent 与调度任务概览",
     "agents_active_desc": "当前正常上报状态的 Agent 数量",
     "runs_succeeded_desc": "过去 24 小时内成功执行的运行数",
@@ -181,7 +134,6 @@ export default {
     "renameDialog": {
       "title": "重命名 Agent",
       "message": "请输入新的 Agent 名称：",
-      "empty": "名称不能为空"
     },
     "loadFailed": "加载 Agent 列表失败，请确认服务端是否在运行。",
     "columns": {
@@ -204,7 +156,6 @@ export default {
       "token": "令牌",
       "takeoverHint": "此令牌专用于接管并恢复 Agent \"{{id}}\" 的原有仓库与计划。",
       "envConfig": "受管主机环境配置示例",
-      "clickToCopy": "点击复制",
       "copyButton": "复制令牌",
       "expiresAt": "过期时间",
       "generateFailed": "生成令牌失败",
@@ -220,28 +171,6 @@ export default {
     "restored": "Agent 已恢复",
     "restoreFailed": "恢复失败",
     "restoreDialog": {
-      "targetAgent": "目标 Agent",
-      "targetAgentPlaceholder": "选择执行恢复的 Agent",
-      "sourceAgentBadge": "来源",
-      "sourceOfflineHint": "来源 Agent 离线：将从服务端已验证的快照列表恢复，任务下发到所选在线 Agent。",
-      "credentialWarning": "仓库凭据（rclone 配置与 restic 密码）会传递给目标 Agent。",
-      "maintenanceTitle": "维护窗口要求",
-      "databaseMaintenance": "恢复期间必须隔离外部写入：目标数据库会先做保护备份，随后被完整替换，失败时自动回滚。",
-      "sqliteMaintenance": "SQLite 必须关闭目标数据库的全部连接（不仅是暂停写入）并让应用的 WAL 完成 checkpoint；无法建立独占维护条件时会拒绝执行。",
-      "sqlitePath": "目标 SQLite 路径",
-      "host": "主机",
-      "port": "端口",
-      "username": "用户名",
-      "database": "目标数据库",
-      "authSource": "认证库（authSource）",
-      "allNotAllowed": "整实例还原（all）不开放，请指定单个数据库。",
-      "targetPassword": "目标数据库密码",
-      "targetPasswordHint": "仅用于本次恢复，不落库到前端或配置中。",
-      "overwriteExisting": "覆盖已存在的目标（先做保护备份）",
-      "databaseRequired": "请填写目标数据库名称与连接信息。",
-      "portInvalid": "端口必须是 1-65535 的整数。",
-      "absolutePathRequired": "请输入绝对宿主机目标路径。",
-      "pathOutsideAllowedRoots": "目标路径必须位于所选 Agent 可恢复的宿主机目录内。",
       "title": "恢复 Agent",
       "confirm": "确定要恢复 Agent \"{{name}}\"（{{hostname}}）吗？恢复后该 Agent 可用原身份重新连接，原有仓库与计划继续有效。"
     },
@@ -259,14 +188,6 @@ export default {
     "pending": "等待中",
     "error": "错误",
     "unknown": "未知"
-  },
-  "placeholder": {
-    "storageTargets": "存储目标",
-    "backupPlans": "备份计划",
-    "runHistory": "运行历史",
-    "snapshotsRestore": "快照与恢复",
-    "underConstruction": "建设中",
-    "description": "该页面正在建设中，将在后续版本中提供。"
   },
   "plans": {
     "newPlan": "新建计划",
@@ -288,7 +209,6 @@ export default {
     "columns": {
       "kind": "类型",
       "schedule": "调度",
-      "timezone": "时区",
       "enabled": "启用",
       "repository": "仓库",
       "path": "备份路径",
@@ -296,18 +216,10 @@ export default {
       "timeout": "超时"
     },
     "deleted": "计划已删除",
-    "backupsDeleted": "计划的历史备份已删除",
-    "deleteBackupsDialog": {
-      "title": "删除历史备份",
-      "confirm": "该计划的历史备份将被永久删除。必须先删除历史备份，才能删除计划。是否继续？",
-      "required": "必须先删除该计划的历史备份，才能删除计划。"
-    },
     "created": "计划已创建",
-    "updated": "计划已更新",
     "saved": "计划已保存",
     "enabled": "计划已启用",
     "disabled": "计划已停用",
-    "validationFailed": "计划校验未通过",
     "deleteDialog": {
       "title": "删除计划",
       "confirm": "确定删除计划 \"{{name}}\" 吗？此操作不可撤销。",
@@ -337,12 +249,9 @@ export default {
       "paths": "备份路径",
       "pathsPlaceholder": "/绝对/路径",
       "availableHostPaths": "可备份的宿主机目录",
-      "pathMappingCompatibilityHint": "此 Agent 未配置目录映射，请使用绝对宿主机路径。",
       "excludes": "排除路径",
       "excludesPlaceholder": "/要排除的路径（支持 glob）",
       "oneFileSystem": "限定单一文件系统",
-      "yes": "是",
-      "no": "否",
       "databasePath": "数据库文件路径",
       "databasePathPlaceholder": "/绝对/路径/database.sqlite",
       "estimatedDumpSize": "预估导出大小",
@@ -378,7 +287,6 @@ export default {
       "timeoutRequired": "请输入超时时间",
       "timeoutRange": "超时必须在 60 到 21600 秒之间",
       "hostRequired": "请输入主机地址",
-      "portRequired": "请输入端口",
       "portRange": "端口必须在 1 到 65535 之间",
       "usernameRequired": "请输入用户名",
       "databaseRequired": "请输入数据库名，或填 'all'",
@@ -391,11 +299,9 @@ export default {
       "pathOutsideAllowedRoots": "路径必须位于可备份的宿主机目录内",
       "pathsOutsideAllowedRoots": "每个路径都必须位于可备份的宿主机目录内",
       "excludesOutsideAllowedRoots": "绝对排除路径必须位于可备份的宿主机目录内",
-      "greaterThanZero": "必须大于 0"
     },
     "subtitle": "定时与手动备份策略配置",
     "loadFailed": "加载备份计划失败",
-    "statusUpdated": "计划状态已更新",
     "statusUpdateFailed": "更新计划状态失败",
     "runDispatched": "已下发运行任务",
     "runFailed": "触发运行失败",
@@ -411,18 +317,11 @@ export default {
     },
     "importRcloneConfig": "导入 rclone 配置",
     "bindRepository": "绑定仓库",
-    "targetsLoadFailed": "加载存储目标失败。",
-    "reposLoadFailed": "加载仓库列表失败。",
     "emptyTargets": "暂无存储目标，请先导入 rclone 配置。",
     "emptyRepositories": "暂无仓库，请选择一个 Agent 和一个存储目标进行绑定。",
     "repositoryHelp": {
       "title": "仓库绑定说明",
       "description": "绑定会让 Agent 在所选网盘路径创建或接管一个独立的 Restic 仓库。首次绑定会先检查仓库，再执行初始化，可能需要几十秒；绑定成功不等于完整性检查，“上次完整性检查”会在完整 restic check 成功后记录。失败后可点击重试。解绑只隐藏 Server 记录，不删除网盘数据，后续可再次绑定接管。"
-    },
-    "repositoryStatus": {
-      "pending": "初始化中",
-      "ready": "就绪",
-      "error": "初始化失败"
     },
     "columns": {
       "type": "类型",
@@ -440,23 +339,13 @@ export default {
       "namePlaceholder": "例如：我的 Google Drive",
       "validationAgent": "校验 Agent",
       "validationAgentPlaceholder": "选择一个在线 Agent 校验配置",
-      "offlineSuffix": "{{name}}（{{hostname}}）— 离线",
-      "noAgents": "没有可用的 Agent，请确保至少有一个 Agent 已注册并在线。",
       "remoteName": "远端名称",
       "remoteNamePlaceholder": "例如：mydrive",
       "remotePath": "远端路径",
       "remotePathPlaceholder": "远端内的根路径（可选）",
       "lsdEntries": "lsd 条目数：",
-      "moreEntries": "... 以及另外 {{count}} 条",
-      "isDir": "是否目录",
-      "dir": "目录",
-      "file": "文件",
       "validateFirst": "先校验",
       "confirmImport": "确认导入",
-      "validateSucceeded": "校验成功",
-      "validateFailedCode": "校验失败（代码：{{code}}）",
-      "imported": "存储目标已导入",
-      "importFailedCode": "导入失败（代码：{{code}}）",
       "description": "粘贴 rclone.conf 配置文本以快速导入存储后端",
       "validationSuccess": "Rclone 配置校验通过",
       "validationFailed": "Rclone 配置格式无效",
@@ -466,19 +355,11 @@ export default {
     "editDialog": {
       "title": "编辑存储目标",
       "notice": "这里只修改显示名称。连接配置和远端路径保持不变；如需更换凭据，请导入新的存储目标。",
-      "name": "名称",
-      "namePlaceholder": "请输入存储目标名称",
-      "saved": "存储目标已更新",
-      "failedCode": "更新失败（代码：{{code}}）",
       "renamedSuccessfully": "存储目标重命名成功",
       "renameFailed": "重命名存储目标失败"
     },
     "deleteDialog": {
-      "title": "删除存储目标",
-      "confirm": "确定删除存储目标 \"{{name}}\" 吗？",
-      "deleted": "存储目标已删除",
       "conflict": "无法删除：该存储目标仍被一个或多个仓库引用",
-      "failedCode": "删除失败（代码：{{code}}）"
     },
     "bindDialog": {
       "agent": "Agent",
@@ -486,26 +367,18 @@ export default {
       "storageTarget": "存储目标",
       "selectTarget": "请选择存储目标",
       "boundSuccessfully": "仓库绑定成功",
-      "bound": "仓库已绑定",
-      "bindFailedCode": "绑定失败（代码：{{code}}）",
       "description": "为受管 Agent 绑定指定的存储目标仓库",
-      "bindButton": "确认绑定",
       "bindFailed": "绑定仓库失败"
     },
     "repositoryDialog": {
-      "unbindTitle": "解绑仓库记录",
-      "confirmUnbind": "确定解绑存储目标“{{name}}”的仓库记录吗？只会删除 Server 中的绑定，不会删除网盘上的备份数据。",
       "unbind": "解绑",
-      "unbound": "仓库记录已解绑，远端备份数据已保留",
       "conflict": "无法解绑：仓库仍被计划引用或有任务正在执行",
-      "unbindFailedCode": "解绑失败（代码：{{code}}）",
       "retried": "已重新发起仓库检查/初始化",
       "retryFailedCode": "重试失败（代码：{{code}}）",
       "unbindConfirmTitle": "确认解绑仓库",
       "unbindConfirmDesc": "解绑不会删除远端快照数据，但相关计划将无法访问该仓库。",
       "unboundSuccessfully": "仓库已成功解绑",
       "unbindFailed": "解绑仓库失败",
-      "retryDispatched": "重试任务已成功下发",
       "retryFailed": "重试任务下发失败"
     },
     "subtitle": "Rclone 存储目标与 Restic 备份仓库管理",
@@ -525,7 +398,6 @@ export default {
     "filters": {
       "plan": "计划",
       "allPlans": "全部计划",
-      "planIdPlaceholder": "全部计划",
       "agent": "Agent",
       "status": "状态",
       "operation": "操作类型"
@@ -549,16 +421,8 @@ export default {
       "agent": "Agent",
       "snapshot": "快照",
       "duration": "耗时",
-      "error": "错误"
     },
     "cancel": "取消",
-    "cancelDialog": {
-      "title": "取消运行",
-      "confirm": "确定要取消这次运行吗？",
-      "confirmButton": "取消运行",
-      "keepRunning": "继续运行"
-    },
-    "cancellationRequested": "已请求取消运行",
     "cancelFailed": "取消运行失败",
     "loadFailed": "加载运行记录失败",
     "subtitle": "备份、还原与仓库校验历史记录",
@@ -570,21 +434,13 @@ export default {
     "rowsPerPage": "每页条数：",
     "offset": "偏移量："
   },
-  "time": {
-    "hourShort": "时",
-    "minShort": "分",
-    "secShort": "秒"
-  },
   "runDetail": {
     "title": "运行详情",
     "labels": {
-      "status": "状态",
       "operation": "操作类型",
-      "plan": "计划",
       "agent": "Agent",
       "snapshot": "快照",
       "error": "错误",
-      "message": "消息"
     },
     "timeline": {
       "queued": "入队",
@@ -598,7 +454,6 @@ export default {
       "bytesDone": "已完成",
       "bytesTotal": "总大小",
       "files": "文件",
-      "elapsed": "已用时："
     },
     "phases": {
       "dry_run": "试运行",
@@ -614,15 +469,10 @@ export default {
       "title": "日志（{{count}}）",
       "autoScroll": "自动滚动",
       "loadMore": "加载更多",
-      "loading": "加载中...",
-      "streaming": "实时流式传输",
-      "connected": "已连接",
-      "offline": "离线",
       "sourceAgent": "Agent",
       "sourceServer": "Server",
       "source": "来源",
       "time": "时间",
-      "level": "级别",
       "message": "消息",
       "empty": "暂无日志输出"
     },
@@ -636,7 +486,6 @@ export default {
     "title": "进程日志",
     "server": "Server 日志",
     "agent": "Agent 日志",
-    "agentTitle": "{{name}} 的日志",
     "agentPlaceholder": "选择 Agent",
     "filters": {
       "level": "级别",
@@ -668,7 +517,6 @@ export default {
     "columns": {
       "id": "ID",
       "type": "类型",
-      "sourceSeq": "来源序号",
       "seq": "序号",
       "time": "时间",
       "level": "级别",
@@ -684,32 +532,21 @@ export default {
   },
   "snapshots": {
     "title": "快照",
-    "selectRepository": "选择仓库",
     "repositoryPlaceholder": "选择一个仓库以浏览快照",
-    "snapshotsCard": "快照列表",
-    "refresh": "强制刷新",
     "count": "条快照",
     "deletedPlan": "已删除计划",
     "unassignedPlan": "未归属计划",
     "unknownType": "未知类型",
     "viewDetails": "查看详情",
-    "snapshotInfo": "快照信息",
     "snapshotId": "快照 ID",
     "copySnapshotId": "复制快照 ID",
-    "extraTags": "额外标签",
     "viewRun": "查看运行记录",
     "noFilteredSnapshots": "当前筛选没有结果",
-    "filesystemRestoreOnly": "当前页面仅支持文件系统快照恢复",
     "cache": {
-      "hit": "已验证",
-      "miss": "已核验",
       "stale": "待验证",
       "verifying": "正在核验",
       "verified": "已验证",
       "verifiedAt": "验证时间：{{time}}",
-      "status": "{{status}}；验证时间：{{time}}",
-      "unknownTime": "未知",
-      "unverifiedWarning": "数据待后台核验，在此期间禁用删除与恢复操作",
       "deleteDisabled": "快照列表未被核验，暂时禁用删除",
       "restoreDisabled": "快照或目录树待核验，暂时禁用恢复",
       "retryLoad": "重试加载"
@@ -717,7 +554,6 @@ export default {
     "noSnapshots": "暂无快照",
     "emptyDirectory": "目录为空",
     "fileBrowser": "文件浏览",
-    "snapshotPrefix": "快照 {{id}}",
     "restoreThisSnapshot": "恢复此快照",
     "selectSnapshotHint": "选择一个快照以浏览其内容",
     "planFilter": {
@@ -727,13 +563,11 @@ export default {
       "unassigned": "未归属计划"
     },
     "delete": {
-      "action": "删除",
       "title": "删除快照",
       "message": "此快照将立即从列表中隐藏，并在后台回收空间。请输入完整快照 ID 以确认删除。",
       "targetId": "目标 ID：",
       "confirmHint": "请输入完整快照 ID 以确认删除：",
       "confirm": "删除快照",
-      "inputPlaceholder": "输入完整快照 ID",
       "inputMismatch": "请输入完整且匹配的快照 ID",
       "initiated": "快照删除任务已下发",
       "failed": "删除快照任务失败"
@@ -750,19 +584,11 @@ export default {
       "path": "路径"
     },
     "selectedItems": "已选包含项 ({{count}})",
-    "fileTypes": {
-      "dir": "目录",
-      "file": "文件"
-    },
     "restoreDialog": {
       "title": "恢复快照（文件系统）",
       "databaseTitle": "恢复快照（数据库）",
-      "snapshot": "快照",
       "targetPath": "宿主机目标路径",
-      "targetPathPlaceholder": "/backup-restore/job-1",
-      "targetPathHint": "要恢复到的宿主机绝对路径。",
       "availableHostPaths": "可恢复的宿主机目录：",
-      "pathMappingCompatibilityHint": "此 Agent 未报告恢复路径映射；为兼容裸机或旧 Agent，绝对路径将按原值使用。",
       "absolutePathRequired": "请输入绝对宿主机目标路径。",
       "pathOutsideAllowedRoots": "目标路径必须位于可恢复的宿主机目录内。",
       "overwriteMode": "覆盖模式",
@@ -770,16 +596,11 @@ export default {
       "never": "从不覆盖",
       "ifChanged": "有变化时覆盖",
       "always": "总是覆盖",
-      "includePaths": "包含路径",
-      "allEntries": "/（当前目录下所有条目）",
-      "includePathsHint": "选择要恢复的条目；留空则恢复快照下的全部内容。",
       "dryRunResult": "试运行结果",
       "add": "新增",
       "changed": "变更",
       "skipped": "跳过",
       "deleteStat": "删除",
-      "sampleChanges": "变更示例：",
-      "moreChanges": "... 以及另外 {{count}} 条",
       "dryRunButton": "试运行",
       "confirmExecute": "确认执行",
       "subtitle": "从所选备份快照执行恢复任务",
@@ -814,25 +635,15 @@ export default {
     },
     "messages": {
       "reposLoadFailed": "加载仓库列表失败。",
-      "loadSnapshotsFailedCode": "加载快照失败（代码：{{code}}）",
-      "loadTreeFailedCode": "加载目录树失败（代码：{{code}}）",
       "dryRunCompleted": "试运行完成",
-      "dryRunFailedCode": "试运行失败（代码：{{code}}）",
       "restoreInitiated": "恢复任务已启动，正在跳转到运行详情...",
-      "restoreFailedCode": "恢复失败（代码：{{code}}）",
-      "deleteQueued": "快照已从列表移除，后台正在回收空间",
-      "deleteRefreshRequired": "快照列表需要刷新后才能删除，正在刷新列表",
-      "deleteFailed": "删除快照失败",
       "snapshotsLoadFailed": "加载快照列表失败",
       "treeLoadFailed": "加载目录树失败",
       "dryRunFailed": "试运行恢复失败",
       "restoreFailed": "下发恢复任务失败",
-      "confirmationMismatch": "确认值必须与目标名称/完整路径完全一致。",
       "dryRunRequired": "请先完成试运行再执行恢复。"
     },
     "subtitle": "仓库快照浏览与数据恢复向导",
-    "selectRepoPrompt": "请先在上方选择一个仓库以查看快照列表",
-    "noSnapshotsDesc": "该仓库尚未生成任何备份快照"
   },
   "restore": {
     "phases": {

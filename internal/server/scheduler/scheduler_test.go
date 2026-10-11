@@ -28,6 +28,8 @@ type fakeStore struct {
 
 	// record of transitions
 	transitions []transitionCall
+	// sessionCleanups 记录 DeleteExpiredSessions 的调用次数与传入的 now。
+	sessionCleanups []time.Time
 }
 
 type transitionCall struct {
@@ -149,7 +151,12 @@ func (f *fakeStore) GetSession(_ context.Context, _ string) (*model.Session, err
 }
 func (f *fakeStore) TouchSession(_ context.Context, _ string, _ time.Time) error { return nil }
 func (f *fakeStore) DeleteSession(_ context.Context, _ string) error             { return nil }
-func (f *fakeStore) DeleteExpiredSessions(_ context.Context, _ time.Time) error  { return nil }
+func (f *fakeStore) DeleteExpiredSessions(_ context.Context, now time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionCleanups = append(f.sessionCleanups, now)
+	return nil
+}
 func (f *fakeStore) CreateEnrollmentToken(_ context.Context, _ *model.EnrollmentToken) error {
 	return nil
 }
@@ -992,5 +999,27 @@ func TestTickMaintenanceRetentionThrottleSurvivesDirectedDeletionTraffic(t *test
 	start.mu.Unlock()
 	if len(calls) != 0 {
 		t.Fatalf("定向删除流量不应让保留策略在一个节流窗口内重复执行，got %v", calls)
+	}
+}
+
+// 过期会话清理必须真的被调度：store.DeleteExpiredSessions 此前无任何生产调用者
+// （死代码），实测 sessions 表 3 天累积 319 行、过期行永不清除。
+func TestSessionCleanupRunsDaily(t *testing.T) {
+	st := newFakeStore(t)
+	s := New(st, newFakeStarter(), nil, 0)
+	base := time.Date(2026, 10, 12, 3, 0, 0, 0, time.UTC)
+
+	s.tickSessionCleanup(context.Background(), base)
+	s.tickSessionCleanup(context.Background(), base.Add(time.Hour)) // 节流窗口内，跳过
+	s.tickSessionCleanup(context.Background(), base.Add(25*time.Hour))
+
+	st.mu.Lock()
+	got := append([]time.Time(nil), st.sessionCleanups...)
+	st.mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("DeleteExpiredSessions 调用 %d 次，want 2（首次 + 24h 后）", len(got))
+	}
+	if !got[0].Equal(base) || !got[1].Equal(base.Add(25*time.Hour)) {
+		t.Fatalf("传入的 now 不对：%v", got)
 	}
 }

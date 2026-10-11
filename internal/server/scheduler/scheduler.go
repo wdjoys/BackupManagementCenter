@@ -59,6 +59,8 @@ type Scheduler struct {
 	historyRetentionDays int
 	// lastHistoryPrune 是上次历史剪枝的 unix 秒（0 表示从未跑过），用于每日节流。
 	lastHistoryPrune atomic.Int64
+	// lastSessionCleanup 是上次过期会话清理的 unix 秒（0 表示从未跑过），用于每日节流。
+	lastSessionCleanup atomic.Int64
 
 	// test knobs
 	tickFn func(time.Duration) *time.Ticker
@@ -135,6 +137,23 @@ func (s *Scheduler) runTick(ctx context.Context, now time.Time) {
 	s.tickMaintenance(ctx, now)
 	s.tickSnapshotCleanup(ctx, now)
 	s.tickHistoryPrune(ctx, now)
+	s.tickSessionCleanup(ctx, now)
+}
+
+// tickSessionCleanup 每日删除一次过期会话。store.DeleteExpiredSessions 此前没有任何
+// 生产调用者（纯死代码）：实测 sessions 表 3 天累积 319 行，过期行永不清除。
+// 与历史剪枝不同，这里没有开关——过期会话没有任何保留价值，且清理由 TTL 决定。
+func (s *Scheduler) tickSessionCleanup(ctx context.Context, now time.Time) {
+	last := s.lastSessionCleanup.Load()
+	if last != 0 && now.Sub(time.Unix(last, 0)) < 24*time.Hour {
+		return
+	}
+	if !s.lastSessionCleanup.CompareAndSwap(last, now.Unix()) {
+		return
+	}
+	if err := s.store.DeleteExpiredSessions(ctx, now); err != nil {
+		slog.Error("scheduler: DeleteExpiredSessions", "error", err)
+	}
 }
 
 // tickHistoryPrune 每日一次清理超出保留窗口的运行历史（runs/日志/审计事件）。

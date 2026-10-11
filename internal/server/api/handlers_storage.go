@@ -513,7 +513,8 @@ func (s *Server) jobsErr(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, jobs.ErrUnsafeDatabaseRestore) {
-		writeErr(w, http.StatusUnprocessableEntity, model.ErrAgentUpgradeRequired, "target agent does not support pre-restore backup and rollback; upgrade it first")
+		writeErr(w, http.StatusUnprocessableEntity, model.ErrAgentUpgradeRequired,
+			"target agent does not support pre-restore backup and rollback; upgrade it first: "+err.Error())
 		return
 	}
 	if errors.Is(err, jobs.ErrSnapshotRefreshRequired) {

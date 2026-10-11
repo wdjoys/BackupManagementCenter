@@ -824,7 +824,7 @@ func testAgent() *model.Agent {
 		Hostname:   "srv-1",
 		OS:         "linux",
 		Arch:       "amd64",
-		Version:    "0.1.0",
+		Version:    "0.1.1+test",
 		Status:     model.AgentOnline,
 		EnrolledAt: time.Now().UTC(),
 		Capabilities: []model.ToolInfo{

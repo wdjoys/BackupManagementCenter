@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	posixpath "path"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"backupmanagementcenter/internal/secrets"
 	"backupmanagementcenter/internal/server/events"
 	"backupmanagementcenter/internal/server/store"
+	"backupmanagementcenter/internal/version"
 )
 
 const snapshotBrowseWait = 2 * time.Minute
@@ -1439,7 +1441,7 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		return nil, nil, err
 	}
 	if isDatabaseKind(in.RestoreKind) {
-		if err := o.requireSafeDatabaseRestore(targetAgentID); err != nil {
+		if err := o.requireSafeDatabaseRestore(*targetAgent); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -1577,19 +1579,31 @@ func isDatabaseKind(kind string) bool {
 	}
 }
 
-// requireSafeDatabaseRestore 校验目标 Agent 当前连接已上报安全的数据库恢复能力。
-func (o *Orchestrator) requireSafeDatabaseRestore(agentID string) error {
+// minSafeDatabaseRestoreVersion 是首个可信上报 safe_database_restore 的构建版本。
+// 0.1.0 是 2026-09-29 遗留构建的版本号（当时版本恒定、无法区分构建），实测该批
+// 构建误报 safe_database_restore=true，服务端据此下发了破坏性数据库恢复，执行后
+// 才失败。自本版起构建版本带构建标识（Makefile / Dockerfile 注入 VERSION），可辨识。
+const minSafeDatabaseRestoreVersion = "0.1.1"
+
+// requireSafeDatabaseRestore 校验目标 Agent 当前连接已上报安全的数据库恢复能力，
+// 且其构建版本不低于 minSafeDatabaseRestoreVersion：自述 flag 不能单独作为授权依据
+// （旧构建会误报），版本无法解析或低于下限一律拒绝。
+func (o *Orchestrator) requireSafeDatabaseRestore(agent model.Agent) error {
 	if o.AgentCaps == nil {
 		return ErrCapabilitiesPending
 	}
 	caps := o.AgentCaps
-	ready, safe, connected := caps.ConnectionCapabilities(agentID)
+	ready, safe, connected := caps.ConnectionCapabilities(agent.ID)
 	if !connected || !ready {
 		return ErrCapabilitiesPending
 	}
 	if !safe {
 		return ErrUnsafeDatabaseRestore
 	}
+	if !version.AtLeast(agent.Version, minSafeDatabaseRestoreVersion) {
+		return fmt.Errorf("%w (agent version %q < %s)", ErrUnsafeDatabaseRestore, agent.Version, minSafeDatabaseRestoreVersion)
+	}
+	log.Printf("[WARN] authorizing destructive database restore on agent-reported capability agent=%s version=%s", agent.ID, agent.Version)
 	return nil
 }
 

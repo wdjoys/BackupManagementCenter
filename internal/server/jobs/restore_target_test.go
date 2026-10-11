@@ -198,6 +198,29 @@ func TestStartRestoreRequiresSafeDatabaseRestoreCapability(t *testing.T) {
 	}
 }
 
+// 自述 safe_database_restore=true 不能单独授权破坏性恢复：低于最低可信版本的构建
+// （2026-09-29 那批恒定 0.1.0）实测会误报该 flag，必须按版本下限拒绝。
+func TestStartRestoreRejectsAgentBelowMinSafeVersion(t *testing.T) {
+	st, disp, o, repo := newRestoreEnv(t)
+	ctx := context.Background()
+	allowRestore(st, disp, o, repo, restoreSnapshot("snap-1", model.KindPostgreSQL))
+
+	st.agents["agent-1"].Version = "0.1.0"
+
+	if _, _, err := o.StartRestore(ctx, "admin-1", dbRestoreInput(repo.ID, "app")); !errors.Is(err, ErrUnsafeDatabaseRestore) {
+		t.Fatalf("expected ErrUnsafeDatabaseRestore for a pre-%s agent, got %v", minSafeDatabaseRestoreVersion, err)
+	}
+	if len(disp.Enqueued()) != 0 {
+		t.Fatalf("no run may be enqueued for a too-old agent, got %v", disp.Enqueued())
+	}
+
+	// 无法解析的版本同样不能证明达标（fail-closed）。
+	st.agents["agent-1"].Version = "unknown-build"
+	if _, _, err := o.StartRestore(ctx, "admin-1", dbRestoreInput(repo.ID, "app")); !errors.Is(err, ErrUnsafeDatabaseRestore) {
+		t.Fatalf("expected ErrUnsafeDatabaseRestore for an unparseable version, got %v", err)
+	}
+}
+
 // 文件恢复必须用已验证目录缓存校验包含路径层级。
 func TestStartRestoreValidatesIncludePathsAgainstVerifiedTree(t *testing.T) {
 	st, disp, o, repo := newRestoreEnv(t)

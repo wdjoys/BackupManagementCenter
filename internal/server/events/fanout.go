@@ -32,12 +32,18 @@ func (f *fanout) Subscribe(runID string) (<-chan Event, func()) {
 
 func (f *fanout) remove(runID string, sub *subscriber) {
 	sub.mu.Lock()
-	defer sub.mu.Unlock()
 	if sub.off {
+		sub.mu.Unlock()
 		return
 	}
 	sub.off = true
 	close(sub.ch)
+	sub.mu.Unlock()
+	f.detach(runID, sub)
+}
+
+// detach drops an already-closed subscriber from the run's subscriber set.
+func (f *fanout) detach(runID string, sub *subscriber) {
 	f.mu.Lock()
 	delete(f.subs[runID], sub)
 	if len(f.subs[runID]) == 0 {
@@ -54,17 +60,23 @@ func (f *fanout) Publish(runID string, ev Event) {
 	}
 	f.mu.Unlock()
 	for _, s := range subs {
+		// Send and close both hold sub.mu: a send must never race with the close
+		// performed by remove() (the WS handler's cancel on disconnect), or the
+		// producer panics with "send on closed channel" and takes down the server.
 		s.mu.Lock()
-		off := s.off
-		s.mu.Unlock()
-		if off {
+		if s.off {
+			s.mu.Unlock()
 			continue
 		}
 		select {
 		case s.ch <- ev:
+			s.mu.Unlock()
 		default:
 			// Slow consumer: drop it rather than block the agent stream.
-			go f.remove(runID, s)
+			s.off = true
+			close(s.ch)
+			s.mu.Unlock()
+			f.detach(runID, s)
 		}
 	}
 }

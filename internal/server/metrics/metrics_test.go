@@ -53,6 +53,32 @@ func TestRepoCheckAndReconnectsAreExported(t *testing.T) {
 	}
 }
 
+// 派发队列深度此前只在手动触发运行时被写入恒 0 的占位值，导出与实际队列无关。
+// 改为抓取时回调后，值必须随真实队列变化。
+func TestQueueDepthGaugeIsComputedAtScrapeTime(t *testing.T) {
+	m := New()
+	depth := 0
+	m.SetQueueDepthFunc(func() float64 { return float64(depth) })
+
+	read := func() string {
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		for _, line := range strings.Split(rec.Body.String(), "\n") {
+			if strings.HasPrefix(line, "bmc_dispatch_queue_depth ") {
+				return strings.TrimSpace(strings.TrimPrefix(line, "bmc_dispatch_queue_depth "))
+			}
+		}
+		return ""
+	}
+	if got := read(); got != "0" {
+		t.Fatalf("initial bmc_dispatch_queue_depth = %q, want 0", got)
+	}
+	depth = 3
+	if got := read(); got != "3" {
+		t.Fatalf("after change bmc_dispatch_queue_depth = %q, want 3 (must be computed at scrape time)", got)
+	}
+}
+
 func grep(body, prefix string) string {
 	var out []string
 	for _, l := range strings.Split(body, "\n") {

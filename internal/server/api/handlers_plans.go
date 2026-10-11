@@ -550,11 +550,8 @@ func (s *Server) handleRunPlan(w http.ResponseWriter, r *http.Request) {
 		s.jobsErr(w, err)
 		return
 	}
-	s.Met.SetQueueDepth(queueDepthHint(r))
 	writeJSON(w, http.StatusAccepted, runView(run))
 }
-
-func queueDepthHint(_ *http.Request) int { return 0 } // real gauge set by dispatcher
 
 var _ = store.ErrNotFound
 var _ = strings.Contains

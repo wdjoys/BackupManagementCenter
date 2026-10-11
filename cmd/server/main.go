@@ -169,6 +169,9 @@ func main() {
 	disp.Src = orch
 	disp.Bus = bus
 	orch.Disp = disp // break constructor cycle: dispatcher needs orchestrator as CommandSource
+	// 派发队列深度在抓取时由 dispatcher 现算：此前该 Gauge 只在 POST /plans/{id}/run
+	// 里被写入一个恒为 0 的占位值（queueDepthHint），真实队列深度从未被反映。
+	met.SetQueueDepthFunc(func() float64 { return float64(disp.QueueDepth()) })
 	// 恢复的前置授权读取 Agent 当前连接的能力（不是持久化的展示快照）。
 	orch.AgentCaps = reg
 	disp.StartWatchdog()

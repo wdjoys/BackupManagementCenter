@@ -13,7 +13,6 @@ import (
 type Metrics struct {
 	runsTotal      *prometheus.CounterVec
 	runDuration    *prometheus.HistogramVec
-	queueDepth     prometheus.Gauge
 	repoLastCheck  *prometheus.GaugeVec
 	grpcReconnects prometheus.Counter
 	registry       *prometheus.Registry
@@ -30,9 +29,6 @@ func New() *Metrics {
 			Help:    "Wall-clock duration of terminal runs.",
 			Buckets: []float64{1, 5, 15, 30, 60, 300, 900, 3600, 14400},
 		}, []string{"operation", "status"}),
-		queueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "bmc_dispatch_queue_depth", Help: "Runs waiting for dispatch.",
-		}),
 		repoLastCheck: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "bmc_repository_last_check_timestamp", Help: "Last successful restic check per repository (unix seconds).",
 		}, []string{"repository_id"}),
@@ -41,7 +37,7 @@ func New() *Metrics {
 		}),
 		registry: reg,
 	}
-	reg.MustRegister(m.runsTotal, m.runDuration, m.queueDepth, m.repoLastCheck, m.grpcReconnects)
+	reg.MustRegister(m.runsTotal, m.runDuration, m.repoLastCheck, m.grpcReconnects)
 	return m
 }
 
@@ -61,8 +57,18 @@ func (m *Metrics) SetAgentsOnlineFunc(fn func() float64) {
 		Name: "bmc_agents_online", Help: "Agents with a live control stream.",
 	}, fn))
 }
-func (m *Metrics) SetQueueDepth(n int) { m.queueDepth.Set(float64(n)) }
-func (m *Metrics) IncReconnects()      { m.grpcReconnects.Inc() }
+// SetQueueDepthFunc 用回调在抓取时计算派发队列深度。此前 bmc_dispatch_queue_depth 只在
+// 手动触发运行时被写入 queueDepthHint() 的恒 0 占位值，与真实队列无关，导出恒为 0。
+func (m *Metrics) SetQueueDepthFunc(fn func() float64) {
+	if fn == nil {
+		return
+	}
+	m.registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "bmc_dispatch_queue_depth", Help: "Runs waiting for dispatch.",
+	}, fn))
+}
+
+func (m *Metrics) IncReconnects() { m.grpcReconnects.Inc() }
 func (m *Metrics) SetRepoCheck(id string, t time.Time) {
 	m.repoLastCheck.WithLabelValues(id).Set(float64(t.Unix()))
 }

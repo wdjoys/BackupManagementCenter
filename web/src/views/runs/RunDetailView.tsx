@@ -423,7 +423,10 @@ export const RunDetailView: React.FC = () => {
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[11px] text-muted-foreground">{t('runDetail.progress.phase')}</span>
               <StatusBadge tone={RESTORE_PHASE_TONES[restoreRequest.phase] ?? 'secondary'}>
-                {t(`restore.phases.${restoreRequest.phase}`, { defaultValue: restoreRequest.phase })}
+                {/* 恢复相位（如 running）可能只在 runDetail.phases 里有译文，必须跨命名
+                    空间回退；此前直接拼 restore.phases.<phase> 查键且无回退，zh 下渲染
+                    未本地化的英文枚举原值（显示为「阶段：running」）。 */}
+                {translateEnum('restore.phases', restoreRequest.phase, 'runDetail.phases')}
               </StatusBadge>
               {restoreRequest.rollback_snapshot_id && (
                 <span className="text-[11px] text-muted-foreground font-mono">

@@ -838,6 +838,7 @@ export default {
   "restore": {
     "phases": {
       "queued": "Queued",
+      "running": "Running",
       "pre_backup": "Protection backup",
       "restoring": "Restoring",
       "rolling_back": "Rolling back",

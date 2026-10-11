@@ -838,6 +838,7 @@ export default {
   "restore": {
     "phases": {
       "queued": "已排队",
+      "running": "运行中",
       "pre_backup": "预备份中",
       "restoring": "恢复中",
       "rolling_back": "回滚中",

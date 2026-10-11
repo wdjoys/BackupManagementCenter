@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent } from '@/components/ui/card'
@@ -76,6 +76,9 @@ export const PlansView: React.FC = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // 过滤/刷新会连续触发多次请求，先发的慢响应不得覆盖后发的快响应。
+  const plansReqRef = useRef(0)
+
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -88,16 +91,22 @@ export const PlansView: React.FC = () => {
   const [planToDelete, setPlanToDelete] = useState<Plan | null>(null)
 
   const loadPlans = async (agentId?: string) => {
+    const reqId = ++plansReqRef.current
     setLoading(true)
     setError(null)
     try {
       const selectedAgent = agentId === 'all' || !agentId ? undefined : agentId
       const data = await apiGet<Plan[]>('/plans', { agent_id: selectedAgent })
+      // 慢响应晚到（例如先切到 Agent A、再切到 Agent B）时丢弃，避免旧列表覆盖新筛选结果。
+      if (reqId !== plansReqRef.current) return
       setPlans(data)
     } catch (err: unknown) {
+      if (reqId !== plansReqRef.current) return
       setError(isApiClientError(err) ? err.message : t('plans.loadFailed'))
     } finally {
-      setLoading(false)
+      if (reqId === plansReqRef.current) {
+        setLoading(false)
+      }
     }
   }
 

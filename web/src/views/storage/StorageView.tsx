@@ -133,7 +133,7 @@ export const StorageView: React.FC = () => {
     setValidateResult(null)
     try {
       const res = await apiPost<StorageTargetValidateResponse>('/storage-targets/validate', {
-        agent_id: importForm.validate_agent_id,
+        validate_agent_id: importForm.validate_agent_id,
         rclone_conf: importForm.rclone_conf,
         remote_name: importForm.remote_name,
         remote_path: importForm.remote_path,

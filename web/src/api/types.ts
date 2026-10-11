@@ -293,7 +293,8 @@ export interface StorageTargetValidateRequest {
 
 export interface StorageTargetValidateResponse {
   remote_type: string
-  lsd_entries: Array<{ name: string; is_dir: boolean }>
+  /** rclone lsd 的条目数；服务端只回传计数，不回传条目明细。 */
+  entries: number
 }
 
 export interface CreatePlanRequest {

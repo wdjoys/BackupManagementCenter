@@ -24,7 +24,6 @@ import type { StorageTarget, Repository, Agent, StorageTargetValidateResponse } 
 import {
   Search,
   Loader2,
-  FileCode,
   CheckCircle2,
   X,
   Save,
@@ -225,27 +224,9 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
                 </AlertTitle>
                 <AlertDescription className="text-xs mt-1">
                   <span>
-                    {t('storage.importDialog.lsdEntries')}:{' '}
-                    <strong>{validateResult.lsd_entries.length}</strong>
+                    {t('storage.importDialog.lsdEntries')}{' '}
+                    <strong>{validateResult.entries}</strong>
                   </span>
-                  {validateResult.lsd_entries.length > 0 && (
-                    <div className="mt-2 max-h-36 overflow-y-auto rounded border border-border/60 bg-background/50 p-2 font-mono text-[11px]">
-                      {validateResult.lsd_entries.slice(0, 10).map((entry, idx) => (
-                        <div key={idx} className="flex items-center gap-1.5 text-muted-foreground py-0.5">
-                          <FileCode className="h-3 w-3" aria-hidden="true" />
-                          <span>{entry.name}</span>
-                          <span className="text-[11px] text-muted-foreground/75">
-                            ({entry.is_dir ? 'dir' : 'file'})
-                          </span>
-                        </div>
-                      ))}
-                      {validateResult.lsd_entries.length > 10 && (
-                        <span className="text-[11px] text-muted-foreground italic">
-                          ... and {validateResult.lsd_entries.length - 10} more
-                        </span>
-                      )}
-                    </div>
-                  )}
                 </AlertDescription>
               </Alert>
             )}

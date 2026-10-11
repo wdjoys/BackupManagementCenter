@@ -358,14 +358,13 @@ export default {
       "databasePlaceholder": "单个数据库名或 'all'",
       "extraArgs": "额外参数",
       "extraArgsPlaceholder": "--arg",
-      "extraArgsHint": "常用选项（MySQL）：--tables= 指定表、--ignore-table= 排除表、--skip-triggers/--skip-events/--skip-routines 显式跳过对应对象。其余选项由服务端校验。",
-      "captureOplog": "捕获 oplog",
+      "extraArgsHintMySQL": "常用选项（MySQL/MariaDB）：--tables= 指定表、--ignore-table= 排除表、--skip-triggers/--skip-events/--skip-routines 显式跳过对应对象。其余选项由服务端校验。",
+      "extraArgsHintPostgreSQL": "常用选项（PostgreSQL）：--no-owner 不还原属主、--no-acl/--no-privileges 不还原权限、--no-comments 不还原注释、--inserts 改用 INSERT 语句。其余选项由服务端校验。",
+      "extraArgsHintMongoDB": "MongoDB 不支持额外参数：服务端会拒绝任何取值；如需缩小范围请把计划改为单库。",
       "authSource": "认证库（authSource）",
       "authSourceHint": "MongoDB 用户所在的认证库，默认 admin。",
-      "captureOplogRequiresAll": "捕获 oplog 需要整实例备份：数据库必须填 all",
       "description": "配置备份源、存储目标与周期调度规则",
       "oneFileSystemHint": "文件系统备份每次仅支持指定一个有效目标路径",
-      "captureOplogHint": "建议生产环境开启 oplog 增量捕获",
       "validationFailed": "计划校验未通过"
     },
     "rules": {

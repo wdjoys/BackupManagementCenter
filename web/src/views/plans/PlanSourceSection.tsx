@@ -241,7 +241,15 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
               placeholder={t('plans.form.extraArgsPlaceholder')}
               disabled={submitting}
             />
-            <p className="text-[11px] text-muted-foreground">{t('plans.form.extraArgsHint')}</p>
+            <p className="text-[11px] text-muted-foreground">
+              {t(
+                kind === 'mongodb'
+                  ? 'plans.form.extraArgsHintMongoDB'
+                  : kind === 'postgresql'
+                    ? 'plans.form.extraArgsHintPostgreSQL'
+                    : 'plans.form.extraArgsHintMySQL',
+              )}
+            </p>
           </div>
 
           {kind === 'mongodb' && (

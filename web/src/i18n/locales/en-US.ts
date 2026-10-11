@@ -358,14 +358,13 @@ export default {
       "databasePlaceholder": "Single database or 'all'",
       "extraArgs": "Extra args",
       "extraArgsPlaceholder": "--arg",
-      "extraArgsHint": "Common options (MySQL): --tables= to select tables, --ignore-table= to exclude tables, --skip-triggers/--skip-events/--skip-routines to explicitly skip those objects. Other options are validated by the server.",
-      "captureOplog": "Capture oplog",
+      "extraArgsHintMySQL": "Common options (MySQL/MariaDB): --tables= to select tables, --ignore-table= to exclude tables, --skip-triggers/--skip-events/--skip-routines to explicitly skip those objects. Other options are validated by the server.",
+      "extraArgsHintPostgreSQL": "Common options (PostgreSQL): --no-owner to skip ownership, --no-acl/--no-privileges to skip grants, --no-comments to skip comments, --inserts to emit INSERT statements. Other options are validated by the server.",
+      "extraArgsHintMongoDB": "MongoDB accepts no extra args: the server rejects every value. Narrow the plan to a single database instead.",
       "authSource": "Auth database (authSource)",
       "authSourceHint": "Database that holds the MongoDB user; defaults to admin.",
-      "captureOplogRequiresAll": "capture_oplog requires a full instance dump: database must be \"all\"",
       "description": "Configure backup sources, destinations, and cron rules",
       "oneFileSystemHint": "File system backups currently accept one valid target path",
-      "captureOplogHint": "Recommended for point-in-time recovery on MongoDB",
       "validationFailed": "Plan validation failed"
     },
     "rules": {

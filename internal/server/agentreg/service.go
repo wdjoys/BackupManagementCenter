@@ -776,7 +776,14 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 			// 收敛回终态，否则留下"cancelled 但仓库里已有该次运行的快照、snapshot_id
 			// 为空"的不一致（终态与仓库内容矛盾）。
 			if toStatus == model.RunSucceeded {
-				err = s.reconcileCancelledSuccess(ctx, runID, snapshotID, string(resultJSON))
+				var reconciled bool
+				reconciled, err = s.reconcileCancelledSuccess(ctx, runID, snapshotID, string(resultJSON))
+				if !reconciled {
+					// 运行已被其它路径终结（重复结果）或本就不需要修正：保持
+					// ErrInvalidTransition，走下面的幂等返回，不进入终态副作用
+					// （重复结果不得重复预热快照缓存/重复推送终态事件）。
+					err = store.ErrInvalidTransition
+				}
 			}
 		}
 
@@ -883,24 +890,25 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 // 提交后才返回成功：此时保留 cancelled 会留下"cancelled 但快照已产生、snapshot_id
 // 为空"的终态与仓库内容不一致。是否改写由 store 的 SQL 守卫决定（仅当前状态仍为
 // cancelled 才改写），因此这里不依赖 handleRunResult 开头读到的（可能已过期的）
-// 状态。返回 nil 表示无需修正或已修正。
-func (s *Service) reconcileCancelledSuccess(ctx context.Context, runID, snapshotID, resultJSON string) error {
+// 状态。返回 reconciled=false 表示无需修正（运行不是 cancelled，例如重复结果），
+// 调用方据此保持幂等返回，不进入终态副作用。
+func (s *Service) reconcileCancelledSuccess(ctx context.Context, runID, snapshotID, resultJSON string) (bool, error) {
 	rs, ok := s.store.(interface {
 		ReconcileCancelledRunSuccess(context.Context, string, string, string) error
 	})
 	if !ok {
-		return nil
+		return false, nil
 	}
 	err := rs.ReconcileCancelledRunSuccess(ctx, runID, snapshotID, resultJSON)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidTransition) {
-			return nil // 运行不是 cancelled（已被其它路径终结），无需修正
+			return false, nil // 运行不是 cancelled（已被其它路径终结），无需修正
 		}
-		return err
+		return false, err
 	}
 	log.Printf("[INFO] run %s was cancelled before the agent confirmed, but the agent reported success; reconciled to succeeded (snapshot=%s)", runID, snapshotID)
 	s.appendServerRunLog(ctx, runID, "warn", "取消未生效：Agent 在取消送达前已完成本次运行，已按成功记录（快照 "+snapshotID+"）")
-	return nil
+	return true, nil
 }
 
 // restoreResultOutcome 从 Agent 结果里提取安全的恢复结论：phase、保护快照 ID 与

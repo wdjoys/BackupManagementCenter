@@ -314,11 +314,14 @@ type mysqlReadScope struct {
 	tables  map[string][]string // 仅有表级 SELECT 的表（key 为库名）
 
 	// 对象类型权限：缺 TRIGGER 时 mysqldump 会静默丢弃触发器（实测），
-	// 缺 EVENT 时在 SHOW EVENTS 处响亮失败（1044）。
+	// 缺 EVENT 时在 SHOW EVENTS 处响亮失败（1044），缺 SHOW VIEW 时无法导出视图
+	// （SHOW CREATE VIEW 被拒，或视图对账号不可见而被静默跳过）。
 	triggerGlobal  bool
 	triggerSchemas map[string]bool
 	eventGlobal    bool
 	eventSchemas   map[string]bool
+	viewGlobal     bool
+	viewSchemas    map[string]bool
 	// 例程可见性：information_schema.ROUTINES 只对拥有全局 SHOW_ROUTINE
 	// （MySQL 8.0.20+）或全局 SELECT 的账号完整可见，否则例程被静默过滤。
 	showRoutineGlobal bool
@@ -374,8 +377,67 @@ func checkMySQLReadScope(ctx context.Context, exec Executor, client, cnfFile, us
 		if err := mysqlCheckTableScope(scope, username, database); err != nil {
 			return err
 		}
+		if database != "all" {
+			if err := mysqlCheckViewScope(ctx, exec, client, cnfFile, scope, username, database, logf); err != nil {
+				return err
+			}
+		}
 	}
 	return mysqlCheckObjectPrivileges(scope, username, database, extraArgs, logf)
+}
+
+// mysqlViewCount 返回目标库中账号可见的视图数量。ok=false 表示查询失败或结果无法解析
+// （此时无法证明库中是否有视图）。
+func mysqlViewCount(ctx context.Context, exec Executor, client, cnfFile, database string) (int, bool) {
+	query := "SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA = '" +
+		strings.ReplaceAll(database, "'", "''") + "'"
+	var out string
+	exit, err := exec.Run(ctx, Cmd{Exe: client, Args: []string{
+		"--defaults-extra-file=" + cnfFile, "-N", "-s", "-e", query,
+	}}, func(line string) {
+		out = strings.TrimSpace(line)
+	}, nil)
+	if err != nil || exit != 0 {
+		return 0, false
+	}
+	n, parseErr := strconv.Atoi(out)
+	if parseErr != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// mysqlCheckViewScope 在导出前证明账号能导出目标库的视图。
+//
+// mysqldump 没有 --skip-views 开关，缺 SHOW VIEW 时无法 SHOW CREATE VIEW（实测
+// MySQL 5.7/8.0 与 MariaDB 10.6 都在此处响亮失败 rc=2；视图对账号不可见时更会被
+// 静默跳过），而 mysqldump 的报错只写作 "Couldn't execute 'show create table'"。
+// 这里在导出前判定「库中确有视图 + 账号缺 SHOW VIEW」，给出精确的授权建议与降级
+// 通道（--ignore-table 显式排除）。
+//
+// 只按能证实的拒绝：视图数为 0 时不拦（无视图可丢），无法枚举时只告警——与例程
+// 可见性同一取舍，避免误伤不含视图的库。
+func mysqlCheckViewScope(ctx context.Context, exec Executor, client, cnfFile string, scope mysqlReadScope, username, database string, logf func(level, msg string)) error {
+	if scope.viewGlobal || scope.viewSchemas[database] {
+		return nil
+	}
+	count, ok := mysqlViewCount(ctx, exec, client, cnfFile, database)
+	if !ok {
+		if logf != nil {
+			logf("warn", fmt.Sprintf("无法确认库 %q 中是否有视图（缺 SHOW VIEW 时 information_schema.VIEWS 可能不可读）；"+
+				"若该库含视图，本次 dump 会缺失它们，请执行 GRANT SHOW VIEW ON `%s`.* TO %q;",
+				database, strings.ReplaceAll(database, "`", "``"), username))
+		}
+		return nil
+	}
+	if count == 0 {
+		return nil
+	}
+	return fmt.Errorf("mysql 导出被拒绝：账号 %q 在库 %q 上没有 SHOW VIEW 权限，库中有 %d 个视图，"+
+		"mysqldump 无法导出它们（SHOW CREATE VIEW 被拒绝，或视图对账号不可见而被静默跳过），备份将缺失视图；"+
+		"请执行 GRANT SHOW VIEW ON `%s`.* TO %q; 后重试，"+
+		"或在该计划 extra_args 中加入 \"--ignore-table=%s.<视图名>\" 显式声明本次不含该视图",
+		username, database, count, strings.ReplaceAll(database, "`", "``"), username, database)
 }
 
 // mysqlCheckTableScope 判定账号能否读到目标库（或整实例）的全部表。
@@ -468,6 +530,18 @@ func mysqlExplicitTableSelection(extraArgs []string) bool {
 	return false
 }
 
+// mysqlScopeArgs 返回 extra_args 里限定本次表范围的参数（--tables=/--ignore-table=），
+// 用于在日志里说明本次 dump 按用户意图排除了哪些对象（视图没有 --skip-views 开关）。
+func mysqlScopeArgs(extraArgs []string) []string {
+	var out []string
+	for _, a := range extraArgs {
+		if strings.HasPrefix(a, "--tables=") || strings.HasPrefix(a, "--ignore-table=") {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // mysqlTableSelection 把 BMC 暴露的 --tables=表名,表名 拆成 mysqldump 需要的位置参数。
 //
 // mysqldump 的 --tables 是布尔开关（传值直接失败：option '--tables' cannot take an
@@ -490,7 +564,7 @@ func mysqlTableSelection(extraArgs []string) (rest, tables []string) {
 	return rest, tables
 }
 
-// mysqlCheckObjectPrivileges 判定本次启用的触发器/例程/事件是否会因权限不足而
+// mysqlCheckObjectPrivileges 判定本次启用的触发器/例程/事件/视图是否会因权限不足而
 // 静默缺失（或失败）：能证实的直接拒绝，无法证实的给出告警。
 //
 // 实测（MySQL 8.0.46）：账号只有库级 SELECT+EVENT（无 TRIGGER）时，mysqldump
@@ -499,6 +573,10 @@ func mysqlTableSelection(extraArgs []string) (rest, tables []string) {
 // 消失，与「部分表 SELECT 静默漏表」同类，因此导出前直接拒绝。缺 EVENT 时
 // SHOW EVENTS 是响亮失败（1044），提前拒绝只是把 "Access denied ... to database"
 // 这种误导措辞换成精确的授权建议。
+//
+// 视图同理：mysqldump 没有 --skip-views 开关，缺 SHOW VIEW 时视图无法导出
+// （SHOW CREATE VIEW 被拒；视图对账号不可见时更会被静默跳过），单库备份因此直接
+// 拒绝并给出确切 GRANT；整实例（database="all"）无法枚举各库授权，只告警。
 //
 // 例程（information_schema.ROUTINES）缺可见权限时同样静默丢弃（实测 --routines 下
 // 存储过程/函数计数为 0，mysqldump 仍 rc=0），但"库中是否存在例程"在无权限时**无法
@@ -525,6 +603,12 @@ func mysqlCheckObjectPrivileges(scope mysqlReadScope, username, database string,
 			log("info", fmt.Sprintf("本次导出按 extra_args 显式跳过%s（%s），dump 不含%s", skip.name, skip.flag, skip.name))
 		}
 	}
+	// 视图没有对应的 --skip-views 开关：声明"本次不含视图"的唯一方式是显式限定表范围
+	// （--tables= 只导出列出的表，--ignore-table= 排除指定对象）。显式限定即按用户
+	// 意图放行，但要留下说明，避免"日志里看不出本次 dump 少了什么"。
+	if explicit := mysqlScopeArgs(extraArgs); len(explicit) > 0 {
+		log("info", fmt.Sprintf("本次导出按 extra_args 显式限定表范围（%s）：dump 不含未选中的表与视图", strings.Join(explicit, ", ")))
+	}
 	if triggers && !scope.triggerGlobal && !(all || scope.triggerSchemas[database]) {
 		return fmt.Errorf("mysql 导出被拒绝：账号 %q 在库 %q 上没有 TRIGGER 权限，"+
 			"mysqldump --triggers 会静默跳过该库的全部触发器（run 仍报成功，恢复后触发器无声消失）；"+
@@ -541,6 +625,10 @@ func mysqlCheckObjectPrivileges(scope mysqlReadScope, username, database string,
 			username, database, database, strings.ReplaceAll(database, "`", "``"), username)
 	}
 	if all {
+		if !scope.viewGlobal {
+			log("warn", fmt.Sprintf("账号 %q 没有全局 SHOW VIEW 权限，整实例备份中未授权的库无法导出视图（SHOW CREATE VIEW 被拒绝，或视图被静默跳过）；"+
+				"如需视图请执行 GRANT SHOW VIEW ON *.* TO %q;，或在该计划 extra_args 中用 \"--ignore-table=<库>.<视图>\" 显式排除", username, username))
+		}
 		if triggers && !scope.triggerGlobal {
 			log("warn", fmt.Sprintf("账号 %q 没有全局 TRIGGER 权限，整实例备份中未授权的库会静默丢失触发器；"+
 				"如需触发器请执行 GRANT TRIGGER ON *.* TO %q;，或在该计划 extra_args 中加入 \"--skip-triggers\"", username, username))
@@ -562,7 +650,7 @@ func mysqlCheckObjectPrivileges(scope mysqlReadScope, username, database string,
 // mysqlSelectScope 解析 SHOW GRANTS 的每一行，汇总账号的表范围与对象类型权限。
 func mysqlSelectScope(grants []string) mysqlReadScope {
 	scope := mysqlReadScope{schemas: map[string]bool{}, tables: map[string][]string{},
-		triggerSchemas: map[string]bool{}, eventSchemas: map[string]bool{}}
+		triggerSchemas: map[string]bool{}, eventSchemas: map[string]bool{}, viewSchemas: map[string]bool{}}
 	for _, line := range grants {
 		object, privs, allPriv, ok := mysqlGrantObject(line)
 		if !ok {
@@ -574,6 +662,7 @@ func mysqlSelectScope(grants []string) mysqlReadScope {
 			scope.global = scope.global || allPriv || privs["SELECT"]
 			scope.triggerGlobal = scope.triggerGlobal || allPriv || privs["TRIGGER"]
 			scope.eventGlobal = scope.eventGlobal || allPriv || privs["EVENT"]
+			scope.viewGlobal = scope.viewGlobal || allPriv || privs["SHOW VIEW"]
 			scope.showRoutineGlobal = scope.showRoutineGlobal || allPriv || privs["SHOW_ROUTINE"]
 			continue
 		}
@@ -591,6 +680,9 @@ func mysqlSelectScope(grants []string) mysqlReadScope {
 			}
 			if allPriv || privs["EVENT"] {
 				scope.eventSchemas[db] = true
+			}
+			if allPriv || privs["SHOW VIEW"] {
+				scope.viewSchemas[db] = true
 			}
 		case strings.HasPrefix(rest, ".`") && (allPriv || privs["SELECT"]):
 			if tbl, _, ok := mysqlUnquoteIdentifier(rest[2:]); ok {

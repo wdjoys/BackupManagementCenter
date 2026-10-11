@@ -720,6 +720,12 @@ func (e *grantsExec) Run(_ context.Context, c Cmd, onStdout, onStderr func(strin
 			}
 		}
 		return 0, nil
+	case strings.Contains(args, "information_schema.VIEWS"):
+		// 这些用例针对表/触发器/例程权限；库中无视图即无视图可丢，计数回答 0。
+		if onStdout != nil {
+			onStdout("0")
+		}
+		return 0, nil
 	case filepath.Base(c.Exe) == "mysqldump":
 		e.dumped = true
 		for _, l := range e.dumpErr {
@@ -1182,5 +1188,137 @@ func TestMySQLSelectScopeRealServerOutputs(t *testing.T) {
 		if name == "表级子集" && len(sc.schemas) != 0 {
 			t.Fatalf("%s: 不得识别出库级授权: %+v", name, sc)
 		}
+	}
+}
+
+// viewScopeExec 回放 SHOW GRANTS 与 information_schema.VIEWS 的计数，并记录是否真的
+// 启动了 mysqldump。
+type viewScopeExec struct {
+	grants []string
+	views  string // VIEWS 计数查询的 stdout；空串表示查询没有输出（无法证明）
+	dumped bool
+}
+
+func (e *viewScopeExec) Run(_ context.Context, c Cmd, onStdout, onStderr func(string)) (int, error) {
+	args := strings.Join(c.Args, " ")
+	switch {
+	case strings.Contains(args, "SHOW GRANTS FOR CURRENT_USER()"):
+		for _, g := range e.grants {
+			if onStdout != nil {
+				onStdout(g)
+			}
+		}
+		return 0, nil
+	case strings.Contains(args, "information_schema.VIEWS"):
+		if e.views != "" && onStdout != nil {
+			onStdout(e.views)
+		}
+		return 0, nil
+	case filepath.Base(c.Exe) == "mysqldump":
+		e.dumped = true
+		return 0, nil
+	}
+	return 0, nil
+}
+
+func viewScopeRC(t *testing.T, exec Executor, database string, logs *[]string) *RunContext {
+	t.Helper()
+	rc := grantsRC(exec, database)
+	rc.TempDir = t.TempDir()
+	rc.Logf = func(level, format string, args ...any) {
+		*logs = append(*logs, level+" "+fmt.Sprintf(format, args...))
+	}
+	return rc
+}
+
+// 库中确有视图而账号缺 SHOW VIEW 时必须拒绝：mysqldump 此时无法导出视图
+// （实测 MySQL 5.7/8.0、MariaDB 10.6 都在 SHOW CREATE VIEW 处 rc=2），报错只写作
+// "Couldn't execute 'show create table'"，运维看不出缺哪个权限。
+func TestMySQLBackupRefusesViewLossWhenViewsExist(t *testing.T) {
+	exec := &viewScopeExec{
+		grants: []string{"GRANT SELECT, EVENT, TRIGGER ON `appdb`.* TO `u`@`%`"},
+		views:  "2",
+	}
+	var logs []string
+	rc := viewScopeRC(t, exec, "appdb", &logs)
+	_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+	if err == nil {
+		t.Fatal("库中有视图且缺 SHOW VIEW 时必须拒绝备份")
+	}
+	for _, want := range []string{"SHOW VIEW", "GRANT SHOW VIEW ON `appdb`.*", "--ignore-table=appdb."} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误必须包含 %q: %v", want, err)
+		}
+	}
+	if exec.dumped {
+		t.Fatal("拒绝时不得再启动 mysqldump")
+	}
+}
+
+// 无视图的库不得因缺 SHOW VIEW 被误伤（视图数为 0 时没有可丢的对象）。
+func TestMySQLBackupAllowsViewLessDatabaseWithoutShowView(t *testing.T) {
+	exec := &viewScopeExec{
+		grants: []string{"GRANT SELECT, EVENT, TRIGGER ON `appdb`.* TO `u`@`%`"},
+		views:  "0",
+	}
+	var logs []string
+	rc := viewScopeRC(t, exec, "appdb", &logs)
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("无视图的库不得被拒绝: %v", err)
+	}
+	if !exec.dumped {
+		t.Fatal("应正常执行 mysqldump")
+	}
+}
+
+// 无法枚举视图数量（查询无输出）时只告警不拒绝：与例程可见性同一取舍，避免把
+// "证明不了"当成"有视图"而误伤。
+func TestMySQLBackupWarnsWhenViewCountUnprovable(t *testing.T) {
+	exec := &viewScopeExec{
+		grants: []string{"GRANT SELECT, EVENT, TRIGGER ON `appdb`.* TO `u`@`%`"},
+		views:  "",
+	}
+	var logs []string
+	rc := viewScopeRC(t, exec, "appdb", &logs)
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("无法证明时必须放行（只告警）: %v", err)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "无法确认库") {
+		t.Fatalf("应留下无法确认视图的告警，实际日志:\n%s", strings.Join(logs, "\n"))
+	}
+}
+
+// --ignore-table 是缺 SHOW VIEW 时唯一的降级通道（白名单已允许该前缀）：显式排除
+// 视图后必须放行，并在日志里说明本次 dump 不含该视图。
+func TestMySQLBackupViewRejectSkippedForExplicitIgnoreTable(t *testing.T) {
+	exec := &viewScopeExec{
+		grants: []string{"GRANT SELECT, EVENT, TRIGGER ON `appdb`.* TO `u`@`%`"},
+		views:  "1",
+	}
+	var logs []string
+	rc := viewScopeRC(t, exec, "appdb", &logs)
+	rc.Task.Source.ExtraArgs = []string{"--ignore-table=appdb.v1"}
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("显式排除视图后必须放行: %v", err)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "--ignore-table=appdb.v1") {
+		t.Fatalf("日志必须说明本次排除了哪个视图，实际日志:\n%s", joined)
+	}
+}
+
+// 整实例备份无法枚举各库授权：缺全局 SHOW VIEW 只告警不拒绝（与 TRIGGER 处理一致）。
+func TestMySQLBackupAllModeWarnsWithoutGlobalShowView(t *testing.T) {
+	exec := &viewScopeExec{
+		grants: []string{"GRANT SELECT, EVENT, TRIGGER ON *.* TO `u`@`%`"},
+	}
+	var logs []string
+	rc := viewScopeRC(t, exec, "all", &logs)
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("整实例备份不得被拒绝: %v", err)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "SHOW VIEW") || !strings.Contains(joined, "GRANT SHOW VIEW ON *.*") {
+		t.Fatalf("应给出全局 SHOW VIEW 的告警，实际日志:\n%s", joined)
 	}
 }

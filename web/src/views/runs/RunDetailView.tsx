@@ -590,6 +590,9 @@ export const RunDetailView: React.FC = () => {
               <div>
                 <dt className="text-[11px] text-muted-foreground">{t('runDetail.progress.step')}</dt>
                 <dd className="font-medium text-foreground">
+                  {/* 阶段文案按 operation 选命名空间：备份阶段在 runDetail.phases、恢复阶段在
+                      restore.phases，另一个作回退。此前统一查 runDetail.phases，导致恢复运行
+                      的「当前步骤」渲染未本地化的英文枚举原值（如 succeeded）。 */}
                   {run.operation === 'restore'
                     ? translateEnum('restore.phases', run.progress.phase, 'runDetail.phases')
                     : translateEnum('runDetail.phases', run.progress.phase, 'restore.phases')}

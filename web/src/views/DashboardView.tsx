@@ -223,7 +223,7 @@ export const DashboardView: React.FC = () => {
                 <Table>
                   <TableHeader>
                     <TableRow className="border-border hover:bg-transparent">
-                      <TableHead className="text-xs font-medium">{t('common.name')}</TableHead>
+                      <TableHead className="text-xs font-medium">{t('storage.columns.repositoryPath')}</TableHead>
                       <TableHead className="text-xs font-medium">
                         {t('dashboard.lastCheck')}
                       </TableHead>
@@ -233,7 +233,7 @@ export const DashboardView: React.FC = () => {
                     {dashboard.repos_needing_check.map((repo) => (
                       <TableRow key={repo.id} className="border-border hover:bg-muted/30">
                         <TableCell className="font-medium text-xs text-foreground">
-                          {repo.name}
+                          {repo.repository_path}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {repo.last_check_at ? (

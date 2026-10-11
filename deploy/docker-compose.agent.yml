@@ -24,10 +24,17 @@ services:
       BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC endpoint}
       # 首次注册令牌（从 Server Web UI 生成的一次性注册令牌；注册完成后建议清空并重启）
       BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
+      # 重新安装接管：配合 Web UI 生成的接管令牌，复用原 Agent 身份与仓库（留空为普通注册）。
+      # 必须在此透传，否则容器内取不到该变量，注册会以 "target agent does not match enrollment token" 被拒。
+      BMC_TARGET_AGENT_ID: ${BMC_TARGET_AGENT_ID:-}
       # 本地暂存目录所需的最小可用空间阈值（单位字节，0 表示不检查，空间不足时拒绝执行任务）
       BMC_SCRATCH_MIN_FREE_BYTES: ${BMC_SCRATCH_MIN_FREE_BYTES:-0}
       # Agent 并发执行任务的最大数量限制
       BMC_AGENT_MAX_CONCURRENCY: ${BMC_AGENT_MAX_CONCURRENCY:-2}
+      # 能力探测（restic/rclone/数据库客户端版本）与上报间隔，单位秒
+      BMC_AGENT_PROBE_INTERVAL: ${BMC_AGENT_PROBE_INTERVAL:-600}
+      # restic check 的 --read-data-subset（默认 1/10；设为 0 关闭数据校验，只做结构校验）
+      BMC_RESTIC_CHECK_READ_DATA_SUBSET: ${BMC_RESTIC_CHECK_READ_DATA_SUBSET:-1/10}
       #--------------------------------------------------------------------------------------------------------------------
       # 备份源根目录（容器内路径，可多个逗号分隔，默认 /backup-sources）：计划里的源路径统一位于此目录下
       BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
@@ -43,6 +50,8 @@ services:
       # 宿主机恢复目标目录挂载到容器内（读写），恢复操作只写入 /backup-restore
       - ${BMC_RESTORE_ROOT:-./backup-restore}:/backup-restore
     read_only: true
+    # tmpfs 显式指定 uid/gid 并收紧到 0700：本模板以 root 运行，但若改回镜像默认的
+    # nonroot(65532)，tmpfs 默认归 root:root，只写 mode=0700 而不写 uid/gid 就会不可写。
     tmpfs:
       - /tmp:uid=65532,gid=65532,mode=0700
     security_opt:

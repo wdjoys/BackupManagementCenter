@@ -266,9 +266,9 @@ export const RunsView: React.FC = () => {
         <CardContent className="p-4">
           <form onSubmit={handleSearch} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
             <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">{t('runs.filters.plan')}</Label>
+              <Label id="runs-filter-plan-label" className="text-[11px] text-muted-foreground">{t('runs.filters.plan')}</Label>
               <Select value={filters.planId} onValueChange={handlePlanChange}>
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger aria-labelledby="runs-filter-plan-label" className="h-8 text-xs">
                   <SelectValue placeholder={t('runs.filters.plan')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -285,9 +285,9 @@ export const RunsView: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">{t('runs.filters.agent')}</Label>
+              <Label id="runs-filter-agent-label" className="text-[11px] text-muted-foreground">{t('runs.filters.agent')}</Label>
               <Select value={filters.agentId} onValueChange={handleAgentChange}>
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger aria-labelledby="runs-filter-agent-label" className="h-8 text-xs">
                   <SelectValue placeholder={t('runs.filters.agent')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -304,9 +304,9 @@ export const RunsView: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">{t('runs.filters.status')}</Label>
+              <Label id="runs-filter-status-label" className="text-[11px] text-muted-foreground">{t('runs.filters.status')}</Label>
               <Select value={filters.status} onValueChange={handleStatusChange}>
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger aria-labelledby="runs-filter-status-label" className="h-8 text-xs">
                   <SelectValue placeholder={t('runs.filters.status')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -323,9 +323,9 @@ export const RunsView: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">{t('runs.filters.operation')}</Label>
+              <Label id="runs-filter-operation-label" className="text-[11px] text-muted-foreground">{t('runs.filters.operation')}</Label>
               <Select value={filters.operation} onValueChange={handleOpChange}>
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger aria-labelledby="runs-filter-operation-label" className="h-8 text-xs">
                   <SelectValue placeholder={t('runs.filters.operation')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -406,7 +406,7 @@ export const RunsView: React.FC = () => {
                                 <span>
                                   <span className="text-foreground font-medium">{agent.name}</span>
                                   {agent.hostname && (
-                                    <span className="text-[11px] text-muted-foreground/75 ml-1.5 font-mono">
+                                    <span className="text-[11px] text-muted-foreground ml-1.5 font-mono">
                                       ({agent.hostname})
                                     </span>
                                   )}
@@ -462,7 +462,7 @@ export const RunsView: React.FC = () => {
                                   variant="ghost"
                                   size="sm"
                                   onClick={(e) => openCancelDialog(e, run)}
-                                  className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                                  className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                                   aria-label={t('runs.cancel')}
                                 >
                                   <XSquare className="h-3.5 w-3.5" aria-hidden="true" />
@@ -503,15 +503,15 @@ export const RunsView: React.FC = () => {
                         </div>
                         <div className="grid grid-cols-2 gap-1 text-[11px] text-muted-foreground font-mono">
                           <div>
-                            <span className="text-muted-foreground/70">{t('runs.columns.queuedAt')}: </span>
+                            <span className="text-muted-foreground">{t('runs.columns.queuedAt')}: </span>
                             {formatDateTime(run.queued_at)}
                           </div>
                           <div>
-                            <span className="text-muted-foreground/70">{t('runs.columns.duration')}: </span>
+                            <span className="text-muted-foreground">{t('runs.columns.duration')}: </span>
                             {formatDuration(run.started_at ?? null, run.finished_at ?? null)}
                           </div>
                           <div className="col-span-2 truncate">
-                            <span className="text-muted-foreground/70">{t('runs.columns.agent')}: </span>
+                            <span className="text-muted-foreground">{t('runs.columns.agent')}: </span>
                             <span className="text-foreground font-sans">
                               {agent ? `${agent.name} (${agent.hostname})` : (run.agent_id || '—')}
                             </span>
@@ -527,7 +527,7 @@ export const RunsView: React.FC = () => {
                                 variant="ghost"
                                 size="sm"
                                 onClick={(e) => openCancelDialog(e, run)}
-                                className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                                className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                                 aria-label={t('runs.cancel')}
                               >
                                 <XSquare className="h-3.5 w-3.5" aria-hidden="true" />

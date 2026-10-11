@@ -150,9 +150,11 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
 
           <div className="space-y-4 pt-2">
             <div className="space-y-1.5">
-              <Label className="text-xs">{t('snapshots.restoreDialog.targetAgent')} *</Label>
+              <Label id="restore-target-agent-label" className="text-xs">
+                {t('snapshots.restoreDialog.targetAgent')} *
+              </Label>
               <Select value={targetAgentId} onValueChange={onTargetAgentIdChange}>
-                <SelectTrigger className="h-9 text-xs">
+                <SelectTrigger aria-labelledby="restore-target-agent-label" className="h-9 text-xs">
                   <SelectValue placeholder={t('snapshots.restoreDialog.targetAgentPlaceholder')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -169,7 +171,7 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
                 </p>
               )}
               {targetAgentId && targetAgentId !== sourceAgentId && (
-                <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                <p className="text-[11px] text-amber-700 dark:text-amber-400">
                   {t('snapshots.restoreDialog.credentialWarning')}
                 </p>
               )}
@@ -178,8 +180,11 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
             {restoreKind === 'filesystem' ? (
               <>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">{t('snapshots.restoreDialog.targetPath')} *</Label>
+                  <Label htmlFor="restore-target-path" className="text-xs">
+                    {t('snapshots.restoreDialog.targetPath')} *
+                  </Label>
                   <Input
+                    id="restore-target-path"
                     placeholder="/restore/target/directory"
                     value={restoreTargetPath}
                     onChange={(e) => onRestoreTargetPathChange(e.target.value)}
@@ -201,8 +206,11 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label className="text-xs">{t('snapshots.restoreDialog.overwriteMode')} *</Label>
+                  <Label id="restore-overwrite-mode-label" className="text-xs">
+                    {t('snapshots.restoreDialog.overwriteMode')} *
+                  </Label>
                   <RadioGroup
+                    aria-labelledby="restore-overwrite-mode-label"
                     value={overwriteMode}
                     onValueChange={(val) => onOverwriteModeChange(val as 'never' | 'if-changed' | 'always')}
                     className="flex gap-4 pt-1"
@@ -245,8 +253,11 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
 
                 {restoreKind === 'sqlite' ? (
                   <div className="space-y-1.5">
-                    <Label className="text-xs">{t('snapshots.restoreDialog.sqlitePath')} *</Label>
+                    <Label htmlFor="restore-sqlite-path" className="text-xs">
+                      {t('snapshots.restoreDialog.sqlitePath')} *
+                    </Label>
                     <Input
+                      id="restore-sqlite-path"
                       placeholder="/backup-restore/target.sqlite"
                       value={databaseForm.database}
                       onChange={(e) => onDatabaseFormChange({ database: e.target.value })}
@@ -257,32 +268,44 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
                   <>
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1.5">
-                        <Label className="text-xs">{t('snapshots.restoreDialog.host')} *</Label>
+                        <Label htmlFor="restore-db-host" className="text-xs">
+                          {t('snapshots.restoreDialog.host')} *
+                        </Label>
                         <Input
+                          id="restore-db-host"
                           value={databaseForm.host}
                           onChange={(e) => onDatabaseFormChange({ host: e.target.value })}
                           className="h-9 text-xs font-mono"
                         />
                       </div>
                       <div className="space-y-1.5">
-                        <Label className="text-xs">{t('snapshots.restoreDialog.port')} *</Label>
+                        <Label htmlFor="restore-db-port" className="text-xs">
+                          {t('snapshots.restoreDialog.port')} *
+                        </Label>
                         <Input
+                          id="restore-db-port"
                           value={databaseForm.port}
                           onChange={(e) => onDatabaseFormChange({ port: e.target.value })}
                           className="h-9 text-xs font-mono"
                         />
                       </div>
                       <div className="space-y-1.5">
-                        <Label className="text-xs">{t('snapshots.restoreDialog.username')} *</Label>
+                        <Label htmlFor="restore-db-username" className="text-xs">
+                          {t('snapshots.restoreDialog.username')} *
+                        </Label>
                         <Input
+                          id="restore-db-username"
                           value={databaseForm.username}
                           onChange={(e) => onDatabaseFormChange({ username: e.target.value })}
                           className="h-9 text-xs font-mono"
                         />
                       </div>
                       <div className="space-y-1.5">
-                        <Label className="text-xs">{t('snapshots.restoreDialog.database')} *</Label>
+                        <Label htmlFor="restore-db-name" className="text-xs">
+                          {t('snapshots.restoreDialog.database')} *
+                        </Label>
                         <Input
+                          id="restore-db-name"
                           value={databaseForm.database}
                           onChange={(e) => onDatabaseFormChange({ database: e.target.value })}
                           className="h-9 text-xs font-mono"
@@ -291,8 +314,11 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
                     </div>
                     {restoreKind === 'mongodb' && (
                       <div className="space-y-1.5">
-                        <Label className="text-xs">{t('snapshots.restoreDialog.authSource')}</Label>
+                        <Label htmlFor="restore-db-auth-source" className="text-xs">
+                          {t('snapshots.restoreDialog.authSource')}
+                        </Label>
                         <Input
+                          id="restore-db-auth-source"
                           value={databaseForm.authSource}
                           onChange={(e) => onDatabaseFormChange({ authSource: e.target.value })}
                           className="h-9 text-xs font-mono"
@@ -308,8 +334,11 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
                 )}
 
                 <div className="space-y-1.5">
-                  <Label className="text-xs">{t('snapshots.restoreDialog.targetPassword')}</Label>
+                  <Label htmlFor="restore-db-password" className="text-xs">
+                    {t('snapshots.restoreDialog.targetPassword')}
+                  </Label>
                   <Input
+                    id="restore-db-password"
                     type="password"
                     autoComplete="off"
                     value={databaseForm.password}
@@ -351,7 +380,7 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
             )}
 
             {restoreKind === 'filesystem' && dryRunResult && (
-              <Alert className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 py-2.5 text-xs">
+              <Alert className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 py-2.5 text-xs">
                 <AlertTitle className="text-xs font-semibold">
                   {t('snapshots.restoreDialog.dryRunResult')}
                 </AlertTitle>
@@ -485,6 +514,8 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
               </p>
             </div>
             <Input
+              id="snapshot-delete-confirm-input"
+              aria-label={t('snapshots.delete.confirmHint')}
               placeholder={snapshotToDelete?.id}
               value={deleteConfirmInput}
               onChange={(e) => onDeleteConfirmInputChange(e.target.value)}

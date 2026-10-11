@@ -146,8 +146,11 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
 
           <div className="space-y-4 pt-2">
             <div className="space-y-1.5">
-              <Label className="text-xs">{t('storage.importDialog.name')} *</Label>
+              <Label htmlFor="import-target-name" className="text-xs">
+                {t('storage.importDialog.name')} *
+              </Label>
               <Input
+                id="import-target-name"
                 placeholder={t('storage.importDialog.namePlaceholder')}
                 value={importForm.name}
                 onChange={(e) => onImportFormChange({ ...importForm, name: e.target.value })}
@@ -157,8 +160,11 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs">rclone.conf *</Label>
+              <Label htmlFor="import-rclone-conf" className="text-xs">
+                rclone.conf *
+              </Label>
               <textarea
+                id="import-rclone-conf"
                 rows={6}
                 placeholder={`[remote]\ntype = drive\ntoken = ...`}
                 value={importForm.rclone_conf}
@@ -169,13 +175,15 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs">{t('storage.importDialog.validationAgent')} *</Label>
+              <Label id="import-validation-agent-label" className="text-xs">
+                {t('storage.importDialog.validationAgent')} *
+              </Label>
               <Select
                 value={importForm.validate_agent_id}
                 onValueChange={(val) => onImportFormChange({ ...importForm, validate_agent_id: val })}
                 disabled={onlineAgents.length === 0 || importLoading || validateLoading}
               >
-                <SelectTrigger className="h-9 text-xs">
+                <SelectTrigger aria-labelledby="import-validation-agent-label" className="h-9 text-xs">
                   <SelectValue placeholder={t('storage.importDialog.validationAgentPlaceholder')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -195,8 +203,11 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <Label className="text-xs">{t('storage.importDialog.remoteName')} *</Label>
+                <Label htmlFor="import-remote-name" className="text-xs">
+                  {t('storage.importDialog.remoteName')} *
+                </Label>
                 <Input
+                  id="import-remote-name"
                   placeholder={t('storage.importDialog.remoteNamePlaceholder')}
                   value={importForm.remote_name}
                   onChange={(e) => onImportFormChange({ ...importForm, remote_name: e.target.value })}
@@ -205,8 +216,11 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
                 />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">{t('storage.importDialog.remotePath')}</Label>
+                <Label htmlFor="import-remote-path" className="text-xs">
+                  {t('storage.importDialog.remotePath')}
+                </Label>
                 <Input
+                  id="import-remote-path"
                   placeholder={t('storage.importDialog.remotePathPlaceholder')}
                   value={importForm.remote_path}
                   onChange={(e) => onImportFormChange({ ...importForm, remote_path: e.target.value })}
@@ -217,8 +231,8 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
             </div>
 
             {validateResult && (
-              <Alert className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 py-3 text-xs">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+              <Alert className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 py-3 text-xs">
+                <CheckCircle2 className="h-4 w-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
                 <AlertTitle className="text-xs font-semibold">
                   {t('storage.importDialog.remoteType')}: {validateResult.remote_type}
                 </AlertTitle>
@@ -288,6 +302,8 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
           </DialogHeader>
           <form onSubmit={onRenameTarget} className="space-y-4">
             <Input
+              id="storage-target-new-name"
+              aria-label={t('storage.editDialog.title')}
               value={targetNewName}
               onChange={(e) => onTargetNewNameChange(e.target.value)}
               disabled={editTargetLoading}
@@ -397,8 +413,8 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
             </div>
 
             {bindResult && (
-              <Alert className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 py-2.5 text-xs">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+              <Alert className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 py-2.5 text-xs">
+                <CheckCircle2 className="h-4 w-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
                 <AlertTitle className="text-xs font-semibold">
                   {t('storage.bindDialog.boundSuccessfully')}
                 </AlertTitle>

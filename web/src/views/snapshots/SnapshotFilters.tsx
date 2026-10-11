@@ -62,7 +62,7 @@ export const SnapshotFilters: React.FC<SnapshotFiltersProps> = ({
         <div className="flex flex-wrap items-center gap-3">
           {/* Repository Selector */}
           <Select value={selectedRepoId} onValueChange={onSelectRepo} disabled={reposLoading}>
-            <SelectTrigger className="w-72 h-8 text-xs font-mono">
+            <SelectTrigger aria-label={t('snapshots.repositoryPlaceholder')} className="w-72 h-8 text-xs font-mono">
               <SelectValue placeholder={t('snapshots.repositoryPlaceholder')} />
             </SelectTrigger>
             <SelectContent>
@@ -78,7 +78,7 @@ export const SnapshotFilters: React.FC<SnapshotFiltersProps> = ({
           {/* Plan Filter */}
           {selectedRepoId && (
             <Select value={planFilter} onValueChange={onSelectPlanFilter}>
-              <SelectTrigger className="w-56 h-8 text-xs">
+              <SelectTrigger aria-label={t('snapshots.planFilter.label')} className="w-56 h-8 text-xs">
                 <SelectValue placeholder={t('snapshots.planFilter.label')} />
               </SelectTrigger>
               <SelectContent>

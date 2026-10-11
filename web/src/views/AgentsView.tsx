@@ -348,7 +348,7 @@ export const AgentsView: React.FC = () => {
                                   <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="h-7 text-xs text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 gap-1"
+                                    className="h-7 text-xs text-amber-700 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300 gap-1"
                                     onClick={() => handleTakeover(agent)}
                                   >
                                     <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
@@ -359,7 +359,7 @@ export const AgentsView: React.FC = () => {
                                   <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="h-7 text-xs text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 gap-1"
+                                    className="h-7 text-xs text-emerald-700 dark:text-emerald-400 hover:text-emerald-800 dark:hover:text-emerald-300 gap-1"
                                     onClick={() => openRestore(agent)}
                                     aria-label={t('agents.restore')}
                                   >
@@ -370,7 +370,7 @@ export const AgentsView: React.FC = () => {
                                   <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                                    className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                                     onClick={() => openRevoke(agent)}
                                     aria-label={t('agents.revoke')}
                                   >
@@ -507,7 +507,7 @@ export const AgentsView: React.FC = () => {
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-7 text-xs text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 gap-1"
+                            className="h-7 text-xs text-amber-700 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300 gap-1"
                             onClick={() => handleTakeover(agent)}
                           >
                             <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
@@ -518,7 +518,7 @@ export const AgentsView: React.FC = () => {
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-7 text-xs text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 gap-1"
+                            className="h-7 text-xs text-emerald-700 dark:text-emerald-400 hover:text-emerald-800 dark:hover:text-emerald-300 gap-1"
                             onClick={() => openRestore(agent)}
                             aria-label={t('agents.restore')}
                           >
@@ -529,7 +529,7 @@ export const AgentsView: React.FC = () => {
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                            className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                             onClick={() => openRevoke(agent)}
                             aria-label={t('agents.revoke')}
                           >
@@ -592,8 +592,8 @@ export const AgentsView: React.FC = () => {
             </div>
           ) : tokenData ? (
             <div className="space-y-4 pt-2">
-              <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 py-2.5">
-                <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+              <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400 py-2.5">
+                <AlertTriangle className="h-4 w-4 text-amber-700 dark:text-amber-400" aria-hidden="true" />
                 <AlertDescription className="text-xs">
                   {t('agents.tokenDialog.onceWarning')}
                 </AlertDescription>
@@ -625,7 +625,7 @@ export const AgentsView: React.FC = () => {
                 >
                   <span className="min-w-0 flex-1 font-mono break-all select-all leading-relaxed">{tokenData.token}</span>
                   {copied ? (
-                    <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0 self-center" aria-hidden="true" />
+                    <Check className="h-4 w-4 text-emerald-700 dark:text-emerald-400 shrink-0 self-center" aria-hidden="true" />
                   ) : (
                     <Copy className="h-4 w-4 text-muted-foreground shrink-0 self-center" aria-hidden="true" />
                   )}
@@ -674,6 +674,8 @@ export const AgentsView: React.FC = () => {
           </DialogHeader>
           <form onSubmit={handleRenameConfirm} className="space-y-4">
             <Input
+              id="agent-rename-value"
+              aria-label={t('agents.renameDialog.title')}
               value={renameValue}
               onChange={(e) => setRenameValue(e.target.value)}
               disabled={renaming}

@@ -9,6 +9,7 @@ interface TagInputProps {
   onChange: (value: string[]) => void
   placeholder?: string
   disabled?: boolean
+  id?: string
 }
 
 export const TagInput: React.FC<TagInputProps> = ({
@@ -16,6 +17,7 @@ export const TagInput: React.FC<TagInputProps> = ({
   onChange,
   placeholder,
   disabled = false,
+  id,
 }) => {
   const { t } = useTranslation()
   const [draft, setDraft] = useState('')
@@ -69,6 +71,7 @@ export const TagInput: React.FC<TagInputProps> = ({
         </div>
       )}
       <Input
+        id={id}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={handleKeyDown}

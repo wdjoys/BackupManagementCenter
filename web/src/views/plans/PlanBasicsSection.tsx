@@ -63,13 +63,15 @@ export const PlanBasicsSection: React.FC<PlanBasicsSectionProps> = ({
 
       {/* Kind */}
       <div className="space-y-1.5">
-        <Label className="text-xs">{t('plans.form.kind')} *</Label>
+        <Label id="plan-kind-label" className="text-xs">
+          {t('plans.form.kind')} *
+        </Label>
         <Select
           value={model.kind}
           onValueChange={(val) => onKindChange(val as PlanKind)}
           disabled={submitting}
         >
-          <SelectTrigger className="h-9 text-xs">
+          <SelectTrigger aria-labelledby="plan-kind-label" className="h-9 text-xs">
             <SelectValue placeholder={t('plans.form.kindPlaceholder')} />
           </SelectTrigger>
           <SelectContent>
@@ -85,13 +87,15 @@ export const PlanBasicsSection: React.FC<PlanBasicsSectionProps> = ({
 
       {/* Agent */}
       <div className="space-y-1.5">
-        <Label className="text-xs">{t('plans.form.agent')} *</Label>
+        <Label id="plan-agent-label" className="text-xs">
+          {t('plans.form.agent')} *
+        </Label>
         <Select
           value={model.agent_id}
           onValueChange={onAgentChange}
           disabled={submitting}
         >
-          <SelectTrigger className="h-9 text-xs">
+          <SelectTrigger aria-labelledby="plan-agent-label" className="h-9 text-xs">
             <SelectValue placeholder={t('plans.form.agent')} />
           </SelectTrigger>
           <SelectContent>
@@ -110,13 +114,15 @@ export const PlanBasicsSection: React.FC<PlanBasicsSectionProps> = ({
 
       {/* Repository */}
       <div className="space-y-1.5">
-        <Label className="text-xs">{t('plans.form.repository')} *</Label>
+        <Label id="plan-repository-label" className="text-xs">
+          {t('plans.form.repository')} *
+        </Label>
         <Select
           value={model.repository_id}
           onValueChange={(val) => onUpdateModel({ repository_id: val })}
           disabled={submitting || filteredRepos.length === 0}
         >
-          <SelectTrigger className="h-9 text-xs">
+          <SelectTrigger aria-labelledby="plan-repository-label" className="h-9 text-xs">
             <SelectValue placeholder={t('plans.form.repository')} />
           </SelectTrigger>
           <SelectContent>

@@ -82,13 +82,15 @@ export const PlanScheduleSection: React.FC<PlanScheduleSectionProps> = ({
 
       {/* Timezone */}
       <div className="space-y-1.5 sm:col-span-1">
-        <Label className="text-xs">{t('plans.form.timezone')} *</Label>
+        <Label id="plan-timezone-label" className="text-xs">
+          {t('plans.form.timezone')} *
+        </Label>
         <Select
           value={timezone}
           onValueChange={(val) => onUpdateModel({ timezone: val })}
           disabled={submitting}
         >
-          <SelectTrigger className="h-9 text-xs">
+          <SelectTrigger aria-labelledby="plan-timezone-label" className="h-9 text-xs">
             <SelectValue placeholder={t('plans.form.timezonePlaceholder')} />
           </SelectTrigger>
           <SelectContent className="max-h-60">

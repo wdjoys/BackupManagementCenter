@@ -269,7 +269,7 @@ export const LogsView: React.FC = () => {
           {/* Agent Selector when scope === agent */}
           {scope === 'agent' && (
             <Select value={selectedAgentId || 'none'} onValueChange={handleAgentChange}>
-              <SelectTrigger className="w-56 h-8 text-xs">
+              <SelectTrigger aria-label={t('logs.selectAgent')} className="w-56 h-8 text-xs">
                 <SelectValue placeholder={t('logs.agentPlaceholder')} />
               </SelectTrigger>
               <SelectContent>
@@ -287,7 +287,7 @@ export const LogsView: React.FC = () => {
 
           {/* Level Filter */}
           <Select value={levelFilter} onValueChange={(value) => { setLevelFilter(value); loadLogs(true, value, typeFilter) }}>
-            <SelectTrigger className="w-36 h-8 text-xs">
+            <SelectTrigger aria-label={t('logs.filters.level')} className="w-36 h-8 text-xs">
               <SelectValue placeholder={t('logs.filters.level')} />
             </SelectTrigger>
             <SelectContent>
@@ -303,7 +303,7 @@ export const LogsView: React.FC = () => {
           </Select>
           {/* Type Filter */}
           <Select value={typeFilter} onValueChange={(value) => { setTypeFilter(value); loadLogs(true, levelFilter, value) }}>
-            <SelectTrigger className="w-36 h-8 text-xs">
+            <SelectTrigger aria-label={t('logs.filters.type')} className="w-36 h-8 text-xs">
               <SelectValue placeholder={t('logs.filters.type')} />
             </SelectTrigger>
             <SelectContent>

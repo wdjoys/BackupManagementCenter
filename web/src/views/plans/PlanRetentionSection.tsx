@@ -23,8 +23,11 @@ export const PlanRetentionSection: React.FC<PlanRetentionSectionProps> = ({
       <p className="text-xs text-muted-foreground">{t('plans.form.retentionHint')}</p>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
         <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground">{t('plans.form.keepLast')}</span>
+          <Label htmlFor="plan-retention-keep-last" className="text-xs text-muted-foreground">
+            {t('plans.form.keepLast')}
+          </Label>
           <Input
+            id="plan-retention-keep-last"
             type="number"
             min={0}
             value={retention.keep_last}
@@ -34,8 +37,11 @@ export const PlanRetentionSection: React.FC<PlanRetentionSectionProps> = ({
           />
         </div>
         <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground">{t('plans.form.keepDaily')}</span>
+          <Label htmlFor="plan-retention-keep-daily" className="text-xs text-muted-foreground">
+            {t('plans.form.keepDaily')}
+          </Label>
           <Input
+            id="plan-retention-keep-daily"
             type="number"
             min={0}
             value={retention.keep_daily}
@@ -45,8 +51,11 @@ export const PlanRetentionSection: React.FC<PlanRetentionSectionProps> = ({
           />
         </div>
         <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground">{t('plans.form.keepWeekly')}</span>
+          <Label htmlFor="plan-retention-keep-weekly" className="text-xs text-muted-foreground">
+            {t('plans.form.keepWeekly')}
+          </Label>
           <Input
+            id="plan-retention-keep-weekly"
             type="number"
             min={0}
             value={retention.keep_weekly}
@@ -56,8 +65,11 @@ export const PlanRetentionSection: React.FC<PlanRetentionSectionProps> = ({
           />
         </div>
         <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground">{t('plans.form.keepMonthly')}</span>
+          <Label htmlFor="plan-retention-keep-monthly" className="text-xs text-muted-foreground">
+            {t('plans.form.keepMonthly')}
+          </Label>
           <Input
+            id="plan-retention-keep-monthly"
             type="number"
             min={0}
             value={retention.keep_monthly}

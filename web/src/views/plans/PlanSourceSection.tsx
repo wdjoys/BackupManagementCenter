@@ -62,8 +62,11 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
       {kind === 'filesystem' && (
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <Label className="text-xs">{t('plans.form.paths')} *</Label>
+            <Label htmlFor="plan-source-paths" className="text-xs">
+              {t('plans.form.paths')} *
+            </Label>
             <TagInput
+              id="plan-source-paths"
               modelValue={source.paths ?? []}
               onChange={(val) => onUpdateSource({ paths: val })}
               placeholder={t('plans.form.pathsPlaceholder')}
@@ -75,8 +78,11 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-xs">{t('plans.form.excludes')}</Label>
+            <Label htmlFor="plan-source-excludes" className="text-xs">
+              {t('plans.form.excludes')}
+            </Label>
             <TagInput
+              id="plan-source-excludes"
               modelValue={source.excludes ?? []}
               onChange={(val) => onUpdateSource({ excludes: val })}
               placeholder={t('plans.form.excludesPlaceholder')}
@@ -89,12 +95,15 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
 
           <div className="flex items-center justify-between rounded-md border border-border p-3">
             <div className="space-y-0.5">
-              <Label className="text-xs">{t('plans.form.oneFileSystem')}</Label>
+              <Label id="plan-one-file-system" className="text-xs">
+                {t('plans.form.oneFileSystem')}
+              </Label>
               <p className="text-[11px] text-muted-foreground">
                 {t('plans.form.oneFileSystemHint')}
               </p>
             </div>
             <Switch
+              aria-labelledby="plan-one-file-system"
               checked={source.one_file_system === true}
               onCheckedChange={(checked) => onUpdateSource({ one_file_system: checked })}
               disabled={submitting}
@@ -234,8 +243,11 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
           </div>
 
           <div className="space-y-1.5 sm:col-span-2">
-            <Label className="text-xs">{t('plans.form.extraArgs')}</Label>
+            <Label htmlFor="plan-extra-args" className="text-xs">
+              {t('plans.form.extraArgs')}
+            </Label>
             <TagInput
+              id="plan-extra-args"
               modelValue={source.extra_args ?? []}
               onChange={(val) => onUpdateSource({ extra_args: val })}
               placeholder={t('plans.form.extraArgsPlaceholder')}
@@ -254,8 +266,11 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
 
           {kind === 'mongodb' && (
             <div className="space-y-1.5">
-              <Label className="text-xs">{t('plans.form.authSource')}</Label>
+              <Label htmlFor="db-auth-source" className="text-xs">
+                {t('plans.form.authSource')}
+              </Label>
               <Input
+                id="db-auth-source"
                 value={source.auth_source ?? ''}
                 onChange={(e) => onUpdateSource({ auth_source: e.target.value })}
                 placeholder="admin"

@@ -23,6 +23,7 @@ import {
   DELETED_PLANS_FILTER,
   UNASSIGNED_PLAN_FILTER,
   hashConfirmation,
+  isSystemDatabase,
   type BreadcrumbPart,
   type DryRunResult,
   type SnapshotView,
@@ -261,6 +262,11 @@ export const SnapshotsView: React.FC = () => {
     const database = databaseForm.database.trim()
     if (!database) return t('snapshots.restoreDialog.databaseRequired')
     if (database.toLowerCase() === 'all') return t('snapshots.restoreDialog.allNotAllowed')
+    // 系统库在服务端受理阶段就会被拒（refusing to restore into system database），
+    // 但此前前端不预检：用户只有在提交后才从 toast 里看到 422，表单本身无提示。
+    if (isSystemDatabase(selectedRestoreKind, database)) {
+      return t('snapshots.restoreDialog.systemDatabaseNotAllowed', { database })
+    }
     if (selectedRestoreKind === 'sqlite') {
       if (!isAbsolutePath(database)) return t('snapshots.restoreDialog.absolutePathRequired')
       if (!isWithinMappedRoot(database, targetRestorePathMappings)) {

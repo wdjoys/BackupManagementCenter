@@ -638,6 +638,7 @@ export default {
       "database": "Target database",
       "authSource": "Auth source",
       "allNotAllowed": "Whole-instance restore (all) is not supported; specify a single database.",
+      "systemDatabaseNotAllowed": "\"{{database}}\" is a system database and cannot be a restore target; pick another name.",
       "targetPassword": "Target database password",
       "targetPasswordHint": "Used for this restore only and never persisted in the UI or configuration.",
       "overwriteExisting": "Overwrite an existing target (protected backup first)",

@@ -55,6 +55,20 @@ export async function hashConfirmation(value: string): Promise<string> {
     .join('')
 }
 
+/** 与后端 model.SystemDatabases 一致的系统库名单：绝不允许作为恢复目标。 */
+export const SYSTEM_DATABASES: Record<string, string[]> = {
+  mysql: ['mysql', 'information_schema', 'performance_schema', 'sys'],
+  postgresql: ['postgres', 'template0', 'template1'],
+  mongodb: ['admin', 'local', 'config'],
+}
+
+/** 同后端 model.IsSystemDatabase：MySQL 库名大小写不敏感，其余按原样比较。 */
+export function isSystemDatabase(kind: string, name: string): boolean {
+  const list = SYSTEM_DATABASES[kind]
+  if (!list) return false
+  return list.includes(kind === 'mysql' ? name.toLowerCase() : name)
+}
+
 /** 数据库恢复的阶段语义：不安全阶段会阻塞后续恢复并需要人工介入。 */
 export const RESTORE_PHASE_TONES: Record<string, BadgeTone> = {
   queued: 'secondary',

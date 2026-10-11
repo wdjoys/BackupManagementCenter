@@ -12,11 +12,19 @@ export const RUN_STATUS_VALUES: readonly string[] = [
   'cancelled',
 ]
 
+/** 运行操作类型取值，须与后端 internal/model/model.go 的 Op* 常量一一对应；
+    此前只列了 4 个，其余 6 个操作无法在筛选下拉中选择。 */
 export const OPERATION_VALUE_KEYS: Record<string, string> = {
   backup: 'runs.operations.backup',
   restore: 'runs.operations.restore',
+  restore_dry_run: 'runs.operations.restore_dry_run',
   check: 'runs.operations.check',
   forget: 'runs.operations.forget',
+  snapshots: 'runs.operations.snapshots',
+  snapshot_ls: 'runs.operations.snapshot_ls',
+  verify_storage_remote: 'runs.operations.verify_storage_remote',
+  validate_paths: 'runs.operations.validate_paths',
+  probe_capabilities: 'runs.operations.probe_capabilities',
 }
 
 export function statusTagType(status: string): BadgeTone {

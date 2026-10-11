@@ -543,7 +543,13 @@ func runDatabaseRestore(ctx context.Context, d Deps, opts restic.Options, task m
 			if errors.As(err, &pe) {
 				return nil, restoreSafeWrap(err, "database restore preflight failed")
 			}
-			return nil, restoreSafeFail(model.ErrRestoreTargetBusy, "database restore target is not ready for restore", err)
+			// 只有预检**确实**确认目标被其它会话/连接占用时才报 busy；连接/认证/参数
+			// 等其它失败必须回显原始原因。否则运维会把密码缺失（1045 Access denied）
+			// 当成"目标忙"去排查会话，方向完全错（实测：未带 target_password 时）。
+			if errors.Is(err, backup.ErrRestoreTargetOccupied) {
+				return nil, restoreSafeFail(model.ErrRestoreTargetBusy, "database restore target is not ready for restore", err)
+			}
+			return nil, restoreSafeFail(model.ErrRestorePreflightFailed, "database restore preflight failed", err)
 		}
 	}
 

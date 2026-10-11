@@ -1161,8 +1161,8 @@ func (a *MySQLAdapter) PreflightRestore(ctx context.Context, spec *RestoreSpec) 
 	}
 	busy = append(busy, mdl...)
 	if len(busy) > 0 {
-		return fmt.Errorf("target database %q still has %d active lock(s)/session(s) (%s): close all target connections and retry",
-			target, len(busy), strings.Join(busy, "; "))
+		return fmt.Errorf("%w: target database %q still has %d active lock(s)/session(s) (%s): close all target connections and retry",
+			ErrRestoreTargetOccupied, target, len(busy), strings.Join(busy, "; "))
 	}
 	return nil
 }

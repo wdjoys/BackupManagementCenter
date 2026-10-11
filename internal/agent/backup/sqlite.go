@@ -308,7 +308,7 @@ func sqliteCheckMaintenanceWindow(ctx context.Context, targetPath string) error 
 		// 会让运维去修数据，而真实原因只是目标被占用（实测：持 BEGIN EXCLUSIVE 时
 		// 报 "integrity check failed"，真实原因 database is locked (5) 只在句尾）。
 		if sqliteErrBusy(err) {
-			return fmt.Errorf("target database is busy; close all target connections and retry: %w", err)
+			return fmt.Errorf("%w: target database is busy; close all target connections and retry: %v", ErrRestoreTargetOccupied, err)
 		}
 		return fmt.Errorf("target database is not in a clean maintenance state (integrity check failed); close all connections, checkpoint and retry: %w", err)
 	}
@@ -319,10 +319,10 @@ func sqliteCheckMaintenanceWindow(ctx context.Context, targetPath string) error 
 	}
 	defer db.Close()
 	if _, err := db.ExecContext(ctx, "PRAGMA locking_mode=EXCLUSIVE"); err != nil {
-		return fmt.Errorf("target database is busy; close all target connections and retry: %w", err)
+		return fmt.Errorf("%w: target database is busy; close all target connections and retry: %v", ErrRestoreTargetOccupied, err)
 	}
 	if _, err := db.ExecContext(ctx, "BEGIN IMMEDIATE; COMMIT;"); err != nil {
-		return fmt.Errorf("target database is busy; close all target connections and retry: %w", err)
+		return fmt.Errorf("%w: target database is busy; close all target connections and retry: %v", ErrRestoreTargetOccupied, err)
 	}
 	if _, err := db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		return fmt.Errorf("checkpoint target WAL: %w", err)

@@ -142,6 +142,9 @@ const (
 	// 数据库恢复对已存在目标会 DROP+CREATE，空库同样需要显式覆盖）。
 	ErrRestoreTargetExists = "restore_target_exists"
 	ErrRestoreVerification = "restore_verification_failed"
+	// ErrRestorePreflightFailed 表示恢复预检本身失败（连接/认证/参数等），
+	// 与"目标被占用"的 ErrRestoreTargetBusy 区分：真实原因在 error_message 中回显。
+	ErrRestorePreflightFailed = "restore_preflight_failed"
 	// ErrRestoreImportFailed 表示恢复的导入步骤本身失败（如权限不足无法建库、
 	// 导入语句报错），与"导入完成但校验不一致"的 ErrRestoreVerification 区分。
 	ErrRestoreImportFailed      = "restore_import_failed"

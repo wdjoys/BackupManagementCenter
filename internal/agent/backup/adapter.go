@@ -5,6 +5,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"backupmanagementcenter/internal/model"
@@ -138,6 +139,11 @@ type Adapter interface {
 type PreflightRestorer interface {
 	PreflightRestore(ctx context.Context, spec *RestoreSpec) error
 }
+
+// ErrRestoreTargetOccupied 由预检在**确实**检测到目标被其它会话/连接占用时标注。
+// 调用方据此区分"目标忙"与"连接/认证/参数失败"：后者必须回显原始原因，否则
+// 运维会把密码缺失（1045 Access denied）当成目标忙去排查会话，方向完全错。
+var ErrRestoreTargetOccupied = errors.New("restore target is occupied by another session")
 
 // DatabaseRestorer is the control plane of a database restore. Implementations
 // must be able to tell "target absent" apart from "target unreachable", and must

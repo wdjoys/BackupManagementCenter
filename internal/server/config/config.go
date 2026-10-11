@@ -47,8 +47,14 @@ var knownDatabaseRestoreKinds = map[string]bool{
 	"sqlite":     true,
 }
 
+// DataDir 返回数据目录（BMC_DATA_DIR，默认 ./data）。reset-admin 这类子命令
+// 只需要数据目录，不能走 LoadServer（会被 TLS 证书校验挡住），因此单独暴露。
+func DataDir() string {
+	return env("BMC_DATA_DIR", "./data")
+}
+
 func LoadServer() (Server, error) {
-	dataDir := env("BMC_DATA_DIR", "./data")
+	dataDir := DataDir()
 	masterKeyFile := os.Getenv("BMC_MASTER_KEY_FILE")
 	c := Server{
 		ListenAddr: env("BMC_LISTEN_ADDR", ":8080"), GRPCAddr: env("BMC_GRPC_ADDR", ":9090"),

@@ -403,10 +403,7 @@ func printUsage() {
 }
 
 func runResetAdmin() {
-	dataDir := os.Getenv("BMC_DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
-	}
+	dataDir := servercfg.DataDir()
 	dbPath := filepath.Join(dataDir, "bmc.db")
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		log.Fatalf("[FATAL] database file not found at %s", dbPath)

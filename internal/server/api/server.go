@@ -53,7 +53,9 @@ type rateWindow struct {
 // allowAuthAttempt is a small in-process login/setup limiter. It is
 // deliberately keyed by the peer address and fails closed after ten attempts
 // in fifteen minutes; a reverse proxy should apply an additional edge limit.
-func (s *Server) allowAuthAttempt(r *http.Request) bool {
+// 被拒时同时返回当前窗口的剩余时间，供 handler 写 Retry-After（此前 429 没有任何
+// 重试提示，客户端只能盲猜）。
+func (s *Server) allowAuthAttempt(r *http.Request) (bool, time.Duration) {
 	key := r.RemoteAddr
 	if i := strings.LastIndex(key, ":"); i > 0 {
 		key = key[:i]
@@ -70,11 +72,24 @@ func (s *Server) allowAuthAttempt(r *http.Request) bool {
 	}
 	if w.count >= 10 {
 		s.rate[key] = w
-		return false
+		return false, 15*time.Minute - now.Sub(w.started)
 	}
 	w.count++
 	s.rate[key] = w
-	return true
+	return true, 0
+}
+
+// writeRateLimited answers 429 with a Retry-After header (整秒，向上取整，至少 1s)。
+func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
+	secs := int(retryAfter.Seconds())
+	if retryAfter%time.Second != 0 {
+		secs++
+	}
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
 }
 
 func New(s *Server) http.Handler {

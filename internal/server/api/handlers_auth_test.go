@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -200,5 +201,29 @@ func TestLoginStoreFailureReturnsInternalError(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "invalid_credentials") {
 		t.Fatalf("store failure must not be reported as invalid credentials: %s", rec.Body.String())
+	}
+}
+
+// 限流拒绝必须带 Retry-After（秒）：此前 429 没有任何重试提示，客户端只能盲猜。
+func TestLoginRateLimitSetsRetryAfter(t *testing.T) {
+	s, _, cleanup := newTestServerWithAdmin(t)
+	defer cleanup()
+
+	handler := New(s)
+	body := []byte(`{"username":"admin","password":"wrong"}`)
+	var rec *httptest.ResponseRecorder
+	for i := 0; i < 11; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("11th login attempt: got %d, want 429", rec.Code)
+	}
+	got := rec.Header().Get("Retry-After")
+	secs, err := strconv.Atoi(got)
+	if err != nil || secs < 1 || secs > 900 {
+		t.Fatalf("Retry-After = %q, want 1..900 seconds", got)
 	}
 }

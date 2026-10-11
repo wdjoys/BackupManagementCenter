@@ -34,8 +34,13 @@ type requestPolicy struct{ forceSecure bool; publicOrigin string }
 // WithRequestPolicy marks requests received behind a trusted reverse proxy.
 // The public URL is used for Secure cookies and strict Origin validation.
 func WithRequestPolicy(r *http.Request, publicURL string) *http.Request {
-	policy := requestPolicy{forceSecure: publicURL != ""}
+	var policy requestPolicy
 	if u, err := url.Parse(publicURL); err == nil && u.Scheme != "" && u.Host != "" {
+		// Secure cookie 只在公网入口确实是 https 时强制。此前只要 BMC_PUBLIC_URL
+		// 非空就强制 Secure：明文 http 部署（BMC_TLS_MODE=none + 反代/直连）下浏览器
+		// 会丢弃会话 cookie，登录成功后每个请求都 401，形成"登录循环"的配置陷阱。
+		// 保留 http 而不在校验里拒绝：本部署（http://<host>:18080）就是明文入口。
+		policy.forceSecure = u.Scheme == "https"
 		policy.publicOrigin = strings.TrimRight(u.Scheme+"://"+u.Host, "/")
 	}
 	return r.WithContext(context.WithValue(r.Context(), requestPolicyKey{}, policy))

@@ -54,8 +54,8 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 
 // POST /setup — creates the one and only admin; 404 afterwards forever.
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
-	if !s.allowAuthAttempt(r) {
-		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
+	if ok, retryAfter := s.allowAuthAttempt(r); !ok {
+		writeRateLimited(w, retryAfter)
 		return
 	}
 	has, err := s.ST.HasAdmin(r.Context())
@@ -94,8 +94,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 
 // POST /auth/login — sets session + csrf cookies.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if !s.allowAuthAttempt(r) {
-		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
+	if ok, retryAfter := s.allowAuthAttempt(r); !ok {
+		writeRateLimited(w, retryAfter)
 		return
 	}
 	var body struct {

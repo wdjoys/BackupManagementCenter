@@ -96,10 +96,13 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 func model2Filter(q url.Values) store.RunFilter {
 	get := q.Get
 	f := store.RunFilter{
-		AgentID:   get("agent_id"),
-		PlanID:    get("plan_id"),
-		Operation: get("operation"),
-		Limit:     100,
+		AgentID: get("agent_id"),
+		PlanID:  get("plan_id"),
+		// repository_id 此前未映射，被静默忽略：调用方按仓库过滤时拿到的是全局列表，
+		// 排障时容易据此得出错误结论（实测切片据此误判"该仓库无保留 run"）。
+		RepositoryID: get("repository_id"),
+		Operation:    get("operation"),
+		Limit:        100,
 	}
 	if s := get("status"); s != "" {
 		f.Statuses = []string{s}

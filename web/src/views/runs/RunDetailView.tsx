@@ -589,7 +589,11 @@ export const RunDetailView: React.FC = () => {
             <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1 text-xs">
               <div>
                 <dt className="text-[11px] text-muted-foreground">{t('runDetail.progress.step')}</dt>
-                <dd className="font-medium text-foreground">{translateEnum('runDetail.phases', run.progress.phase)}</dd>
+                <dd className="font-medium text-foreground">
+                  {run.operation === 'restore'
+                    ? translateEnum('restore.phases', run.progress.phase, 'runDetail.phases')
+                    : translateEnum('runDetail.phases', run.progress.phase, 'restore.phases')}
+                </dd>
               </div>
               <div>
                 <dt className="text-[11px] text-muted-foreground">{t('runDetail.progress.bytesDone')}</dt>

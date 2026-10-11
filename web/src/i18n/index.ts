@@ -121,10 +121,22 @@ export function formatDateTime(
 }
 
 /** Translates a dynamic enum-like value (status, phase, …) under `prefix`,
-    falling back to the raw API value when no translation exists. */
-export function translateEnum(prefix: string, value: string): string {
+    falling back to `fallbackPrefix` and finally to the raw API value when no
+    translation exists. 同一份 phase 值可能只在一个命名空间里有译文（备份阶段在
+    runDetail.phases、恢复阶段在 restore.phases），调用方按 operation 选主命名空间、
+    另一个作回退，避免渲染未本地化的英文枚举原值。 */
+export function translateEnum(prefix: string, value: string, fallbackPrefix?: string): string {
   const key = `${prefix}.${value}`
-  return i18n.exists(key) ? i18n.t(key) : value
+  if (i18n.exists(key)) {
+    return i18n.t(key)
+  }
+  if (fallbackPrefix) {
+    const alt = `${fallbackPrefix}.${value}`
+    if (i18n.exists(alt)) {
+      return i18n.t(alt)
+    }
+  }
+  return value
 }
 
 export default i18n

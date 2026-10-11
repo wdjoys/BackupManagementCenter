@@ -183,6 +183,12 @@ func (b *planBody) validate() (string, bool) {
 	if err := validateScheduleWindow(b.Schedule, b.Timezone, time.Duration(b.TimeoutSeconds)*time.Second); err != nil {
 		return err.Error(), false
 	}
+	// 负数必须先于求和拒绝：restic forget 会跳过非正的 --keep-* 标志，而求和检查
+	// 会被 {keep_last:-1} 这类组合绕过（sum != 0），于是"至少保留一条规则"的
+	// 校验通过、实际一条保留规则都不生效。
+	if b.Retention.KeepLast < 0 || b.Retention.KeepDaily < 0 || b.Retention.KeepWeekly < 0 || b.Retention.KeepMonthly < 0 {
+		return "retention values must not be negative", false
+	}
 	if b.Retention.KeepLast+b.Retention.KeepDaily+b.Retention.KeepWeekly+b.Retention.KeepMonthly == 0 {
 		return "retention must keep at least one rule", false
 	}
@@ -223,6 +229,11 @@ func validateDatabaseEstimate(kind string, src model.PlanSource) string {
 	case model.KindPostgreSQL, model.KindMySQL, model.KindMongoDB:
 		if src.EstimatedDumpBytes <= 0 {
 			return "estimated_dump_bytes must be greater than zero for logical database backups"
+		}
+		// Agent 侧只要求 port > 0；越界端口（-1/65536）会被接受并在备份时必然
+		// 连接失败。与库名长度一样，在受理阶段就拒绝。
+		if src.Port < 1 || src.Port > 65535 {
+			return "source.port must be 1..65535"
 		}
 	case model.KindSQLite:
 		if src.Path == "" || !filepath.IsAbs(src.Path) {
@@ -479,6 +490,12 @@ func (s *Server) handleValidatePlan(w http.ResponseWriter, r *http.Request) {
 	var src model.PlanSource
 	if err := json.Unmarshal(body.Source, &src); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation_failed", "invalid source: "+err.Error())
+		return
+	}
+	// 未知 kind 会让 validateDatabaseEstimate 走不到任何分支，从而对
+	// POST /plans 必然拒绝的计划回 ok:true；这里与创建路径保持一致。
+	if !validKind(body.Kind) {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "kind must be one of "+planKinds)
 		return
 	}
 	if msg := validateDatabaseEstimate(body.Kind, src); msg != "" {

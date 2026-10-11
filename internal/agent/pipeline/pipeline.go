@@ -193,7 +193,10 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 	if err := adapter.Validate(ctx, spec); err != nil {
 		return nil, &PipelineError{Code: "invalid_plan", Message: "validation failed", Cause: fmt.Errorf("requested %s: %w", requested, err)}
 	}
-	d.logf("info", "源校验通过")
+	// 这里只做计划字段的静态校验（kind/host/port/username/database/estimated_dump_bytes/
+	// extra_args），不连接源库；措辞必须与事实一致，否则源库不存在/无权限时先出现的
+	// "校验通过"会误导排障（实际连通性由随后的导出阶段暴露）。
+	d.logf("info", "计划参数校验通过")
 
 	// Space check for database kinds
 	if task.Kind != "filesystem" {

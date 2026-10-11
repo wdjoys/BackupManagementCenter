@@ -220,7 +220,8 @@ export const LogsView: React.FC = () => {
     }
   }
 
-  const filteredLogs = logs
+  // 服务端返回畸形数据（对象/缺字段）时保持数组语义，避免标题渲染出「已加载  条」这类残缺文案。
+  const filteredLogs = Array.isArray(logs) ? logs : []
 
   return (
     <div className="space-y-6">

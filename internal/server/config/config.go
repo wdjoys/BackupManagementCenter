@@ -18,12 +18,10 @@ type Server struct {
 	PublicURL         string // BMC_PUBLIC_URL
 	MasterKeyFile     string // BMC_MASTER_KEY_FILE or DataDir/master.key
 	MasterKeyExplicit bool
-	// Telegram failure notifications. Both variables must be set together
-	// to enable; both empty disables; exactly one is a config error.
-	TelegramBotToken string // BMC_TELEGRAM_BOT_TOKEN
-	TelegramChatID   string // BMC_TELEGRAM_CHAT_ID
-	TLSCertFile      string // BMC_TLS_CERT_FILE
-	TLSKeyFile       string // BMC_TLS_KEY_FILE
+	// Telegram 失败通知的机器人 Token 与目标会话都在 Web 界面配置（存于
+	// telegram_settings 表），不通过环境变量读取。
+	TLSCertFile string // BMC_TLS_CERT_FILE
+	TLSKeyFile  string // BMC_TLS_KEY_FILE
 	// TLSMode: "auto" (default) serves TLS from TLSCertFile/KeyFile and
 	// requires them in production; "none" serves plain HTTP + plain gRPC for
 	// deployments where a reverse proxy (Caddy/Nginx) terminates all TLS.

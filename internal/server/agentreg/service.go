@@ -770,6 +770,16 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 			})
 		}
 
+		if errors.Is(err, store.ErrInvalidTransition) {
+			// 取消是尽力而为：服务端在 Agent 确认前就把运行写成 cancelled，而 Agent
+			// 可能随后上报 succeeded（取消到达前备份已提交快照）。这里把迟到的成功结果
+			// 收敛回终态，否则留下"cancelled 但仓库里已有该次运行的快照、snapshot_id
+			// 为空"的不一致（终态与仓库内容矛盾）。
+			if toStatus == model.RunSucceeded {
+				err = s.reconcileCancelledSuccess(ctx, runID, snapshotID, string(resultJSON))
+			}
+		}
+
 		if err == store.ErrInvalidTransition {
 			// Already terminal — idempotent.
 			return nil
@@ -865,6 +875,31 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 			notification.LogFailure(runID, err)
 		}
 	}
+	return nil
+}
+
+// reconcileCancelledSuccess 把迟到的成功结果收敛回被乐观标记为 cancelled 的运行。
+// 取消是尽力而为（dispatcher.Cancel 不等 Agent 确认就写终态），而备份只有在快照
+// 提交后才返回成功：此时保留 cancelled 会留下"cancelled 但快照已产生、snapshot_id
+// 为空"的终态与仓库内容不一致。是否改写由 store 的 SQL 守卫决定（仅当前状态仍为
+// cancelled 才改写），因此这里不依赖 handleRunResult 开头读到的（可能已过期的）
+// 状态。返回 nil 表示无需修正或已修正。
+func (s *Service) reconcileCancelledSuccess(ctx context.Context, runID, snapshotID, resultJSON string) error {
+	rs, ok := s.store.(interface {
+		ReconcileCancelledRunSuccess(context.Context, string, string, string) error
+	})
+	if !ok {
+		return nil
+	}
+	err := rs.ReconcileCancelledRunSuccess(ctx, runID, snapshotID, resultJSON)
+	if err != nil {
+		if errors.Is(err, store.ErrInvalidTransition) {
+			return nil // 运行不是 cancelled（已被其它路径终结），无需修正
+		}
+		return err
+	}
+	log.Printf("[INFO] run %s was cancelled before the agent confirmed, but the agent reported success; reconciled to succeeded (snapshot=%s)", runID, snapshotID)
+	s.appendServerRunLog(ctx, runID, "warn", "取消未生效：Agent 在取消送达前已完成本次运行，已按成功记录（快照 "+snapshotID+"）")
 	return nil
 }
 

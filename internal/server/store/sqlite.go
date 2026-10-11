@@ -1374,6 +1374,40 @@ func (s *sqliteStore) transitionRunOnce(ctx context.Context, id, from, to string
 	return nil
 }
 
+// ReconcileCancelledRunSuccess 用 Agent 的终态结果修正"抢跑"的取消：取消是尽力而为
+// （见 dispatcher.Cancel：不等 Agent 确认就把运行写成 cancelled），而 Agent 可能随后
+// 上报 succeeded——备份只有在快照提交后才返回成功，其它操作同样只有在真正完成时才
+// 返回成功。丢弃这个结果会留下"cancelled 但仓库里已有该次运行的快照、snapshot_id
+// 为空"的不一致终态，运行详情页的「快照」列也永远是占位符。
+//
+// 仅在当前状态仍为 cancelled 时改写；返回 ErrInvalidTransition 表示无需修正（状态
+// 已被其它路径推进）。终态观察者不重复通知：该 run 的终态事件在进入 cancelled 时已
+// 计数一次，再通知会重复计入指标。
+func (s *sqliteStore) ReconcileCancelledRunSuccess(ctx context.Context, runID, snapshotID, progressJSON string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return retryOnBusy(ctx, busyRetryAttempts, busyRetryBackoff, func() error {
+		res, err := s.db.ExecContext(ctx,
+			`UPDATE runs SET status = ?, error_code = '', error_message = NULL,
+			   snapshot_id = CASE WHEN ? = '' THEN snapshot_id ELSE ? END,
+			   progress_json = CASE WHEN ? = '' THEN progress_json ELSE ? END,
+			   lease_expires_at = NULL
+			 WHERE id = ? AND status = ?`,
+			model.RunSucceeded, snapshotID, snapshotID, progressJSON, progressJSON, runID, model.RunCancelled)
+		if err != nil {
+			return fmt.Errorf("reconcile cancelled run success: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("reconcile cancelled run success: %w", err)
+		}
+		if n == 0 {
+			return ErrInvalidTransition
+		}
+		return nil
+	})
+}
+
 func (s *sqliteStore) ListRunsByStatus(ctx context.Context, statuses []string) ([]model.Run, error) {
 	if len(statuses) == 0 {
 		return nil, nil

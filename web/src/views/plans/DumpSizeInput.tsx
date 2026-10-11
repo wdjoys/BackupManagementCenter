@@ -73,11 +73,9 @@ export const DumpSizeInput: React.FC<DumpSizeInputProps> = ({
       <div className="relative">
         <Input
           id={id}
-          type="number"
-          // min 必须与 step 的基准对齐：min=0.1 配 step=0.5 会让合法值变成
-          // 0.1+n×0.5（1.6/2.1…），用户输入 2 会被原生校验拒绝。
-          min={0}
-          step={0.1}
+          // 自由文本输入而非原生 number：体积类输入不需要上下步进箭头，且
+          // number 会把 "0." 这类中间态规整掉，用户无法逐键输入 "0.1"。
+          type="text"
           inputMode="decimal"
           value={text}
           onChange={(e) => handleChange(e.target.value)}

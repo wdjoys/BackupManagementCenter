@@ -1041,6 +1041,12 @@ func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, sto
 	if err != nil {
 		return nil, err
 	}
+	// 未知 agent_id 必须在插入前拒绝：repositories.agent_id 的外键约束只会在
+	// CreateRepository 时冒泡成 500 "FOREIGN KEY constraint failed"，把客户端
+	// 输入错误报成服务端内部错误。
+	if _, err := o.Store.GetAgent(ctx, agentID); err != nil {
+		return nil, err
+	}
 
 	existing, err := o.Store.GetRepositoryByAgentAndTarget(ctx, agentID, storageTargetID)
 	if err == nil && existing != nil {

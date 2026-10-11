@@ -216,6 +216,7 @@ export default {
       "repository": "Repository",
       "path": "Backup Path",
       "lastRunAt": "Last Run At",
+      "nextRunAt": "Next Run At",
       "timeout": "Timeout"
     },
     "deleted": "Plan deleted",

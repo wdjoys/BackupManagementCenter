@@ -31,8 +31,12 @@ type planView struct {
 	Retention      model.Retention     `json:"retention"`
 	TimeoutSeconds int                 `json:"timeout_seconds"`
 	LastRunAt      *string             `json:"last_run_at"`
-	CreatedAt      string              `json:"created_at"`
-	UpdatedAt      string              `json:"updated_at"`
+	// NextFireAt 是按计划自身 schedule+timezone 现算的下次运行时间（UTC RFC3339）；
+	// 计划被禁用或表达式无效时为空。与仪表盘 next_scheduled 用同一处逻辑，避免两处
+	// 各算一套导致显示互相矛盾。
+	NextFireAt *string `json:"next_fire_at"`
+	CreatedAt  string  `json:"created_at"`
+	UpdatedAt  string  `json:"updated_at"`
 }
 
 type planCredentialsView struct {
@@ -62,6 +66,12 @@ func (s *Server) planView(ctx context.Context, p *model.Plan) planView {
 		passwordSet = ps.HasPlanDBPassword(ctx, p.ID)
 	}
 	view := planToView(p, passwordSet)
+	if p.Enabled {
+		if next, err := nextFireFromPlan(p, time.Now()); err == nil && !next.IsZero() {
+			at := next.Format(timeRFC3339)
+			view.NextFireAt = &at
+		}
+	}
 	runs, err := s.ST.ListRuns(ctx, store.RunFilter{PlanID: p.ID, Operation: model.OpBackup, Limit: 1})
 	if err == nil && len(runs) > 0 {
 		run := runs[0]

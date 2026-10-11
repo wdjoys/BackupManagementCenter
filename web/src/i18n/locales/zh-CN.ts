@@ -216,6 +216,7 @@ export default {
       "repository": "仓库",
       "path": "备份路径",
       "lastRunAt": "上次执行时间",
+      "nextRunAt": "下次运行时间",
       "timeout": "超时"
     },
     "deleted": "计划已删除",

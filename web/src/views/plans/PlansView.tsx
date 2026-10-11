@@ -361,6 +361,7 @@ export const PlansView: React.FC = () => {
                         <TableHead className="text-xs font-medium">{t('plans.columns.repository')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('plans.columns.path')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('plans.columns.lastRunAt')}</TableHead>
+                        <TableHead className="text-xs font-medium">{t('plans.columns.nextRunAt')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('plans.columns.timeout')}</TableHead>
                         <TableHead className="text-xs font-medium">{t('common.actions')}</TableHead>
                       </TableRow>
@@ -420,6 +421,9 @@ export const PlansView: React.FC = () => {
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground">
                               {plan.last_run_at ? formatDateTime(plan.last_run_at) : '—'}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {plan.next_fire_at ? formatDateTime(plan.next_fire_at) : '—'}
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground font-mono">
                               {plan.timeout_seconds}s
@@ -512,6 +516,12 @@ export const PlansView: React.FC = () => {
                           <div className="text-[11px] text-muted-foreground font-mono">
                             <span>{t('plans.columns.lastRunAt')}: </span>
                             <span>{formatDateTime(plan.last_run_at)}</span>
+                          </div>
+                        )}
+                        {plan.next_fire_at && (
+                          <div className="text-[11px] text-muted-foreground font-mono">
+                            <span>{t('plans.columns.nextRunAt')}: </span>
+                            <span>{formatDateTime(plan.next_fire_at)}</span>
                           </div>
                         )}
                         <div className="flex items-center justify-end gap-1 pt-1">

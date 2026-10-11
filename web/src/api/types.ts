@@ -115,6 +115,7 @@ export interface Plan {
   retention: Retention
   timeout_seconds: number
   last_run_at: string | null
+  next_fire_at: string | null
   created_at: string
   updated_at: string
 }

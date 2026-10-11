@@ -54,11 +54,13 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	plans, err := s.ST.ListPlans(ctx, "")
 	if err == nil {
 		fires := make([]nextFire, 0, 8)
-		for _, p := range plans {
+		now := time.Now()
+		for i := range plans {
+			p := &plans[i]
 			if !p.Enabled {
 				continue
 			}
-			next, err := s.nextFireFor(ctx, p.ID)
+			next, err := nextFireFromPlan(p, now)
 			if err != nil || next.IsZero() {
 				continue
 			}

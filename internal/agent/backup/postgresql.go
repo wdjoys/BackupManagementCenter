@@ -97,6 +97,13 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 		cap := &stderrCapture{logf: logLine}
 		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dumpall"), Args: args, Env: env}, logLine, cap.line)
 		if err != nil || exitCode != 0 {
+			// 失败本身是响亮的（不会静默漏库），但 pg_dumpall 的报错对运维不可操作：
+			// 实测非超管角色报 "permission denied for table pg_authid"。把处置建议并进
+			// error_message（run 列表/详情页只显示它，日志里的 warn 看不到）。
+			if hint := pgDumpallGlobalsHint(cap.tail); hint != "" {
+				rc.Logf("warn", "%s", hint)
+				return nil, fmt.Errorf("%w；%s", exitErrorWithStderr("pg_dumpall globals", exitCode, err, cap.tail), hint)
+			}
 			return nil, exitErrorWithStderr("pg_dumpall globals", exitCode, err, cap.tail)
 		}
 		dbExports = append(dbExports, DbExport{Database: "globals", File: "globals.sql", Format: "sql"})
@@ -196,6 +203,27 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 		StagingFiles: stagingFiles,
 		Manifest:     manifest,
 	}, nil
+}
+
+// pgDumpallGlobalsHint 在 pg_dumpall --globals-only 因权限不足失败时给出可执行的处置。
+//
+// 实测（postgres:16）：非超管角色跑整实例备份时 globals 导出失败并报
+//
+//	pg_dumpall: error: query failed: ERROR:  permission denied for table pg_authid
+//
+// 失败本身是响亮的（不会静默漏库），但 "permission denied for table pg_authid" 对
+// 运维不可操作：globals 要读角色定义，因此整实例备份需要超级用户，或具备
+// pg_read_all_data 角色（PG 14+）的账号。
+func pgDumpallGlobalsHint(stderrTail []string) string {
+	for _, line := range stderrTail {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "permission denied") || strings.Contains(lower, "pg_authid") || strings.Contains(lower, "superuser") {
+			return "整实例备份（database=\"all\"）的 globals 导出需要超级用户，或具备 pg_read_all_data 角色（PG 14+）的账号——" +
+				"globals 要读取角色定义（pg_authid），普通角色无权访问；" +
+				"请改用超级用户，或 GRANT pg_read_all_data TO <账号>，或把整实例拆成多个单库计划（单库 pg_dump 不需要该权限）"
+		}
+	}
+	return ""
 }
 
 // postgresDumpFilename never incorporates a database name directly into a

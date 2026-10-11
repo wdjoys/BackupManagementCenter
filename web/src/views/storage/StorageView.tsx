@@ -9,7 +9,7 @@ import type {
   StorageTargetValidateResponse,
 } from '@/api/types'
 import { toastSuccess, toastError, toastWarning } from '@/lib/toast'
-import { localizeErrorCode } from '@/lib/errors'
+import { localizeErrorCode, apiErrorMessage } from '@/lib/errors'
 import { Folder, Link } from 'lucide-react'
 import { StorageTargetsPanel } from './StorageTargetsPanel'
 import { RepositoriesPanel } from './RepositoriesPanel'
@@ -126,7 +126,7 @@ export const StorageView: React.FC = () => {
   }
 
   const handleValidate = async () => {
-    if (!importForm.rclone_conf || !importForm.remote_name || !importForm.validate_agent_id) {
+    if (!importForm.rclone_conf.trim() || !importForm.remote_name || !importForm.validate_agent_id) {
       return
     }
     setValidateLoading(true)
@@ -141,14 +141,19 @@ export const StorageView: React.FC = () => {
       setValidateResult(res)
       toastSuccess(t('storage.importDialog.validationSuccess'))
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('storage.importDialog.validationFailed'))
+      toastError(apiErrorMessage(err, t('storage.importDialog.validationFailed')))
     } finally {
       setValidateLoading(false)
     }
   }
 
   const handleImport = async () => {
-    if (!importForm.name || !importForm.rclone_conf || !importForm.remote_name || !importForm.validate_agent_id) {
+    if (
+      !importForm.name ||
+      !importForm.rclone_conf.trim() ||
+      !importForm.remote_name ||
+      !importForm.validate_agent_id
+    ) {
       return
     }
     setImportLoading(true)
@@ -164,7 +169,9 @@ export const StorageView: React.FC = () => {
       setImportDialogOpen(false)
       await loadTargets()
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('storage.importDialog.importFailed'))
+      // 400 validation_failed 的原因（"rclone_conf is required"…）只在服务端 message，
+      // 只显示本地化通用文案会让用户无从修正。
+      toastError(apiErrorMessage(err, t('storage.importDialog.importFailed')))
     } finally {
       setImportLoading(false)
     }
@@ -189,7 +196,7 @@ export const StorageView: React.FC = () => {
       setEditTargetDialogOpen(false)
       await loadTargets()
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('storage.editDialog.renameFailed'))
+      toastError(apiErrorMessage(err, t('storage.editDialog.renameFailed')))
     } finally {
       setEditTargetLoading(false)
     }
@@ -238,7 +245,7 @@ export const StorageView: React.FC = () => {
       toastSuccess(t('storage.bindDialog.boundSuccessfully'))
       await loadRepos()
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('storage.bindDialog.bindFailed'))
+      toastError(apiErrorMessage(err, t('storage.bindDialog.bindFailed')))
     } finally {
       setBindLoading(false)
     }

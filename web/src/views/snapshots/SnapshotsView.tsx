@@ -17,6 +17,7 @@ import { hostPathRoots, isAbsolutePath, isWithinMappedRoot } from '@/utils/pathM
 import { AppErrorState } from '@/components/AppErrorState'
 import type { BadgeTone } from '@/components/StatusBadge'
 import { toastSuccess, toastError, toastWarning } from '@/lib/toast'
+import { apiErrorMessage } from '@/lib/errors'
 import {
   ALL_PLANS_FILTER,
   DELETED_PLANS_FILTER,
@@ -857,7 +858,7 @@ export const SnapshotsView: React.FC = () => {
       setDryRunResult(res)
       toastSuccess(t('snapshots.messages.dryRunCompleted'))
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('snapshots.messages.dryRunFailed'))
+      toastError(apiErrorMessage(err, t('snapshots.messages.dryRunFailed')))
     } finally {
       setDryRunLoading(false)
     }
@@ -948,7 +949,9 @@ export const SnapshotsView: React.FC = () => {
       setDetailDrawerOpen(false)
       navigate(`/runs/${res.run.id}`)
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('snapshots.messages.restoreFailed'))
+      // 受理期拒绝的原因（path_validation_failed / agent_unavailable / forbidden…）只在
+      // 服务端 message；只显示本地化通用文案会让用户无从修正。
+      toastError(apiErrorMessage(err, t('snapshots.messages.restoreFailed')))
     } finally {
       setRestoreLoading(false)
     }

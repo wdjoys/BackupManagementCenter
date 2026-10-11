@@ -240,7 +240,7 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
                 disabled={
                   validateLoading ||
                   importLoading ||
-                  !importForm.rclone_conf ||
+                  !importForm.rclone_conf.trim() ||
                   !importForm.remote_name ||
                   !importForm.validate_agent_id
                 }
@@ -261,7 +261,7 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
                   importLoading ||
                   validateLoading ||
                   !importForm.name ||
-                  !importForm.rclone_conf ||
+                  !importForm.rclone_conf.trim() ||
                   !importForm.remote_name ||
                   !importForm.validate_agent_id
                 }

@@ -29,11 +29,13 @@ import { StatusBadge, type BadgeTone } from '@/components/StatusBadge'
 import { PageLoadingState } from '@/components/PageLoadingState'
 import { ConfirmActionDialog } from '@/components/ConfirmActionDialog'
 import { toastSuccess, toastError, toastWarning } from '@/lib/toast'
+import { apiErrorMessage } from '@/lib/errors'
 import { PlanForm } from './PlanForm'
 import { KIND_LABELS, defaultSource } from './Constants'
 import {
   buildPayload,
   buildValidatePayload,
+  withoutCaptureOplog,
   type PlanFormModel,
   type ValidateResult,
 } from './Types'
@@ -197,7 +199,7 @@ export const PlansView: React.FC = () => {
         schedule: plan.schedule,
         timezone: plan.timezone,
         enabled: nextState,
-        source: plan.source,
+        source: withoutCaptureOplog(plan.source),
         repository_id: plan.repository_id,
         retention: plan.retention,
         timeout_seconds: plan.timeout_seconds,
@@ -207,7 +209,9 @@ export const PlansView: React.FC = () => {
       )
       toastSuccess(nextState ? t('plans.enabled') : t('plans.disabled'))
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('plans.statusUpdateFailed'))
+      // 整对象 PUT 同样会撞上 planBody.validate/validateDatabaseEstimate（例如历史计划
+      // 仍带 capture_oplog），原因只在服务端 message。
+      toastError(apiErrorMessage(err, t('plans.statusUpdateFailed')))
     } finally {
       setToggleLoading((prev) => ({ ...prev, [plan.id]: false }))
     }
@@ -260,11 +264,8 @@ export const PlansView: React.FC = () => {
       } catch (valErr: unknown) {
         // Validation check failed to communicate or rejected。
         // 已映射的 invalid_plan 只剩本地化通用文案，被拒的具体原因（如非法额外参数名）
-        // 只存在于服务端 message，两者一起展示；未映射的码 message 本就是服务端原文，
-        // 不重复拼接。
-        const detail = isApiClientError(valErr) ? valErr.serverMessage : ''
-        const generic = isApiClientError(valErr) ? valErr.message : t('plans.form.validationFailed')
-        toastError(detail && detail !== generic ? `${generic}${t('common.detailSeparator')}${detail}` : generic)
+        // 只存在于服务端 message，两者一起展示。
+        toastError(apiErrorMessage(valErr, t('plans.form.validationFailed')))
         setSaving(false)
         return
       }
@@ -280,7 +281,9 @@ export const PlansView: React.FC = () => {
       setDialogOpen(false)
       await loadPlans(filterAgentId)
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('plans.saveFailed'))
+      // 400 validation_failed 的原因（名称超长、调度间隔短于超时、保留规则为负…）只在
+      // 服务端 message 里；只显示本地化通用文案会让用户无从修正。
+      toastError(apiErrorMessage(err, t('plans.saveFailed')))
     } finally {
       setSaving(false)
     }

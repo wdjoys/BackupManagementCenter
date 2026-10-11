@@ -12,3 +12,18 @@ export function localizeErrorCode(code: string | null | undefined): string | nul
   const key = `errors.${code}`
   return i18n.exists(key) ? i18n.t(key) : null
 }
+
+/**
+ * 表单提交失败时的可读文案：已映射的错误码（如 validation_failed）在 message 里只剩
+ * 本地化通用文案，被拒的具体原因（"name must be 1..200 chars"、
+ * "schedule interval (5m0s) is shorter than timeout_seconds"…）只存在于 serverMessage。
+ * 两者一起展示，否则用户只看到"请求参数校验失败"却无从修正。
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  const e = err as { message?: unknown; serverMessage?: unknown } | null
+  if (!e || typeof e.message !== 'string') return fallback
+  const detail = typeof e.serverMessage === 'string' ? e.serverMessage : ''
+  return detail && detail !== e.message
+    ? `${e.message}${i18n.t('common.detailSeparator')}${detail}`
+    : e.message
+}

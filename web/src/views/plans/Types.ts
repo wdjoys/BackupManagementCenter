@@ -42,6 +42,15 @@ export interface ValidateResult {
   tools?: string[]
 }
 
+/** 界面不再提供 capture_oplog 开关（服务端对任何 capture_oplog 计划一律 422：
+    mongodump --oplog 只支持整实例 dump，而整实例快照本平台不可恢复）。历史计划带着
+    它会让"编辑/启停"必然失败且界面无法清除，因此任何写回都丢弃该字段。 */
+export function withoutCaptureOplog(source: PlanSource): PlanSource {
+  const copy = { ...source }
+  delete copy.capture_oplog
+  return copy
+}
+
 /** Builds the edit/create payload from the form model. Arrays are trimmed and
     emptied of blank entries; `enabled` goes out only on updates (PUT). */
 export function buildPayload(model: PlanFormModel): Record<string, unknown> {
@@ -51,6 +60,7 @@ export function buildPayload(model: PlanFormModel): Record<string, unknown> {
   if (source.extra_args) source.extra_args = filterTrimmed(source.extra_args)
   if (source.port == null) delete source.port
   if (source.estimated_dump_bytes == null) delete source.estimated_dump_bytes
+	delete source.capture_oplog
 	const password = source.password
 	delete source.password
 
@@ -87,6 +97,7 @@ export function buildValidatePayload(model: PlanFormModel): Record<string, unkno
   if (source.extra_args) source.extra_args = filterTrimmed(source.extra_args)
   if (source.port == null) delete source.port
   if (source.estimated_dump_bytes == null) delete source.estimated_dump_bytes
+  delete source.capture_oplog
   delete source.password
   return { kind: model.kind, source: source as PlanSource, agent_id: model.agent_id }
 }

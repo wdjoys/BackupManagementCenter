@@ -146,6 +146,7 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 
 - `database=all` 在凭据不具备集群级角色时**拒绝导出**，建议授予 `backup` 角色（`db.grantRolesToUser(<账号>, [{role:"backup", db:"admin"}])`）或改用 `root`。注意 `readAnyDatabase`/`readWriteAnyDatabase`/`clusterMonitor` **不足以**完成整实例导出：它们能看到全部库，但读不到 `admin` 系统集合，`mongodump` 会在 `error counting admin.system.roles` 处响亮失败。
 - 单库模式下账号仅被授予**部分集合**权限时是**响亮失败**（不会静默缺集合）。
+- **`capture_oplog`（oplog 捕获）已不再支持，计划创建阶段直接拒绝**（`422` + `invalid_plan`，消息以 `capture_oplog is not supported:` 开头）。原因：`mongodump --oplog` 只支持**整实例** dump——带 `--db` 时工具直接拒绝（`bad option: --oplog mode only supported on full dumps`），所以「单库 + 捕获 oplog」在工具层就不存在；而唯一能捕获 oplog 的整实例（`database=all`）快照在本平台**无法恢复**（平台只开放单库恢复），`mongorestore` 的 `--oplogReplay` 又明确禁止与 `--nsFrom`/`--nsTo` 组合（`cannot use --oplogReplay with namespace renames specified`），无法重映射成单库恢复。此前该选项可被勾选并备份成功，但产出的快照在平台内**永远无法恢复**，属陷阱选项，故整体移除（前端开关、服务端计划校验、Agent 兜底校验三处一致拒绝）。升级后若有历史计划的 `capture_oplog=true`，其备份 run 会以同一消息失败（响亮失败，不会产出不能恢复的快照），请把该计划的 `capture_oplog` 置为 `false` 后重试。
 - `mongodump`/`mongorestore` 的失败原因已并入 run 的 `error_message`（此前只出现在 run 日志流里）。
 
 **通用**：

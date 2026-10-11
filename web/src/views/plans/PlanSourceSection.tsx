@@ -257,27 +257,6 @@ export const PlanSourceSection: React.FC<PlanSourceSectionProps> = ({
               <p className="text-[11px] text-muted-foreground">{t('plans.form.authSourceHint')}</p>
             </div>
           )}
-
-          {kind === 'mongodb' && (
-            <div className="flex items-center justify-between rounded-md border border-border p-3 sm:col-span-2">
-              <div className="space-y-0.5">
-                <Label className="text-xs">{t('plans.form.captureOplog')}</Label>
-                <p className="text-[11px] text-muted-foreground">
-                  {t('plans.form.captureOplogHint')}
-                </p>
-                {/* PlanForm 会在 capture_oplog 与 database != all 时设置该错误；
-                    此前没有渲染点，提交被静默拦住、用户看不到原因。 */}
-                {errors['source.capture_oplog'] && (
-                  <p className="text-[11px] text-destructive">{errors['source.capture_oplog']}</p>
-                )}
-              </div>
-              <Switch
-                checked={source.capture_oplog === true}
-                onCheckedChange={(checked) => onUpdateSource({ capture_oplog: checked })}
-                disabled={submitting}
-              />
-            </div>
-          )}
         </div>
       )}
     </div>

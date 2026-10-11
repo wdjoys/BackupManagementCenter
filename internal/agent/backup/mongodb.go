@@ -38,10 +38,13 @@ func (a *MongoDBAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.Database == "" {
 		return errors.New("database is required (single name or 'all')")
 	}
-	// mongodump 限制：--oplog 仅支持整实例 dump，配单库时必然以
-	// "bad option: --oplog mode only supported on full dumps" 失败，故在此拒绝。
-	if s.CaptureOplog && !strings.EqualFold(s.Database, "all") {
-		return errors.New("capture_oplog requires a full instance dump (database must be \"all\")")
+	// capture_oplog 的快照在本平台内不可能被恢复，故在此拒绝（服务端在计划创建阶段
+	// 同样拒绝，这里是兜底：老计划或直接调 Agent 都不会产出"不能恢复"的快照）：
+	// mongodump 的 --oplog 只支持整实例 dump（配 --db 时工具报
+	// "bad option: --oplog mode only supported on full dumps"），而整实例
+	// （database=all）快照在恢复侧被一律拒绝（平台只开放单库恢复）。
+	if s.CaptureOplog {
+		return errors.New("capture_oplog is not supported: its snapshot could never be restored by this platform (mongodump --oplog requires a full instance dump, and full instance snapshots are not restorable here)")
 	}
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
@@ -86,9 +89,7 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 	if source.Database != "all" {
 		args = append(args, "--db="+source.Database)
 	}
-	if source.CaptureOplog {
-		args = append(args, "--oplog")
-	}
+	// 不传 --oplog：capture_oplog 已在 Validate 阶段被拒绝（其快照在本平台无法恢复）。
 	args = append(args, source.ExtraArgs...)
 
 	logLine := func(l string) { rc.Logf("info", "%s", l) }

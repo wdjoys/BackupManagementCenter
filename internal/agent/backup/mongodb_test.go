@@ -245,27 +245,29 @@ func TestMongoImportDoesNotDropNewTarget(t *testing.T) {
 	}
 }
 
-// mongodump 限制：--oplog 只能用于整实例 dump，配单库时以
-// "bad option: --oplog mode only supported on full dumps" 失败。
-// 必须在 Validate 阶段拒绝，否则该计划每次备份都失败。
-func TestMongoValidateRejectsOplogWithSingleDatabase(t *testing.T) {
+// capture_oplog 的快照在本平台内不可能被恢复，必须在 Validate 阶段拒绝：
+// mongodump --oplog 只支持整实例 dump（配单库时报
+// "bad option: --oplog mode only supported on full dumps"），而整实例快照在恢复
+// 侧被一律拒绝。留在计划里只会产出"能备份、永远不能恢复"的快照。
+func TestMongoValidateRejectsOplog(t *testing.T) {
 	a := &MongoDBAdapter{}
 	base := PlanSpec{Kind: KindMongoDB, Source: model.PlanSource{
 		Host: "h", Port: 27017, Username: "bmc", EstimatedDumpBytes: 1 << 20,
 	}}
 
-	bad := base
-	bad.Source.Database = "appdb"
-	bad.Source.CaptureOplog = true
-	if err := a.Validate(context.Background(), bad); err == nil {
-		t.Fatal("capture_oplog with a single database must be rejected")
+	for _, db := range []string{"appdb", "all"} {
+		bad := base
+		bad.Source.Database = db
+		bad.Source.CaptureOplog = true
+		if err := a.Validate(context.Background(), bad); err == nil {
+			t.Fatalf("capture_oplog with database=%q must be rejected", db)
+		}
 	}
 
 	ok := base
 	ok.Source.Database = "all"
-	ok.Source.CaptureOplog = true
 	if err := a.Validate(context.Background(), ok); err != nil {
-		t.Fatalf("capture_oplog with all scope must be accepted: %v", err)
+		t.Fatalf("database=all without capture_oplog must be accepted: %v", err)
 	}
 }
 

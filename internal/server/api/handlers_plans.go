@@ -226,10 +226,18 @@ func validateDatabaseEstimate(kind string, src model.PlanSource) string {
 		// SQLite size is read from the source file by the agent; a user-supplied
 		// estimate is still accepted for scratch sizing when present.
 	}
-	if kind == model.KindMongoDB && src.CaptureOplog && !strings.EqualFold(src.Database, "all") {
-		// mongodump 限制：--oplog 只能用于整实例 dump，配单库时必然失败
-		// （bad option: --oplog mode only supported on full dumps）。
-		return "capture_oplog requires a full instance dump (database must be \"all\")"
+	if kind == model.KindMongoDB && src.CaptureOplog {
+		// capture_oplog 在本平台内不可能端到端可用，因此在计划创建阶段直接拒绝，
+		// 绝不允许产出"能备份、永远不能恢复"的快照：
+		//   1. mongodump 的 --oplog 只支持整实例 dump：带 --db 时工具直接拒绝
+		//      （bad option: --oplog mode only supported on full dumps），
+		//      所以"单库 + 捕获 oplog"这个组合在工具层就不存在；
+		//   2. 唯一能捕获 oplog 的整实例（database=all）快照在恢复侧被一律拒绝
+		//      （平台只开放单库恢复），而 mongorestore 的 --oplogReplay 明确禁止与
+		//      --nsFrom/--nsTo 组合（cannot use --oplogReplay with namespace renames
+		//      specified），无法重映射成单库恢复。
+		// 详见 deploy/README.md「MongoDB 的 capture_oplog」。
+		return "capture_oplog is not supported: mongodump --oplog only works on full instance dumps (database=all), and full instance snapshots cannot be restored by this platform, so such a snapshot could never be restored"
 	}
 	if src.EstimatedDumpBytes > 100<<30 {
 		return "logical backup exceeds 100 GiB; physical_backup_required"

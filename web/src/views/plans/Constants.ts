@@ -97,7 +97,6 @@ export function defaultSource(kind: PlanKind): PlanFormSource {
       database: 'all',
       extra_args: [],
       estimated_dump_bytes: undefined,
-      capture_oplog: false,
       password: '',
     }
   }

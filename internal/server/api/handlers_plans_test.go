@@ -7,20 +7,31 @@ import (
 	"backupmanagementcenter/internal/model"
 )
 
-// capture_oplog 配单库时 mongodump 必然失败（--oplog 只支持整实例 dump：
-// "bad option: --oplog mode only supported on full dumps"），必须在建计划时就
-// 拒绝，而不是让该计划每次备份都失败。
-func TestValidateDatabaseEstimateRejectsOplogWithSingleDatabase(t *testing.T) {
+// capture_oplog 在本平台内不可能端到端可用，必须在建计划时就拒绝，否则该计划
+// 只会产出"能备份、永远不能恢复"的快照：
+//   - mongodump --oplog 只支持整实例 dump（配 --db 时工具报
+//     "bad option: --oplog mode only supported on full dumps"）；
+//   - 整实例（database=all）快照在恢复侧被一律拒绝，且 mongorestore --oplogReplay
+//     禁止与 --nsFrom/--nsTo 组合，无法重映射成单库恢复。
+func TestValidateDatabaseEstimateRejectsOplog(t *testing.T) {
 	bad := model.PlanSource{Host: "h", Port: 27017, Username: "u", Database: "appdb",
 		EstimatedDumpBytes: 1 << 20, CaptureOplog: true}
 	if msg := validateDatabaseEstimate(model.KindMongoDB, bad); msg == "" {
 		t.Fatal("capture_oplog with a single database must be rejected")
 	}
 
-	ok := model.PlanSource{Host: "h", Port: 27017, Username: "u", Database: "all",
+	all := model.PlanSource{Host: "h", Port: 27017, Username: "u", Database: "all",
 		EstimatedDumpBytes: 1 << 20, CaptureOplog: true}
-	if msg := validateDatabaseEstimate(model.KindMongoDB, ok); msg != "" {
-		t.Fatalf("capture_oplog with all scope must be accepted, got %q", msg)
+	msg := validateDatabaseEstimate(model.KindMongoDB, all)
+	if msg == "" || !strings.Contains(msg, "capture_oplog is not supported") {
+		t.Fatalf("capture_oplog with all scope must be rejected with a readable reason, got %q", msg)
+	}
+
+	// 关掉 capture_oplog 后整实例计划仍照常放行。
+	plain := all
+	plain.CaptureOplog = false
+	if msg := validateDatabaseEstimate(model.KindMongoDB, plain); msg != "" {
+		t.Fatalf("database=all without capture_oplog must stay accepted, got %q", msg)
 	}
 
 	// 非 mongodb 类型不受该规则影响。

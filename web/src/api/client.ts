@@ -6,12 +6,15 @@ const BASE_URL = '/api/v1'
 export class ApiClientError extends Error {
   readonly code: string
   readonly status: number
+  /** 服务端原始 message。已映射的码在 message 里只剩本地化通用文案，具体原因只在这里。 */
+  readonly serverMessage: string
 
-  constructor(message: string, code: string, status: number) {
+  constructor(message: string, code: string, status: number, serverMessage = '') {
     super(message)
     this.name = 'ApiClientError'
     this.code = code
     this.status = status
+    this.serverMessage = serverMessage
     Object.setPrototypeOf(this, new.target.prototype)
   }
 }
@@ -88,7 +91,7 @@ export async function api<T = unknown>(
       // 已映射的错误码在构造时即本地化：toast/表单/页面错误条统一从这里取文案，
       // 避免各处透传服务端英文原文；未映射的码保持服务端 message 原样。
       const message = err?.message || response.statusText || 'Request failed'
-      throw new ApiClientError(localizeErrorCode(code) ?? message, code, response.status)
+      throw new ApiClientError(localizeErrorCode(code) ?? message, code, response.status, message)
     }
     // 空列表在 Go 侧为 nil slice，JSON 编码为 null；列表消费方统一假设数组，这里归一为 []。
     return (body === null ? [] : body) as T

@@ -258,8 +258,13 @@ export const PlansView: React.FC = () => {
           return
         }
       } catch (valErr: unknown) {
-        // Validation check failed to communicate or rejected
-        toastError(isApiClientError(valErr) ? valErr.message : t('plans.form.validationFailed'))
+        // Validation check failed to communicate or rejected。
+        // 已映射的 invalid_plan 只剩本地化通用文案，被拒的具体原因（如非法额外参数名）
+        // 只存在于服务端 message，两者一起展示；未映射的码 message 本就是服务端原文，
+        // 不重复拼接。
+        const detail = isApiClientError(valErr) ? valErr.serverMessage : ''
+        const generic = isApiClientError(valErr) ? valErr.message : t('plans.form.validationFailed')
+        toastError(detail && detail !== generic ? `${generic}：${detail}` : generic)
         setSaving(false)
         return
       }

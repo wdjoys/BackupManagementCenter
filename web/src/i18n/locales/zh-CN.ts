@@ -343,6 +343,7 @@ export default {
       "remoteNamePlaceholder": "例如：mydrive",
       "remotePath": "远端路径",
       "remotePathPlaceholder": "远端内的根路径（可选）",
+      "remoteType": "远端类型",
       "lsdEntries": "lsd 条目数：",
       "validateFirst": "先校验",
       "confirmImport": "确认导入",

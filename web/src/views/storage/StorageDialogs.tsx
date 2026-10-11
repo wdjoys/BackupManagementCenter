@@ -220,7 +220,7 @@ export const StorageDialogs: React.FC<StorageDialogsProps> = ({
               <Alert className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 py-3 text-xs">
                 <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
                 <AlertTitle className="text-xs font-semibold">
-                  remote_type: {validateResult.remote_type}
+                  {t('storage.importDialog.remoteType')}: {validateResult.remote_type}
                 </AlertTitle>
                 <AlertDescription className="text-xs mt-1">
                   <span>

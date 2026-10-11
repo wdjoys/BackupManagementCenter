@@ -343,6 +343,7 @@ export default {
       "remoteNamePlaceholder": "e.g. mydrive",
       "remotePath": "Remote Path",
       "remotePathPlaceholder": "Root path inside the remote (optional)",
+      "remoteType": "Remote Type",
       "lsdEntries": "lsd entries:",
       "validateFirst": "Validate First",
       "confirmImport": "Confirm Import",

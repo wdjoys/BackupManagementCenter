@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/robfig/cron/v3"
 
@@ -172,7 +173,9 @@ func (b *planBody) validate() (string, bool) {
 		b.TimeoutSeconds = 3600
 	}
 	switch {
-	case len(b.Name) < 1 || len(b.Name) > 200:
+	case len(b.Name) < 1 || utf8.RuneCountInString(b.Name) > 200:
+		// 按字符（rune）而不是字节计数：文案承诺的是 "1..200 chars"，用 len() 会让
+		// 100 个汉字（300 字节）这类完全合法的名称被拒。
 		return "name must be 1..200 chars", false
 	case !validKind(b.Kind):
 		return "kind must be one of " + planKinds, false

@@ -1528,3 +1528,49 @@ func TestMySQLBackupRejectsForeignDatabasePrefixInTables(t *testing.T) {
 	}
 }
 
+// --tables= 与 --ignore-table= 指向同一张表时必须明确拒绝：mysqldump 在显式给出位置
+// 参数表名时不应用 --ignore-table（实测 dump 仍含该表、字节数与只给 --tables= 相同），
+// 即"排除"被静默忽略，与用户意图不符。
+func TestMySQLBackupRejectsTablesIgnoreTableConflict(t *testing.T) {
+	rec := &argRecorder{}
+	task := mysqlBackupTask("p_sb_src")
+	task.Source.ExtraArgs = []string{"--tables=t1", "--ignore-table=p_sb_src.t1"}
+	rc := &RunContext{
+		Task: task, Secrets: SecretBundle{DBPassword: "pw"}, TempDir: t.TempDir(),
+		Exec: rec, Logf: func(string, string, ...any) {},
+	}
+	_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+	if err == nil {
+		t.Fatal("冲突组合必须拒绝")
+	}
+	for _, want := range []string{"--tables", "--ignore-table=p_sb_src.t1", "静默忽略"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误必须包含 %q: %v", want, err)
+		}
+	}
+	if rec.find("mysqldump") != nil {
+		t.Fatal("拒绝时不得启动 mysqldump")
+	}
+}
+
+// --ignore-table 只排除被点名的对象、其余表照常导出；日志不得再声称"不含未选中的表
+// 与视图"（旧文案与事实不符）。
+func TestMySQLBackupLogsIgnoreTableSemantics(t *testing.T) {
+	exec := &viewScopeExec{
+		grants: []string{"GRANT SELECT, EVENT, TRIGGER ON `appdb`.* TO `u`@`%`"},
+		views:  "1",
+	}
+	var logs []string
+	rc := viewScopeRC(t, exec, "appdb", &logs)
+	rc.Task.Source.ExtraArgs = []string{"--ignore-table=appdb.v1"}
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("显式排除视图后必须放行: %v", err)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "排除 --ignore-table= 指定的对象") || !strings.Contains(joined, "其余表照常导出") {
+		t.Fatalf("日志必须照实说明 --ignore-table 的语义:\n%s", joined)
+	}
+	if strings.Contains(joined, "不含未选中的表与视图") {
+		t.Fatalf("日志不得声称 --ignore-table 排除了未选中的表:\n%s", joined)
+	}
+}

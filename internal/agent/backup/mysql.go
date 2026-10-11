@@ -581,18 +581,6 @@ func mysqlExplicitTableSelection(extraArgs []string) bool {
 	return false
 }
 
-// mysqlScopeArgs 返回 extra_args 里限定本次表范围的参数（--tables=/--ignore-table=），
-// 用于在日志里说明本次 dump 按用户意图排除了哪些对象（视图没有 --skip-views 开关）。
-func mysqlScopeArgs(extraArgs []string) []string {
-	var out []string
-	for _, a := range extraArgs {
-		if strings.HasPrefix(a, "--tables=") || strings.HasPrefix(a, "--ignore-table=") {
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
 // mysqlCheckTableArgs 校验并归一化显式选表参数，返回应透传的 extra_args 与
 // mysqldump 需要的位置参数表名。
 //
@@ -606,26 +594,53 @@ func mysqlScopeArgs(extraArgs []string) []string {
 // Couldn't find table: "p_sb_src.t1"，run 必失败），但用户很容易照 --ignore-table 的
 // 库.表写法写 --tables=。因此：同源库前缀按 --ignore-table 的语义剥掉（行为可预测，
 // 备份照常成功）；别的前缀明确拒绝（跨库选表与单库计划语义不符）。
+//
+// 同时拒绝 --tables= 与 --ignore-table= 指向同一张表的组合：mysqldump 在显式给出位置
+// 参数表名时不应用 --ignore-table（实测 dump 仍含该表，字节数与只给 --tables= 完全
+// 相同），"排除"会被静默忽略。
 func mysqlCheckTableArgs(database string, extraArgs []string) (rest, tables []string, err error) {
+	type tableRef struct{ db, table string }
+	var ignored []tableRef
 	for _, a := range extraArgs {
-		if !strings.HasPrefix(a, "--tables=") {
+		switch {
+		case strings.HasPrefix(a, "--tables="):
+			for _, t := range strings.Split(strings.TrimPrefix(a, "--tables="), ",") {
+				if t = strings.TrimSpace(t); t == "" {
+					continue
+				}
+				if db, tbl, ok := mysqlSplitTableRef(t); ok {
+					if database == "all" || db != database {
+						return nil, nil, fmt.Errorf("mysql 导出参数被拒绝：--tables=%s 里的 %q 指定了库 %q 中的表，"+
+							"而本计划的源库是 %q；mysqldump 的位置参数表名不支持库名前缀（实测报 Couldn't find table: %q），"+
+							"跨库选表也与单库计划语义不符；请写成同库表名（--tables=%s），或为该库单独建一个计划",
+							t, t, db, database, t, tbl)
+					}
+					t = tbl
+				}
+				tables = append(tables, t)
+			}
+		case strings.HasPrefix(a, "--ignore-table="):
 			rest = append(rest, a)
+			if db, tbl, ok := mysqlSplitTableRef(strings.TrimPrefix(a, "--ignore-table=")); ok {
+				ignored = append(ignored, tableRef{db, tbl})
+			}
+		default:
+			rest = append(rest, a)
+		}
+	}
+	for _, ref := range ignored {
+		if database != "all" && ref.db != database {
 			continue
 		}
-		for _, t := range strings.Split(strings.TrimPrefix(a, "--tables="), ",") {
-			if t = strings.TrimSpace(t); t == "" {
-				continue
+		for _, t := range tables {
+			if t == ref.table {
+				return nil, nil, fmt.Errorf("mysql 导出参数被拒绝：extra_args 既用 --tables= 选中了表 %q，"+
+					"又用 --ignore-table=%s.%s 排除它；mysqldump 在显式给出位置参数表名时不应用 --ignore-table"+
+					"（实测 dump 仍含该表，与只给 --tables= 的字节数完全相同），"+
+					"即这条\"排除\"会被静默忽略、与用户意图不符；请二选一：只给 --tables=（列出要导出的表），"+
+					"或只给 --ignore-table=（让 mysqldump 遍历整库再排除）",
+					t, ref.db, ref.table)
 			}
-			if db, tbl, ok := mysqlSplitTableRef(t); ok {
-				if database == "all" || db != database {
-					return nil, nil, fmt.Errorf("mysql 导出参数被拒绝：--tables=%s 里的 %q 指定了库 %q 中的表，"+
-						"而本计划的源库是 %q；mysqldump 的位置参数表名不支持库名前缀（实测报 Couldn't find table: %q），"+
-						"跨库选表也与单库计划语义不符；请写成同库表名（--tables=%s），或为该库单独建一个计划",
-						t, t, db, database, t, tbl)
-				}
-				t = tbl
-			}
-			tables = append(tables, t)
 		}
 	}
 	return rest, tables, nil
@@ -708,10 +723,23 @@ func mysqlCheckObjectPrivileges(scope mysqlReadScope, username, database string,
 		}
 	}
 	// 视图没有对应的 --skip-views 开关：声明"本次不含视图"的唯一方式是显式限定表范围
-	// （--tables= 只导出列出的表，--ignore-table= 排除指定对象）。显式限定即按用户
-	// 意图放行，但要留下说明，避免"日志里看不出本次 dump 少了什么"。
-	if explicit := mysqlScopeArgs(extraArgs); len(explicit) > 0 {
-		log("info", fmt.Sprintf("本次导出按 extra_args 显式限定表范围（%s）：dump 不含未选中的表与视图", strings.Join(explicit, ", ")))
+	// （--tables= 只导出列出的表，--ignore-table= 排除指定对象）。两种参数的语义不同，
+	// 日志必须分别照实说明——旧文案把 --ignore-table 也说成"不含未选中的表与视图"，
+	// 与事实不符（--ignore-table 只排除被点名的对象，其余表照常导出）。
+	var selected, excluded []string
+	for _, a := range extraArgs {
+		switch {
+		case strings.HasPrefix(a, "--tables="):
+			selected = append(selected, a)
+		case strings.HasPrefix(a, "--ignore-table="):
+			excluded = append(excluded, a)
+		}
+	}
+	if len(selected) > 0 {
+		log("info", fmt.Sprintf("本次导出按 extra_args 只导出 --tables= 指定的表（%s）：dump 不含其余表与视图", strings.Join(selected, ", ")))
+	}
+	if len(excluded) > 0 {
+		log("info", fmt.Sprintf("本次导出按 extra_args 排除 --ignore-table= 指定的对象（%s）：其余表照常导出", strings.Join(excluded, ", ")))
 	}
 	if triggers && !scope.triggerGlobal && !(all || scope.triggerSchemas[database]) {
 		return fmt.Errorf("mysql 导出被拒绝：账号 %q 在库 %q 上没有 TRIGGER 权限，"+

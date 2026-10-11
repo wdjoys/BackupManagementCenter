@@ -97,11 +97,12 @@ export interface PlanSource {
   capture_oplog?: boolean
 }
 
+/** 后端 model.Retention 四个字段都带 omitempty：为 0 的保留规则不会出现在 JSON 中。 */
 export interface Retention {
-  keep_last: number
-  keep_daily: number
-  keep_weekly: number
-  keep_monthly: number
+  keep_last?: number
+  keep_daily?: number
+  keep_weekly?: number
+  keep_monthly?: number
 }
 
 export interface Plan {

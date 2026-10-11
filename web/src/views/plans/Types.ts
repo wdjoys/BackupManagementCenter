@@ -31,7 +31,8 @@ export interface PlanFormModel {
   enabled: boolean
   source: PlanFormSource
   repository_id: string
-  retention: Retention
+  /** 表单里的保留规则必须是确定数值（后端会省略为 0 的字段，进入表单前已归一化）。 */
+  retention: Required<Retention>
   timeout_seconds: number
 }
 

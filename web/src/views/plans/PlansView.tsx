@@ -178,7 +178,14 @@ export const PlansView: React.FC = () => {
       enabled: plan.enabled,
       source: { ...plan.source },
       repository_id: plan.repository_id,
-      retention: { ...plan.retention },
+      retention: {
+        // 后端对为 0 的保留规则省略字段，表单需要确定的数值（否则「保留规则全为 0」
+        // 的校验拿到 undefined，`undefined <= 0` 为 false 而静默放过）。
+        keep_last: plan.retention.keep_last ?? 0,
+        keep_daily: plan.retention.keep_daily ?? 0,
+        keep_weekly: plan.retention.keep_weekly ?? 0,
+        keep_monthly: plan.retention.keep_monthly ?? 0,
+      },
       timeout_seconds: plan.timeout_seconds,
     })
     setDialogOpen(true)

@@ -173,6 +173,9 @@ func (s *Server) handleBindRepository(w http.ResponseWriter, r *http.Request) {
 	}
 	repo, err := s.Jobs.BindRepository(r.Context(), actorID(r), body.AgentID, body.StorageTargetID)
 	if err != nil {
+		// 仓库初始化/探测失败原因必须进服务端日志：此前只有 requestLog 的
+		// status=500 一行，运维无法判断是远端不可达、密码错误还是 restic init 失败。
+		logf("[ERROR] repository bind failed agent=%s storage_target=%s: %v", body.AgentID, body.StorageTargetID, err)
 		s.jobsErr(w, err)
 		return
 	}

@@ -702,7 +702,7 @@ func singleDatabaseArtifact(manifest *backup.Manifest, artifactRoot string) (man
 		return manifestArtifact{}, errors.New("snapshot contains no database export")
 	}
 	if len(manifest.Databases) > 1 {
-		return manifestArtifact{}, fmt.Errorf("snapshot contains %d database exports; only single-database restores are supported", len(manifest.Databases))
+		return manifestArtifact{}, fmt.Errorf("snapshot contains %d database exports; only single-database restores are supported: restore it from a plan scoped to a single database", len(manifest.Databases))
 	}
 	exp := manifest.Databases[0]
 	if exp.Database == "globals" || exp.Database == "all" {

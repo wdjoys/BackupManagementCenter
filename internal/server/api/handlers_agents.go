@@ -13,6 +13,7 @@ import (
 
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/secrets"
+	"backupmanagementcenter/internal/server/auth"
 )
 
 func newUUID() string {
@@ -153,9 +154,12 @@ func (s *Server) handleRenameAgent(w http.ResponseWriter, r *http.Request) {
 	s.Jobs.Audit(r.Context(), "admin", actorID(r), "agent.rename", "agent", id, marshalDetail(map[string]any{"name": name}))
 	w.WriteHeader(http.StatusNoContent)
 }
+// actorID 返回操作者身份：审计归属必须来自会话里的 admin，不能取客户端
+// 可控的请求头（否则审计日志可被伪造或默认为空，实测 X-Actor-ID 能把
+// agent.revoke 之类的操作记到任意 actor_id 上）。
 func actorID(r *http.Request) string {
-	if id := r.Header.Get("X-Actor-ID"); id != "" {
-		return id
+	if a, ok := auth.AdminFromContext(r.Context()); ok {
+		return a.ID
 	}
 	return ""
 }

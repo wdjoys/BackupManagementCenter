@@ -123,3 +123,41 @@ func TestAgentRevokeAndRestore(t *testing.T) {
 		t.Fatalf("restore without session: expected 401/403, got %d", anonRec.Code)
 	}
 }
+
+// 审计归属必须取自会话里的 admin：客户端不能用 X-Actor-ID 伪造操作者，
+// 也不能让 actor_id 默认为空（否则审计日志无法归属到真实操作者）。
+func TestAuditActorComesFromSessionNotRequestHeader(t *testing.T) {
+	s, st, cleanup := newTestServerWithAdmin(t)
+	defer cleanup()
+
+	handler := New(s)
+	sessionCookie, csrfCookie, csrf := loginCookies(t, handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/enrollment-tokens", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com") // httptest 默认 Host
+	req.Header.Set(auth.CSRFHeader, csrf)
+	req.Header.Set("X-Actor-ID", "spoofed-actor")
+	req.AddCookie(sessionCookie)
+	req.AddCookie(csrfCookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create enrollment token: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	events, err := st.ListAuditEvents(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	for _, e := range events {
+		if e.Action != "enrollment.create_token" {
+			continue
+		}
+		if e.ActorID != "admin-1" {
+			t.Fatalf("audit actor_id = %q, want the session admin id %q", e.ActorID, "admin-1")
+		}
+		return
+	}
+	t.Fatal("no enrollment.create_token audit event found")
+}

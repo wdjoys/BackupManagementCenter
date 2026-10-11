@@ -17,7 +17,7 @@ type argRecorder struct {
 	exitTools map[string]int
 }
 
-func (r *argRecorder) Run(_ context.Context, c Cmd, _, _ func(string)) (int, error) {
+func (r *argRecorder) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (int, error) {
 	r.calls = append(r.calls, c)
 	for _, arg := range c.Args {
 		if strings.HasPrefix(arg, "--defaults-extra-file=") && c.Args[0] != arg {
@@ -25,6 +25,11 @@ func (r *argRecorder) Run(_ context.Context, c Cmd, _, _ func(string)) (int, err
 			// --defaults-extra-file 被识别，其余报 unknown variable (exit 7)。
 			return 7, nil
 		}
+	}
+	// 真实服务端总能回答 SHOW GRANTS；导出前的授权范围检查依赖它，缺了会被判成
+	// "只被授予部分表"而拒绝备份。这里模拟全局 SELECT 的账号。
+	if indexOf(c.Args, "SHOW GRANTS FOR CURRENT_USER()") >= 0 && onStdout != nil {
+		onStdout("GRANT SELECT ON *.* TO `bmc`@`%`")
 	}
 	if code, ok := r.exitTools[filepath.Base(c.Exe)]; ok {
 		return code, nil
@@ -694,3 +699,189 @@ func TestMySQLOverwriteImportBoundsDropLockWait(t *testing.T) {
 		}
 	}
 }
+
+// grantsExec 回放 SHOW GRANTS 输出，并按需让 mysqldump 失败（带 stderr）。
+type grantsExec struct {
+	grants   []string
+	dumpExit int
+	dumpErr  []string
+	dumped   bool
+}
+
+func (e *grantsExec) Run(_ context.Context, c Cmd, onStdout, onStderr func(string)) (int, error) {
+	args := strings.Join(c.Args, " ")
+	switch {
+	case strings.Contains(args, "SHOW GRANTS FOR CURRENT_USER()"):
+		for _, g := range e.grants {
+			if onStdout != nil {
+				onStdout(g)
+			}
+		}
+		return 0, nil
+	case filepath.Base(c.Exe) == "mysqldump":
+		e.dumped = true
+		for _, l := range e.dumpErr {
+			if onStderr != nil {
+				onStderr(l)
+			}
+		}
+		return e.dumpExit, nil
+	}
+	return 0, nil
+}
+
+func grantsRC(exec Executor, database string) *RunContext {
+	return &RunContext{
+		Task:    mysqlBackupTask(database),
+		Secrets: SecretBundle{DBPassword: "pw"},
+		TempDir: "",
+		Exec:    exec,
+		Logf:    func(string, string, ...any) {},
+	}
+}
+
+// SHOW GRANTS 的三种对象形式（*.* / `db`.* / `db`.`tbl`）与权限清单里的
+// ALL PRIVILEGES 都必须被正确归类，否则要么漏判部分授权（静默丢表），
+// 要么把全库账号误判成部分授权（正常备份被拒）。
+func TestMySQLSelectScopeParsesGrantForms(t *testing.T) {
+	global := mysqlSelectScope([]string{"GRANT SELECT, PROCESS ON *.* TO `u`@`%`"})
+	if !global.global {
+		t.Fatal("SELECT ON *.* 必须判为全局授权")
+	}
+	if all := mysqlSelectScope([]string{"GRANT ALL PRIVILEGES ON *.* TO `u`@`%` WITH GRANT OPTION"}); !all.global {
+		t.Fatal("ALL PRIVILEGES ON *.* 含 SELECT，必须判为全局授权")
+	}
+	usage := mysqlSelectScope([]string{"GRANT USAGE ON *.* TO `u`@`%`"})
+	if usage.global {
+		t.Fatal("USAGE 不含 SELECT")
+	}
+	schema := mysqlSelectScope([]string{"GRANT SELECT ON `appdb`.* TO `u`@`%`"})
+	if !schema.schemas["appdb"] || schema.global {
+		t.Fatalf("库级 SELECT 归类错误: %+v", schema)
+	}
+	tbl := mysqlSelectScope([]string{"GRANT SELECT ON `appdb`.`t1` TO `u`@`%`"})
+	if got := tbl.tables["appdb"]; len(got) != 1 || got[0] != "t1" {
+		t.Fatalf("表级 SELECT 归类错误: %+v", tbl)
+	}
+	// 角色授予行没有 ON 对象，不能当成授权；默认角色在真实服务端会被展开成具体的
+	// GRANT 行（实测 MySQL 8.0.46），因此展开行照常生效。
+	role := mysqlSelectScope([]string{"GRANT `r`@`%` TO `u`@`%`"})
+	if role.global || len(role.schemas) != 0 || len(role.tables) != 0 {
+		t.Fatalf("角色授予行不得被当作对象授权: %+v", role)
+	}
+	// 合法库名可以含 " TO "：必须按最后一个 " TO " 切分，否则对象名被截断。
+	weird := mysqlSelectScope([]string{"GRANT SELECT ON `a TO b`.* TO `u`@`%`"})
+	if !weird.schemas["a TO b"] {
+		t.Fatalf("含 \" TO \" 的库名解析错误: %+v", weird)
+	}
+	// 反引号转义（``）必须还原。
+	esc := mysqlSelectScope([]string{"GRANT SELECT ON `a``b`.`t``1` TO `u`@`%`"})
+	if got := esc.tables["a`b"]; len(got) != 1 || got[0] != "t`1" {
+		t.Fatalf("含反引号的标识符解析错误: %+v", esc)
+	}
+}
+
+// 只被授予部分表的 SELECT 时 mysqldump 会 rc=0 却静默漏表（实测 t2 的 2500 行
+// 无声消失），必须明确拒绝备份，且不得启动 mysqldump 产出不完整 dump。
+func TestMySQLBackupRefusesPartialTableGrants(t *testing.T) {
+	cases := map[string][]string{
+		"表级 SELECT 子集": {
+			"GRANT USAGE ON *.* TO `u`@`%`",
+			"GRANT EVENT ON `appdb`.* TO `u`@`%`",
+			"GRANT SELECT ON `appdb`.`t1` TO `u`@`%`",
+			"GRANT SELECT ON `appdb`.`t3` TO `u`@`%`",
+		},
+		"该库上完全没有 SELECT": {
+			"GRANT USAGE ON *.* TO `u`@`%`",
+			"GRANT EVENT ON `appdb`.* TO `u`@`%`",
+		},
+		"权限只在未激活的角色里": {
+			"GRANT USAGE ON *.* TO `u`@`%`",
+			"GRANT `r`@`%` TO `u`@`%`",
+		},
+		"其他库的库级 SELECT 不算": {
+			"GRANT SELECT ON `otherdb`.* TO `u`@`%`",
+		},
+	}
+	for name, grants := range cases {
+		exec := &grantsExec{grants: grants}
+		rc := grantsRC(exec, "appdb")
+		rc.TempDir = t.TempDir()
+		_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+		if err == nil {
+			t.Fatalf("%s: 必须拒绝备份", name)
+		}
+		if !strings.Contains(err.Error(), "appdb") || !strings.Contains(err.Error(), "SELECT") {
+			t.Fatalf("%s: 错误必须点名库与 SELECT 权限: %v", name, err)
+		}
+		if exec.dumped {
+			t.Fatalf("%s: 拒绝时不得再启动 mysqldump（否则仍会产出不完整 dump）", name)
+		}
+	}
+	// 错误必须给出可操作的处置（授予库级 SELECT）。
+	exec := &grantsExec{grants: []string{"GRANT SELECT ON `appdb`.`t1` TO `u`@`%`"}}
+	rc := grantsRC(exec, "appdb")
+	rc.TempDir = t.TempDir()
+	_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+	if err == nil || !strings.Contains(err.Error(), "GRANT SELECT ON `appdb`.*") {
+		t.Fatalf("错误必须给出库级 SELECT 的处置建议: %v", err)
+	}
+	if !strings.Contains(err.Error(), "t1") {
+		t.Fatalf("错误应列出已授权的表以便定位: %v", err)
+	}
+}
+
+// 库级/全局 SELECT 必须照常成功，不能因新检查误伤正常备份。
+func TestMySQLBackupAllowsFullGrants(t *testing.T) {
+	cases := map[string][]string{
+		"全局 SELECT": {"GRANT SELECT ON *.* TO `u`@`%`"},
+		"库级 SELECT": {"GRANT SELECT, EVENT ON `appdb`.* TO `u`@`%`"},
+		"库级 ALL PRIVILEGES": {
+			"GRANT ALL PRIVILEGES ON `appdb`.* TO `u`@`%`",
+		},
+		"角色展开后的库级 SELECT": {
+			"GRANT USAGE ON *.* TO `u`@`%`",
+			"GRANT SELECT ON `appdb`.* TO `u`@`%`",
+			"GRANT `r`@`%` TO `u`@`%`",
+		},
+	}
+	for name, grants := range cases {
+		exec := &grantsExec{grants: grants}
+		rc := grantsRC(exec, "appdb")
+		rc.TempDir = t.TempDir()
+		if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+			t.Fatalf("%s: 正常授权不得被拒绝: %v", name, err)
+		}
+		if !exec.dumped {
+			t.Fatalf("%s: 应正常执行 mysqldump", name)
+		}
+	}
+}
+
+// 读取授权失败时无法证明不会漏表，必须拒绝而不是放行。
+func TestMySQLBackupRefusesWhenGrantsUnreadable(t *testing.T) {
+	exec := &grantsExec{grants: []string{"GRANT SELECT ON *.* TO `u`@`%`"}}
+	rc := grantsRC(&failingGrantsExec{inner: exec}, "appdb")
+	rc.TempDir = t.TempDir()
+	_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+	if err == nil {
+		t.Fatal("SHOW GRANTS 失败必须拒绝备份")
+	}
+	if exec.dumped {
+		t.Fatal("拒绝时不得启动 mysqldump")
+	}
+}
+
+// failingGrantsExec 让 SHOW GRANTS 以非零退出并在 stderr 给出原因。
+type failingGrantsExec struct{ inner *grantsExec }
+
+func (f *failingGrantsExec) Run(_ context.Context, c Cmd, onStdout, onStderr func(string)) (int, error) {
+	if strings.Contains(strings.Join(c.Args, " "), "SHOW GRANTS FOR CURRENT_USER()") {
+		if onStderr != nil {
+			onStderr("mysql: Got error: 2003: Can't connect to MySQL server on '127.0.0.1'")
+		}
+		return 1, nil
+	}
+	return f.inner.Run(context.Background(), c, onStdout, onStderr)
+}
+

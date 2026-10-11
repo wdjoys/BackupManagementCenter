@@ -12,9 +12,14 @@ import (
 // fakeProbeExec 让"非事务表探测"查询以非零退出（err==nil）返回，其余命令成功。
 type fakeProbeExec struct{}
 
-func (fakeProbeExec) Run(_ context.Context, c Cmd, onStdout, onStderr func(line string)) (int, error) {
-	if strings.Contains(strings.Join(c.Args, " "), "information_schema.tables") {
+func (fakeProbeExec) Run(_ context.Context, c Cmd, onStdout, _ func(line string)) (int, error) {
+	args := strings.Join(c.Args, " ")
+	if strings.Contains(args, "information_schema.tables") {
 		return 1, nil
+	}
+	// 导出前的授权范围检查需要 SHOW GRANTS 有输出（真实服务端总会回答）。
+	if strings.Contains(args, "SHOW GRANTS FOR CURRENT_USER()") && onStdout != nil {
+		onStdout("GRANT SELECT ON *.* TO `bmc`@`%`")
 	}
 	return 0, nil
 }

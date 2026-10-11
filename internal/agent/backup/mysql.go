@@ -90,6 +90,13 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	if tools.legacy {
 		rc.Logf("info", "使用 MySQL 5.7 客户端连接旧版服务端/MariaDB（避免 utf8mb4 排序规则回退）")
 	}
+	// 导出前的授权范围检查：mysqldump 按账号权限枚举表，对"只有部分表 SELECT"的
+	// 账号会正常退出（rc=0）却只导出已授权的表，备份报 succeeded、恢复校验也比对
+	// 不出来（VerifyRestored 只比 dump↔恢复后），未授权表的数据无声消失。
+	// PostgreSQL 在同场景下因覆盖全表的 LOCK TABLE 而失败，这里对齐该行为。
+	if err := checkMySQLReadScope(ctx, rc.Exec, tools.client, cnfFile, source.Username, source.Database, logLine); err != nil {
+		return nil, err
+	}
 	// Non-transactional tables are not protected by --single-transaction and
 	// can change while the dump is running. Surface the count before starting
 	// the backup so operators can schedule a maintenance window if needed.
@@ -291,6 +298,148 @@ func mysqlMajorVersion(version string) int {
 		return 0
 	}
 	return n
+}
+
+// mysqlReadScope 汇总 SHOW GRANTS 里与 SELECT 有关的授权范围。
+type mysqlReadScope struct {
+	global  bool                // SELECT ON *.*（含 ALL PRIVILEGES）
+	schemas map[string]bool     // 库级 SELECT 的库名
+	tables  map[string][]string // 仅有表级 SELECT 的表（key 为库名）
+}
+
+// checkMySQLReadScope 在导出前确认账号能读到目标库（或整实例）的全部表。
+//
+// mysqldump 按账号权限从 information_schema 枚举表，对只被授予部分表 SELECT 的
+// 账号会正常退出（rc=0）却只导出已授权的表：run 报 succeeded、VerifyRestored 也
+// 只比对 dump↔恢复后，未授权表的数据静默消失（实测 MySQL 8.0.46：账号仅被授予
+// `db`.`t1`/`db`.`t3` 的表级 SELECT + 库级 EVENT 时，t2 的 2500 行无声消失）。
+// PostgreSQL 在同一场景下因覆盖全表的 LOCK TABLE 而响亮失败，这里对齐该行为：
+// 判定为部分授权时明确拒绝，而不是产出不完整的 dump。
+//
+// 判定依据是 SHOW GRANTS FOR CURRENT_USER()：它按**有效权限**输出（默认/已激活的
+// 角色会被展开成具体的 GRANT 行，实测 MySQL 8.0.46），因此不需要另行处理角色；
+// information_schema 的授权视图则**不含**角色带来的权限（同环境实测为 0 行），
+// 用它会把"权限来自角色"的账号误判为部分授权。读取授权失败时同样拒绝备份：
+// 无法证明授权完整时宁可明确失败，也不静默丢数据。
+//
+// 已知缺口：database="all" 且账号对某些库**完全没有**授权时，SHOW GRANTS 里没有
+// 任何可判断的行，这类库仍会被静默跳过；只有能证实的部分授权才会被拦下。
+func checkMySQLReadScope(ctx context.Context, exec Executor, client, cnfFile, username, database string, logf func(string)) error {
+	var stderrTail []string
+	var grants []string
+	exit, err := exec.Run(ctx, Cmd{Exe: client, Args: []string{
+		"--defaults-extra-file=" + cnfFile, "-N", "-s", "-e", "SHOW GRANTS FOR CURRENT_USER()",
+	}}, func(line string) {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			grants = append(grants, trimmed)
+		}
+	}, func(line string) {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			stderrTail = append(stderrTail, trimmed)
+		}
+		if logf != nil {
+			logf(line)
+		}
+	})
+	if err != nil || exit != 0 {
+		return fmt.Errorf("无法确认账号 %q 的授权范围，拒绝备份（无法证明不会漏表）：%w",
+			username, exitErrorWithStderr("mysql client SHOW GRANTS", exit, err, stderrTail))
+	}
+	scope := mysqlSelectScope(grants)
+	if scope.global {
+		return nil
+	}
+	if database == "all" {
+		// 整实例备份：只有"表级 SELECT 未被同库的库级 SELECT 覆盖"才是可证实的部分授权。
+		var partial []string
+		for db, tables := range scope.tables {
+			if !scope.schemas[db] {
+				sort.Strings(tables)
+				partial = append(partial, db+"("+strings.Join(tables, ", ")+")")
+			}
+		}
+		if len(partial) == 0 {
+			return nil
+		}
+		sort.Strings(partial)
+		return fmt.Errorf("mysql 导出被拒绝：账号 %q 只被授予部分表的 SELECT 权限（%s），"+
+			"mysqldump 会静默跳过未授权的表，整实例备份将缺失这些表的数据；"+
+			"请为该账号授予库级 SELECT（GRANT SELECT ON `<库名>`.* TO %q）后重试，或改用拥有全局 SELECT 的账号",
+			username, strings.Join(partial, "；"), username)
+	}
+	if scope.schemas[database] {
+		return nil
+	}
+	// 单库：没有全局/库级 SELECT 时，dump 只可能包含被显式授权的表（或一张表都没有），
+	// 与"整库备份"的语义不符。
+	detail := "该账号在该库上没有任何 SELECT 授权"
+	if granted := scope.tables[database]; len(granted) > 0 {
+		sort.Strings(granted)
+		if len(granted) > 10 {
+			granted = append(granted[:10:10], "…")
+		}
+		detail = "已授权的表：" + strings.Join(granted, ", ")
+	}
+	return fmt.Errorf("mysql 导出被拒绝：账号 %q 只被授予数据库 %q 中部分表的 SELECT 权限（%s），"+
+		"mysqldump 会静默跳过未授权的表，备份将缺失这些表的数据；"+
+		"请为该账号授予库级 SELECT（GRANT SELECT ON `%s`.* TO %q）后重试，或改用拥有库级/全局 SELECT 的账号",
+		username, database, detail, strings.ReplaceAll(database, "`", "``"), username)
+}
+
+// mysqlSelectScope 解析 SHOW GRANTS 的每一行，汇总账号的 SELECT 授权范围。
+func mysqlSelectScope(grants []string) mysqlReadScope {
+	scope := mysqlReadScope{schemas: map[string]bool{}, tables: map[string][]string{}}
+	for _, line := range grants {
+		object, hasSelect, ok := mysqlGrantObject(line)
+		if !ok || !hasSelect {
+			continue
+		}
+		if object == "*.*" {
+			scope.global = true
+			continue
+		}
+		db, rest, ok := mysqlUnquoteIdentifier(strings.TrimPrefix(object, "`"))
+		if !ok {
+			continue
+		}
+		switch {
+		case rest == ".*":
+			scope.schemas[db] = true
+		case strings.HasPrefix(rest, ".`"):
+			if tbl, _, ok := mysqlUnquoteIdentifier(rest[2:]); ok {
+				scope.tables[db] = append(scope.tables[db], tbl)
+			}
+		}
+	}
+	return scope
+}
+
+// mysqlGrantObject 解析一行 SHOW GRANTS，返回被授权对象与权限清单里是否含 SELECT。
+// ok=false 表示该行不是"ON <对象>"形式的授权（如 GRANT <角色> TO <账号>）。
+// 对象形如 *.*（全局）、`db`.*（库级）、`db`.`tbl`（表级）。
+func mysqlGrantObject(line string) (object string, hasSelect bool, ok bool) {
+	s := strings.TrimSpace(line)
+	if len(s) <= len("GRANT ") || !strings.EqualFold(s[:len("GRANT ")], "GRANT ") {
+		return "", false, false
+	}
+	rest := s[len("GRANT "):]
+	on := strings.Index(strings.ToUpper(rest), " ON ")
+	if on < 0 {
+		return "", false, false
+	}
+	// 合法库名可以含 " TO "，因此用最后一个 " TO " 作分隔；权限清单里不可能出现
+	// " ON "，所以第一个 " ON " 就是权限与对象的分隔符。
+	to := strings.LastIndex(strings.ToUpper(rest), " TO ")
+	if to < on {
+		return "", false, false
+	}
+	for _, p := range strings.Split(rest[:on], ",") {
+		switch strings.ToUpper(strings.TrimSpace(p)) {
+		case "SELECT", "ALL", "ALL PRIVILEGES":
+			hasSelect = true
+		}
+	}
+	return strings.TrimSpace(rest[on+len(" ON ") : to]), hasSelect, true
 }
 
 // mysqlDumpFailureHint 选出与失败原因匹配的诊断提示（无匹配返回空串）。
@@ -666,7 +815,7 @@ func mysqlDumpTableNames(path string) ([]string, error) {
 			rest = strings.TrimSpace(rest[len("IF NOT EXISTS "):])
 		}
 		rest = strings.TrimPrefix(rest, "`")
-		name, ok := mysqlUnquoteIdentifier(rest)
+		name, _, ok := mysqlUnquoteIdentifier(rest)
 		if ok {
 			names = append(names, name)
 		}
@@ -706,9 +855,11 @@ func verifyTableSets(want, present []string, fold bool) []string {
 }
 
 // mysqlUnquoteIdentifier 读取 s 开头（已去掉起始反引号）的反引号标识符，
-// 把两个连续反引号还原为单个反引号，返回名字与是否找到结束反引号。
-func mysqlUnquoteIdentifier(s string) (string, bool) {
+// 把两个连续反引号还原为单个反引号，返回名字、结束反引号之后的部分与是否解析成功。
+func mysqlUnquoteIdentifier(s string) (string, string, bool) {
 	var sb strings.Builder
+	// 三句式 for：转义分支里的 i++ 必须真正跳过下一个字节（range-over-int 会在下一轮
+	// 重新赋值 i，跳过失效，实测把 `a``b` 解析成 a` 而不是 a`b）。
 	for i := 0; i < len(s); i++ {
 		if s[i] != '`' {
 			sb.WriteByte(s[i])
@@ -719,7 +870,7 @@ func mysqlUnquoteIdentifier(s string) (string, bool) {
 			i++
 			continue
 		}
-		return sb.String(), sb.Len() > 0
+		return sb.String(), s[i+1:], sb.Len() > 0
 	}
-	return "", false
+	return "", "", false
 }

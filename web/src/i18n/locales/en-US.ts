@@ -358,6 +358,7 @@ export default {
       "databasePlaceholder": "Single database or 'all'",
       "extraArgs": "Extra args",
       "extraArgsPlaceholder": "--arg",
+      "extraArgsHint": "Common options (MySQL): --tables= to select tables, --ignore-table= to exclude tables, --skip-triggers/--skip-events/--skip-routines to explicitly skip those objects. Other options are validated by the server.",
       "captureOplog": "Capture oplog",
       "authSource": "Auth database (authSource)",
       "authSourceHint": "Database that holds the MongoDB user; defaults to admin.",

@@ -358,6 +358,7 @@ export default {
       "databasePlaceholder": "单个数据库名或 'all'",
       "extraArgs": "额外参数",
       "extraArgsPlaceholder": "--arg",
+      "extraArgsHint": "常用选项（MySQL）：--tables= 指定表、--ignore-table= 排除表、--skip-triggers/--skip-events/--skip-routines 显式跳过对应对象。其余选项由服务端校验。",
       "captureOplog": "捕获 oplog",
       "authSource": "认证库（authSource）",
       "authSourceHint": "MongoDB 用户所在的认证库，默认 admin。",

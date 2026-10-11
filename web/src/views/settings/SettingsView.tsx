@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { apiGet, apiPut, apiDelete, isApiClientError } from '@/api/client'
+import { apiGet, apiPut, isApiClientError } from '@/api/client'
 import type { TelegramSettings, TelegramSettingsUpdate } from '@/api/types'
 import { toastSuccess, toastError } from '@/lib/toast'
 import { AppErrorState } from '@/components/AppErrorState'
@@ -77,7 +77,9 @@ export const SettingsView: React.FC = () => {
 
   const handleClear = async () => {
     try {
-      await apiDelete('/settings/telegram')
+      // 服务端只注册了 GET/PUT /settings/telegram（DELETE 未注册，实测 405）。
+      // PUT 传空 bot_token+chat_id 即为清除语义，复用同一条已注册路由。
+      await apiPut('/settings/telegram', { bot_token: '', chat_id: '' })
       toastSuccess(t('settings.cleared_success'))
       await loadSettings()
     } catch (err: unknown) {

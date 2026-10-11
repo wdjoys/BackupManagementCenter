@@ -193,6 +193,19 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - **人工解除**：`POST /api/v1/restores/{id}/resolve` 接受 `manual_recovery_required`/`rollback_failed` 的请求，需要 `run_id`、处理说明，以及 `execution_stopped` 与 `target_verified` 两项确认；同一事务写入 `manual_recovery_resolved` 与审计记录。该接口是人工确认，不是自动探测或自动回滚，且不能通过改数据库或重启服务隐式解锁。
 - **升级顺序**：协议仅新增可选 capability 字段与 JSON 字段，Server 必须先升级；旧 Agent 仍可连接并执行原有备份与文件恢复，只是不能作为数据库恢复的目标。
 
+### 稳定错误码说明（近期新增/变更）
+
+失败运行的 `error_code`（`GET /api/v1/runs/{id}`）与同步接口响应里的 `error.code` 是**稳定标识**：文案可变、码不变，可直接用于排障与告警规则。Web 界面按错误码输出本地化文案（zh/en），未收录的码回显服务端 `message`。近期新增/变更的码：
+
+| 错误码 | 出现位置 | 对用户意味着什么 |
+| --- | --- | --- |
+| `restore_preflight_failed` | 恢复 run 的错误码 | 恢复**预检本身失败**（连接/认证/参数等），真实原因在 run 的 `error_message` 里。与 `restore_target_busy` 区分：前者是本次请求自身不合格，后者是**别的任务正在写同一目标**。 |
+| `restore_target_busy` | 409 / 恢复 run 的错误码 | 同一 Agent 上**同一目标路径**已有未终结的文件系统恢复，等它结束后重试（两个恢复并发写同一目录会产生非确定结果）。 |
+| `unsupported_restore_manifest` | 422 或恢复 run 的错误码 | 该快照是**整实例**备份（`database=all`、多库或含 globals），平台只开放单库恢复，因此**无法恢复**；目标未被修改。 |
+| `duplicate_storage_target` | 409 | 已存在同名存储目标，改名后再导入。 |
+| `invalid_plan` | 422 / 计划 run 的错误码 | 计划配置校验失败：`extra_args` 含被拒绝的选项（消息形如 `extra_args contains disallowed option "--evil"`），或 `capture_oplog` 已不再支持（消息以 `capture_oplog is not supported:` 开头）。 |
+| `snapshot_list_refresh_required` | 409 | 缺少可用的已验证快照列表/目录缓存（缺失、损坏或生成号变化），需先在界面上**刷新快照列表**再操作。 |
+
 ## 7. 管理员密码重置
 
 如果忘记 Server 管理员登录密码，可通过 `backup-center-server reset-admin` 命令清除管理员账号及活跃会话，重新触发 Web 引导初始化流程（此操作不会删除存储目标、备份计划、仓库及运行记录）：

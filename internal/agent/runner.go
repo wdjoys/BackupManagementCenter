@@ -42,6 +42,12 @@ type Runner struct {
 	// 的发送全部 EOF（实测进度与日志丢失，run 只能等下一次重派 + 结果重放才收敛）。
 	streamMu sync.Mutex
 	stream   bmcv1.AgentControl_ConnectClient
+
+	// pendingMu/pendingResults 暂存发送失败（流被替换或断开）的运行结果，在下次
+	// 连接建立时补发：结果只发一次会在重连瞬间永久丢失，run 便卡在 running 直到
+	// 看门狗超时，期间该仓库的 FIFO 队列被阻塞（实测一次 EOF 让整个仓库队列停摆）。
+	pendingMu      sync.Mutex
+	pendingResults []*bmcv1.AgentMessage
 }
 
 // SweepStaleRunDirs 回收上一次进程遗留的 run 临时目录（bmc-run-*）。
@@ -83,11 +89,13 @@ func SweepStaleRunDirs(dataDir string, restoreRoots []string) int {
 }
 
 // NewRunner creates a new runner.
-// SetStream 记录当前活跃的上行流（客户端每次成功连接后调用）。
+// SetStream 记录当前活跃的上行流（客户端每次成功连接后调用），并把断流期间
+// 未能送达的运行结果补发出去。
 func (r *Runner) SetStream(stream bmcv1.AgentControl_ConnectClient) {
 	r.streamMu.Lock()
 	r.stream = stream
 	r.streamMu.Unlock()
+	r.flushPendingResults(stream)
 }
 
 // currentStream 返回当前活跃的上行流。
@@ -448,8 +456,50 @@ func (r *Runner) sendRunResult(result *bmcv1.RunResult) {
 			RunResult: result,
 		},
 	}
-	if err := r.currentStream().Send(msg); err != nil {
-		log.Printf("[ERROR] send RunResult: %v", err)
+	stream := r.currentStream()
+	if stream == nil {
+		r.stashPendingResult(msg)
+		return
+	}
+	if err := stream.Send(msg); err != nil {
+		// 流在结果送达前被替换/断开：暂存并在下次连接建立时补发，而不是丢弃。
+		// 丢弃会让服务端把 run 留在 running 直到看门狗超时，期间该仓库的后续任务
+		// 全部排在队列里无法下发。
+		log.Printf("[WARN] send RunResult failed, queued for replay after reconnect: %v", err)
+		r.stashPendingResult(msg)
+	}
+}
+
+func (r *Runner) stashPendingResult(msg *bmcv1.AgentMessage) {
+	r.pendingMu.Lock()
+	r.pendingResults = append(r.pendingResults, msg)
+	r.pendingMu.Unlock()
+}
+
+// flushPendingResults 把未送达的运行结果补发到当前流。重复送达是安全的：服务端
+// 对已终结 run 的结果按幂等处理（ErrInvalidTransition → 直接返回）。发送失败的
+// 结果保留在队列里，等下一次连接再补发。
+func (r *Runner) flushPendingResults(stream bmcv1.AgentControl_ConnectClient) {
+	r.pendingMu.Lock()
+	pending := r.pendingResults
+	r.pendingResults = nil
+	r.pendingMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	var failed []*bmcv1.AgentMessage
+	for _, msg := range pending {
+		if err := stream.Send(msg); err != nil {
+			log.Printf("[WARN] replay pending RunResult failed: %v", err)
+			failed = append(failed, msg)
+		}
+	}
+	if len(failed) > 0 {
+		r.pendingMu.Lock()
+		r.pendingResults = append(failed, r.pendingResults...)
+		r.pendingMu.Unlock()
+	} else {
+		log.Printf("[INFO] replayed %d pending run result(s) after reconnect", len(pending))
 	}
 }
 

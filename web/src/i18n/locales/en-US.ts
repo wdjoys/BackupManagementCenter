@@ -379,7 +379,8 @@ export default {
       "unbindConfirmDesc": "Unbinding will remove this repository from BMC without deleting remote data.",
       "unboundSuccessfully": "Repository unbound successfully",
       "unbindFailed": "Failed to unbind repository",
-      "retryFailed": "Failed to dispatch retry task"
+      "retryFailed": "Failed to dispatch retry task",
+      "checkFailedHint": "Repository check failed, see run history for details"
     },
     "subtitle": "Rclone storage targets and restic repositories",
     "targets_count": "Storage Targets ({{count}})",

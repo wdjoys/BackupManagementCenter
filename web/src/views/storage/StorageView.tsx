@@ -9,6 +9,7 @@ import type {
   StorageTargetValidateResponse,
 } from '@/api/types'
 import { toastSuccess, toastError, toastWarning } from '@/lib/toast'
+import { localizeErrorCode } from '@/lib/errors'
 import { Folder, Link } from 'lucide-react'
 import { StorageTargetsPanel } from './StorageTargetsPanel'
 import { RepositoriesPanel } from './RepositoriesPanel'
@@ -251,11 +252,11 @@ export const StorageView: React.FC = () => {
       toastSuccess(t('storage.repositoryDialog.retried'))
       await loadRepos()
     } catch (err: unknown) {
-      // toast 文案一律走 i18n：直接透传 err.message 会把服务端英文原文
-      // （如 "Not Found"）暴露给中文用户。
+      // toast 文案一律走 i18n：已映射的错误码给出本地化原因；未映射的码用本地化
+      // 通用失败文案并附 code 便于排障，绝不把裸 code 或服务端英文原文当文案。
       toastError(
         isApiClientError(err)
-          ? t('storage.repositoryDialog.retryFailedCode', { code: err.code })
+          ? (localizeErrorCode(err.code) ?? t('storage.repositoryDialog.retryFailedCode', { code: err.code }))
           : t('storage.repositoryDialog.retryFailed')
       )
     } finally {

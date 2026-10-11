@@ -129,15 +129,15 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                                 <StatusBadge tone={getRepoStatusTone(repo.status)} dot>
                                   {translateEnum('status', repo.status)}
                                 </StatusBadge>
-                                {repo.status === 'error' && repo.error_message && (
+                                {repo.status === 'error' && (
                                   <Tooltip>
                                     <TooltipTrigger asChild>
                                       <span className="truncate block max-w-[180px] cursor-help text-[11px] text-rose-600 dark:text-rose-400 underline decoration-dotted">
-                                        {repo.error_message}
+                                        {repo.error_message || t('storage.repositoryDialog.checkFailedHint')}
                                       </span>
                                     </TooltipTrigger>
                                     <TooltipContent className="max-w-md text-[11px] break-all">
-                                      {repo.error_message}
+                                      {repo.error_message || t('storage.repositoryDialog.checkFailedHint')}
                                     </TooltipContent>
                                   </Tooltip>
                                 )}
@@ -204,9 +204,12 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                             {repo.repository_path}
                           </code>
                         </div>
-                        {repo.status === 'error' && repo.error_message && (
-                          <div className="truncate text-[11px] text-rose-600 dark:text-rose-400" title={repo.error_message}>
-                            {repo.error_message}
+                        {repo.status === 'error' && (
+                          <div
+                            className="truncate text-[11px] text-rose-600 dark:text-rose-400"
+                            title={repo.error_message || t('storage.repositoryDialog.checkFailedHint')}
+                          >
+                            {repo.error_message || t('storage.repositoryDialog.checkFailedHint')}
                           </div>
                         )}
                         <div className="flex items-center justify-end gap-2 pt-1">

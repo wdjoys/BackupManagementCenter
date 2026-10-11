@@ -379,7 +379,8 @@ export default {
       "unbindConfirmDesc": "解绑不会删除远端快照数据，但相关计划将无法访问该仓库。",
       "unboundSuccessfully": "仓库已成功解绑",
       "unbindFailed": "解绑仓库失败",
-      "retryFailed": "重试任务下发失败"
+      "retryFailed": "重试任务下发失败",
+      "checkFailedHint": "仓库检查失败，详情见运行记录"
     },
     "subtitle": "Rclone 存储目标与 Restic 备份仓库管理",
     "targets_count": "存储目标 ({{count}})",

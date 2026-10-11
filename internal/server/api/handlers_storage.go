@@ -239,6 +239,9 @@ func (s *Server) repoView(r *http.Request, repo *model.Repository) repositoryVie
 	// 最近一次失败 run 的原因（按 queued_at 倒序取最新一条）。仓库处于 error 时
 	// 这是用户唯一能看到根因的地方；仓库已恢复 ready 后不得再带上过期原因，
 	// 否则 API 消费者会把历史失败当成当前故障。
+	//
+	// 只回填人可读的 message：失败 run 只有 error_code 时不再把 code 原文当原因
+	// 展示（中文界面会出现裸英文码），UI 侧改用本地化的通用提示。
 	if repo.Status == "error" {
 		if runs, err := s.ST.ListRuns(r.Context(), store.RunFilter{
 			RepositoryID: repo.ID,
@@ -247,8 +250,6 @@ func (s *Server) repoView(r *http.Request, repo *model.Repository) repositoryVie
 		}); err == nil && len(runs) > 0 {
 			if msg := strings.TrimSpace(runs[0].ErrorMessage); msg != "" {
 				v.ErrorMessage = msg
-			} else {
-				v.ErrorMessage = runs[0].ErrorCode
 			}
 		}
 	}

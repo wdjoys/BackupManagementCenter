@@ -225,6 +225,24 @@ func TestBackupIncludesCommandOutputOnFailure(t *testing.T) {
 		}
 	}
 }
+
+// 长于 300 字符的 restic --json 错误文档必须转成人类可读文本：此前原始 JSON 行
+// 被直接拼进错误尾巴并按 300 字符从头部截断，运行详情的 error_message 里留下
+// 半截 `":"exit_error","code":10,"message":"Fatal: ...`，运维看不出是哪条命令失败。
+func TestBackupErrorTailStripsResticJSON(t *testing.T) {
+	long := `{"message_type":"exit_error","code":10,"message":"Fatal: repository does not exist: unable to open config file: <config/> does not exist\nIs there a repository at the following location?\nrclone:p_pf_local:/shared-repo/p_pf_repo/01a118ee-11ed-72c9-a4a8-8c8493385687/01a118ef-b0a6-6c85-c20d-776fbe4c876d"}`
+	_, err := Backup(context.Background(), checkExecutor{stdout: long, code: 10}, Options{Exe: "restic", RepoPath: "rclone:remote:/repo"}, []string{"/backup-sources"}, "", nil, false, nil)
+	if err == nil {
+		t.Fatal("expected backup failure")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, `"message_type"`) || strings.Contains(msg, `\"`) {
+		t.Fatalf("raw restic JSON leaked into error message: %q", msg)
+	}
+	if !strings.Contains(msg, "Fatal: repository does not exist") {
+		t.Fatalf("human-readable restic reason missing: %q", msg)
+	}
+}
 func TestBackupEmitsStatusAndSummaryProgress(t *testing.T) {
 	stdoutLines := strings.Join([]string{
 		`{"message_type":"status","percent_done":0.25,"total_files":100,"files_done":25,"total_bytes":104857600,"bytes_done":26214400}`,

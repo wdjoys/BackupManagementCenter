@@ -229,7 +229,15 @@ func enriched(err error, output string) error {
 	if err == nil {
 		return nil
 	}
-	out := strings.ReplaceAll(strings.TrimSpace(output), "\n", " | ")
+	// restic 的 --json 输出（backup/check 的 stdout）是整行 JSON 文档；直接拼进错误
+	// 消息会留下被 300 字符截断的半截 JSON（实测 error_message 里出现
+	// `":"exit_error","code":10,"message":"Fatal: ...`）。逐行提取人类可读文本，
+	// 非 JSON 行原样保留，stderr 的普通文本不受影响。
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i, line := range lines {
+		lines[i] = resticErrorText(line)
+	}
+	out := strings.Join(lines, " | ")
 	if len(out) > 300 {
 		out = out[len(out)-300:]
 	}
@@ -747,6 +755,7 @@ func Init(ctx context.Context, exec backup.Executor, opts Options) error {
 const maxLoggedStderrLines = 50
 
 // resticErrorText 把 restic --json 的错误行转成可读文本；非 JSON 行原样返回。
+// 提取结果为空时回落原行：宁可留下原始 JSON，也不能让原因整段消失。
 func resticErrorText(line string) string {
 	var m struct {
 		MessageType string `json:"message_type"`
@@ -764,9 +773,18 @@ func resticErrorText(line string) string {
 		if m.Item != "" {
 			return m.Item + ": " + m.Error.Message
 		}
-		return m.Error.Message
+		// restic 的 error 行有两种形状：{"error":{"message":...},"item":...} 与
+		// 只有顶层 "message" 的简写（如 {"message_type":"error","message":"index is damaged"}）。
+		if m.Error.Message != "" {
+			return m.Error.Message
+		}
+		if m.Message != "" {
+			return m.Message
+		}
 	case "exit_error":
-		return m.Message
+		if m.Message != "" {
+			return m.Message
+		}
 	}
 	return line
 }

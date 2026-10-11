@@ -24,6 +24,7 @@ export const DashboardView: React.FC = () => {
   const { t } = useTranslation()
 
   const [loading, setLoading] = useState(true)
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dashboard, setDashboard] = useState<Dashboard>({
     agents_online: 0,
@@ -41,6 +42,7 @@ export const DashboardView: React.FC = () => {
     try {
       const data = await apiGet<Dashboard>('/dashboard')
       setDashboard(data)
+      setLoaded(true)
     } catch (err: unknown) {
       setError(isApiClientError(err) ? err.message : t('common.load_failed'))
     } finally {
@@ -52,7 +54,8 @@ export const DashboardView: React.FC = () => {
     loadData()
   }, [])
 
-  if (loading) {
+  // 骨架屏只用于首次/冷加载：刷新时保留现有内容（否则刷新与冷加载不可区分）。
+  if (loading && !loaded) {
     return <PageLoadingState />
   }
 
@@ -77,8 +80,8 @@ export const DashboardView: React.FC = () => {
             {t('dashboard.subtitle')}
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={loadData} className="h-8 text-xs gap-1.5">
-          <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+        <Button variant="outline" size="sm" onClick={loadData} disabled={loading} className="h-8 text-xs gap-1.5">
+          <RefreshCw className={loading ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} aria-hidden="true" />
           {t('common.refresh')}
         </Button>
       </div>

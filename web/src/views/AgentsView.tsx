@@ -197,7 +197,8 @@ export const AgentsView: React.FC = () => {
     }
   }
 
-  if (loading) {
+  // 骨架屏只用于首次/冷加载：刷新时保留现有内容（否则刷新与冷加载不可区分）。
+  if (loading && agents.length === 0) {
     return <PageLoadingState />
   }
 
@@ -235,9 +236,10 @@ export const AgentsView: React.FC = () => {
             variant="outline"
             size="sm"
             onClick={loadAgents}
+            disabled={loading}
             className="h-8 text-xs gap-1.5"
           >
-            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            <RefreshCw className={loading ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} aria-hidden="true" />
             {t('common.refresh')}
           </Button>
         </div>

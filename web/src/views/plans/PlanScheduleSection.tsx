@@ -19,7 +19,7 @@ export interface PlanScheduleSectionProps {
   timeoutSeconds: number
   errors: Record<string, string>
   submitting: boolean
-  cronPresets: { value: string; label: string }[]
+  cronPresets: { value: string; label: string; intervalSeconds: number }[]
   onUpdateModel: (partial: Partial<PlanFormModel>) => void
 }
 
@@ -58,7 +58,15 @@ export const PlanScheduleSection: React.FC<PlanScheduleSectionProps> = ({
             <Badge
               key={p.value}
               variant="outline"
-              onClick={() => onUpdateModel({ schedule: p.value })}
+              // 选高频预设时同步收敛超时（服务端要求间隔 ≥ timeout_seconds）：否则
+              // 用户选「每 15 分钟」不改超时，保存必然 400 "backup windows would overlap"。
+              // 超时输入框会立刻显示收敛后的值。
+              onClick={() =>
+                onUpdateModel({
+                  schedule: p.value,
+                  timeout_seconds: Math.min(timeoutSeconds, p.intervalSeconds),
+                })
+              }
               className="cursor-pointer text-xs px-2 py-0.5 hover:bg-primary/20 hover:text-primary transition-colors font-mono"
             >
               {p.label}

@@ -60,7 +60,12 @@ export const PlanForm: React.FC<PlanFormProps> = ({
   )
 
   const cronPresets = useMemo(
-    () => CRON_PRESETS.map((p) => ({ value: p.value, label: t(p.key) })),
+    () =>
+      CRON_PRESETS.map((p) => ({
+        value: p.value,
+        label: t(p.key),
+        intervalSeconds: p.intervalSeconds,
+      })),
     [t]
   )
 

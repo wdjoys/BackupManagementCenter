@@ -31,15 +31,16 @@ type Agent struct {
 	ScratchMinFreeBytes int64
 	MaxConcurrency      int
 	// ResticCheckReadDataSubset 是 restic check 的 --read-data-subset 取值
-	// （n/t、x%、或带 k/m/g/t 后缀的大小；空或 0 表示只做结构校验）。默认 1/10：
+	// （n/t、x%、或带 k/m/g/t 后缀的大小；设为 "0" 表示只做结构校验）。默认 1/10：
 	// 只做结构校验时仓库内的**静默位腐**不会被发现（实测：位腐仓库 restic check
 	// 报健康，而 --read-data/恢复均失败），因此默认每次校验读取 10% 数据。
 	ResticCheckReadDataSubset string
 }
 
-// validateReadDataSubset 校验 restic --read-data-subset 的取值：空串或 "0" 表示
+// validateReadDataSubset 校验 restic --read-data-subset 的取值："0"（或空串）表示
 // 关闭数据校验；否则接受 n/t（1≤n≤t）、x%（0<x≤100，可带小数）、或带 k/m/g/t
-// 后缀的正数字节大小。
+// 后缀的正数字节大小。注意 LoadAgent 会把未设置/留空的变量替换为默认 1/10，
+// 因此实际只有显式 "0" 能关闭数据校验。
 func validateReadDataSubset(v string) error {
 	v = strings.TrimSpace(v)
 	if v == "" || v == "0" {

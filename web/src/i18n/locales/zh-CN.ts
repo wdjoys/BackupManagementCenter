@@ -415,7 +415,13 @@ export default {
       "backup": "备份",
       "restore": "恢复",
       "check": "检查",
-      "forget": "清理"
+      "forget": "清理",
+      "snapshots": "列出快照",
+      "snapshot_ls": "列出快照内容",
+      "verify_storage_remote": "校验存储远端",
+      "validate_paths": "校验路径",
+      "probe_capabilities": "探测能力",
+      "restore_dry_run": "恢复试运行"
     },
     "columns": {
       "queuedAt": "入队时间",

@@ -415,7 +415,13 @@ export default {
       "backup": "Backup",
       "restore": "Restore",
       "check": "Check",
-      "forget": "Forget"
+      "forget": "Forget",
+      "snapshots": "List snapshots",
+      "snapshot_ls": "List snapshot files",
+      "verify_storage_remote": "Verify storage remote",
+      "validate_paths": "Validate paths",
+      "probe_capabilities": "Probe capabilities",
+      "restore_dry_run": "Restore dry run"
     },
     "columns": {
       "queuedAt": "Queued At",

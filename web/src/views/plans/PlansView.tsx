@@ -391,6 +391,7 @@ export const PlansView: React.FC = () => {
                                 checked={plan.enabled}
                                 disabled={isToggling}
                                 onCheckedChange={() => toggleEnabled(plan)}
+                                aria-label={t('plans.columns.enabled')}
                               />
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground">

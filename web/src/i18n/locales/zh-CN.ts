@@ -18,6 +18,7 @@ export default {
     "copyFailed": "复制到剪贴板失败",
     "tagInputPlaceholder": "输入内容后按回车添加",
     "confirm": "确认",
+    "detailSeparator": "：",
     "error_occurred": "发生错误",
     "switch_language": "切换语言",
     "allAgents": "全部 Agent",

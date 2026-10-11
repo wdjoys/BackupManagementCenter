@@ -264,7 +264,7 @@ export const PlansView: React.FC = () => {
         // 不重复拼接。
         const detail = isApiClientError(valErr) ? valErr.serverMessage : ''
         const generic = isApiClientError(valErr) ? valErr.message : t('plans.form.validationFailed')
-        toastError(detail && detail !== generic ? `${generic}：${detail}` : generic)
+        toastError(detail && detail !== generic ? `${generic}${t('common.detailSeparator')}${detail}` : generic)
         setSaving(false)
         return
       }

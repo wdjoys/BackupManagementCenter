@@ -18,6 +18,7 @@ export default {
     "copyFailed": "Failed to copy to clipboard",
     "tagInputPlaceholder": "Type a value and press Enter to add",
     "confirm": "Confirm",
+    "detailSeparator": ": ",
     "error_occurred": "An error occurred",
     "switch_language": "Switch Language",
     "allAgents": "All Agents",

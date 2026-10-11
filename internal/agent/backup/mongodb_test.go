@@ -268,3 +268,104 @@ func TestMongoValidateRejectsOplogWithSingleDatabase(t *testing.T) {
 		t.Fatalf("capture_oplog with all scope must be accepted: %v", err)
 	}
 }
+
+// mongodbExecutor 按命令行内容回放输出：备份流程会先跑授权检查（mongosh），
+// 再跑 mongodump。
+type mongodbExecutor struct {
+	roles     []string // connectionStatus 的角色行（role\tdb）
+	rolesExit int
+	dumpExit  int
+	dumpErr   []string
+	dumped    bool
+	calls     []Cmd
+}
+
+func (e *mongodbExecutor) Run(_ context.Context, c Cmd, onStdout, onStderr func(string)) (int, error) {
+	e.calls = append(e.calls, c)
+	switch {
+	case strings.Contains(c.Exe, "mongosh"):
+		for _, r := range e.roles {
+			if onStdout != nil {
+				onStdout(r)
+			}
+		}
+		return e.rolesExit, nil
+	case strings.Contains(c.Exe, "mongodump"):
+		e.dumped = true
+		for _, l := range e.dumpErr {
+			if onStderr != nil {
+				onStderr(l)
+			}
+		}
+		return e.dumpExit, nil
+	}
+	return 0, nil
+}
+
+func mongodbBackupRC(t *testing.T, exec Executor, database string) *RunContext {
+	t.Helper()
+	return &RunContext{
+		RunID: "run-1",
+		Task: model.BackupTask{
+			PlanID: "plan-1",
+			Kind:   KindMongoDB,
+			Source: model.PlanSource{
+				Host: "127.0.0.1", Port: 27017, Username: "bmc",
+				Database: database, EstimatedDumpBytes: 1024,
+			},
+		},
+		Secrets: SecretBundle{DBPassword: "pw"},
+		TempDir: t.TempDir(),
+		Exec:    exec,
+		Logf:    func(string, string, ...any) {},
+	}
+}
+
+// 只有库级角色的账号在 all 模式下必须被拒绝：listDatabases 对这类账号只返回已授权
+// 库（实测 read@p_f2_m1_src 只看到 1 个库），mongodump 不报错也不告警，快照会静默
+// 缺失其它库。
+func TestMongoBackupAllRefusesDatabaseScopedRoles(t *testing.T) {
+	exec := &mongodbExecutor{roles: []string{"read\tp_f2_m1_src"}}
+	_, err := (&MongoDBAdapter{}).Backup(context.Background(), mongodbBackupRC(t, exec, "all"))
+	if err == nil {
+		t.Fatal("库级角色 + all 模式必须拒绝")
+	}
+	for _, want := range []string{"backup", "read@p_f2_m1_src", "单库备份"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误必须可执行（含 %q）: %v", want, err)
+		}
+	}
+	if exec.dumped {
+		t.Fatal("拒绝时不得再启动 mongodump")
+	}
+}
+
+// 集群级角色（readAnyDatabase/clusterMonitor）能枚举全部库，必须照常导出。
+func TestMongoBackupAllAllowsClusterWideRoles(t *testing.T) {
+	for _, role := range []string{"readAnyDatabase\tadmin", "clusterMonitor\tadmin", "root\tadmin"} {
+		exec := &mongodbExecutor{roles: []string{role}}
+		if _, err := (&MongoDBAdapter{}).Backup(context.Background(), mongodbBackupRC(t, exec, "all")); err != nil {
+			t.Fatalf("%s: 集群级角色不得被拒绝: %v", role, err)
+		}
+		if !exec.dumped {
+			t.Fatalf("%s: 应正常执行 mongodump", role)
+		}
+	}
+}
+
+// 单库模式不做该判定：部分集合授权是响亮失败（mongodump 用 listCollections 枚举
+// 全部集合），行为不得改变。
+func TestMongoBackupSingleDatabaseSkipsScopeCheck(t *testing.T) {
+	exec := &mongodbExecutor{roles: []string{"read\tappdb"}}
+	if _, err := (&MongoDBAdapter{}).Backup(context.Background(), mongodbBackupRC(t, exec, "appdb")); err != nil {
+		t.Fatalf("单库模式不得被授权检查拦住: %v", err)
+	}
+	if !exec.dumped {
+		t.Fatal("应正常执行 mongodump")
+	}
+	for _, c := range exec.calls {
+		if strings.Contains(c.Exe, "mongosh") {
+			t.Fatal("单库模式不应运行授权检查")
+		}
+	}
+}

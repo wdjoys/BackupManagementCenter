@@ -70,6 +70,14 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 	toolVersions := make(map[string]string)
 	mongodumpPath := toolPath("mongodump")
 
+	// 整实例导出前的完整性判定：listDatabases 对只有库/集合级角色的账号只返回
+	// 已授权库，mongodump 不报错也不告警，于是 all 模式会静默产出残缺快照。
+	if source.Database == "all" {
+		if err := ensureMongoFullInstance(ctx, rc, func(level, msg string) { rc.Logf(level, "%s", msg) }); err != nil {
+			return nil, err
+		}
+	}
+
 	archiveFile := filepath.Join(stagingDir, fmt.Sprintf("%s.archive", rc.Task.PlanID))
 	args := []string{
 		"--archive=" + archiveFile, "--gzip",
@@ -123,6 +131,108 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 		StagingFiles: stagingFiles,
 		Manifest:     manifest,
 	}, nil
+}
+
+// mongoClusterWideRoles 是判定「凭据能看见实例全部库」的集群级角色。
+//
+// MongoDB 的 listDatabases 对只有库/集合级角色（read@某库、自定义集合级角色）的账号
+// 只返回已授权库，mongodump 不报错也不告警（实测：read@p_f2_m1_src 的账号在 all
+// 模式下 rc=0、快照里只有 1 个库的集合，而实例实有 20 个库）。只有集群级角色才能
+// 保证整实例枚举完整。
+var mongoClusterWideRoles = map[string]bool{
+	"root": true, "__system": true,
+	"readAnyDatabase": true, "readWriteAnyDatabase": true,
+	"dbAdminAnyDatabase": true, "userAdminAnyDatabase": true,
+	"clusterAdmin": true, "clusterMonitor": true, "hostManager": true,
+	"backup": true, "restore": true,
+}
+
+// mongoAuthenticatedRoles 返回凭据在服务端上的角色清单（形如 role@db）。
+//
+// 依据 connectionStatus 的 authenticatedUserRoles：它只描述当前连接自身的授权，
+// 任何已认证账号都能读，不需要额外权限（与 MySQL 用 SHOW GRANTS FOR CURRENT_USER()
+// 同思路）。读取失败时返回错误——无法证明完整性时宁可拒绝，也不静默产出残缺快照。
+func mongoAuthenticatedRoles(ctx context.Context, rc *RunContext, authSource string) ([]string, error) {
+	if authSource == "" {
+		authSource = "admin"
+	}
+	source := rc.Task.Source
+	script := fmt.Sprintf(
+		"const uri = %s; const conn = Mongo(uri);\n"+
+			"const st = conn.getDB(%s).runCommand({connectionStatus:1});\n"+
+			"st.authInfo.authenticatedUserRoles.forEach(function(r){ print(r.role + \"\\t\" + r.db); });",
+		strconv.Quote(mongoURI(source.Host, source.Port, source.Username, rc.Secrets.DBPassword, source.AuthSource)),
+		strconv.Quote(authSource))
+	// 校验脚本必须落在 rc.TempDir 而不是 staging：staging 会被整体上传进快照。
+	file, err := writeSecretFile(rc.TempDir, "mongo-roles.js", script)
+	if err != nil {
+		return nil, fmt.Errorf("write mongo role check script: %w", err)
+	}
+	var roles []string
+	var stderrTail []string
+	exit, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("mongosh"), Args: []string{"--quiet", "--nodb", "--file", file}},
+		func(line string) {
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				roles = append(roles, strings.ReplaceAll(trimmed, "\t", "@"))
+			}
+		}, func(line string) {
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				stderrTail = append(stderrTail, trimmed)
+			}
+			rc.Logf("info", "%s", line)
+		})
+	if err != nil || exit != 0 {
+		return nil, fmt.Errorf("无法确认账号 %q 的授权范围，拒绝整实例导出（无法证明快照完整）：%w",
+			source.Username, exitErrorWithStderr("mongosh connectionStatus", exit, err, stderrTail))
+	}
+	return roles, nil
+}
+
+// checkMongoFullInstanceScope 在 all 模式导出前证明凭据能看见实例的全部库：只要有一个
+// 集群级角色即可保证 listDatabases 枚举完整；只有库/集合级角色时明确拒绝，并给出可执行
+// 的处置方式（授集群级角色，或改用单库计划）。
+//
+// 单库模式不受影响：mongodump 用 listCollections 枚举全部集合（不传
+// authorizedCollections），无权限必然 Unauthorized 退出，属响亮失败。
+//
+// 建议里给的是 backup：实测（MongoDB 7.0.43）只有 root/backup 这类角色能完成整实例
+// 导出——readAnyDatabase/readWriteAnyDatabase/clusterMonitor 虽能看到全部库（因此不
+// 在本检查的拒绝范围内），但读不到 admin 的系统集合，mongodump 会在
+// "error counting admin.system.roles" 处响亮失败，不是可用的整实例方案。
+func checkMongoFullInstanceScope(roles []string, username string) error {
+	for _, r := range roles {
+		if mongoClusterWideRoles[strings.SplitN(r, "@", 2)[0]] {
+			return nil
+		}
+	}
+	detail := "该账号没有任何角色"
+	if len(roles) > 0 {
+		detail = "现有角色：" + strings.Join(roles, ", ")
+	}
+	return fmt.Errorf("mongodb 整实例导出被拒绝：账号 %q 只被授予库/集合级角色（%s），"+
+		"MongoDB 的 listDatabases 对这类账号只返回已授权库，mongodump 既不报错也不告警，"+
+		"整实例快照会静默缺失其它库的数据；"+
+		"请为该账号授予集群级备份角色（db.grantRolesToUser(%q, [{role:\"backup\", db:\"admin\"}])，或改用 root），"+
+		"或把该计划改为单库备份（source.database 填具体库名）",
+		username, detail, username)
+}
+
+// ensureMongoFullInstance 是 all 模式导出前的完整性闸门（见 checkMongoFullInstanceScope）。
+func ensureMongoFullInstance(ctx context.Context, rc *RunContext, logf func(level, msg string)) error {
+	if toolPath("mongosh") == "" {
+		return errors.New("mongodb 整实例导出被拒绝：镜像缺少 mongosh，无法确认账号的授权范围（不能证明快照完整）")
+	}
+	roles, err := mongoAuthenticatedRoles(ctx, rc, rc.Task.Source.AuthSource)
+	if err != nil {
+		return err
+	}
+	if err := checkMongoFullInstanceScope(roles, rc.Task.Source.Username); err != nil {
+		return err
+	}
+	if logf != nil {
+		logf("info", fmt.Sprintf("整实例导出授权检查通过：账号 %q 拥有集群级角色（%s）", rc.Task.Source.Username, strings.Join(roles, ", ")))
+	}
+	return nil
 }
 
 // mongoCtx groups the target connection details a restore needs.

@@ -397,7 +397,7 @@ export const RunDetailView: React.FC = () => {
 
         <div className="flex items-center gap-2">
           {wsConnected ? (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
               <Radio className="h-3 w-3 animate-pulse" aria-hidden="true" />
               <span>{t('runDetail.liveConnected')}</span>
             </div>
@@ -447,7 +447,7 @@ export const RunDetailView: React.FC = () => {
               )}
             </div>
             {restoreRequest.phase === 'cancelling' && (
-              <p className="text-[11px] text-amber-600 dark:text-amber-400">{t('restore.cancelPending')}</p>
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">{t('restore.cancelPending')}</p>
             )}
             {isRestorePhaseBlocking(restoreRequest.phase) && (
               <div className="space-y-2 border-t border-border pt-3">
@@ -536,7 +536,7 @@ export const RunDetailView: React.FC = () => {
               >
                 <span className="truncate">{run.snapshot_id.substring(0, 10)}...</span>
                 {copiedSnapshot ? (
-                  <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                  <Check className="h-3 w-3 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
                 ) : (
                   <Copy className="h-3 w-3" aria-hidden="true" />
                 )}
@@ -698,13 +698,13 @@ export const RunDetailView: React.FC = () => {
                   : t('runDetail.logs.sourceAgent')
                 const levelClass =
                   log.level === 'error'
-                    ? 'text-rose-600 dark:text-rose-400 font-medium'
+                    ? 'text-rose-700 dark:text-rose-400 font-medium'
                     : log.level === 'warn'
-                      ? 'text-amber-600 dark:text-amber-400'
+                      ? 'text-amber-700 dark:text-amber-400'
                       : 'text-foreground'
                 return (
                   <div key={log.id} className={`log-row ${LOG_GRID} rounded px-1 py-0.5 hover:bg-muted/50`}>
-                    <time dateTime={log.timestamp} className="text-[11px] text-muted-foreground/80 tabular-nums whitespace-nowrap">
+                    <time dateTime={log.timestamp} className="text-[11px] text-muted-foreground tabular-nums whitespace-nowrap">
                       {formatLogTime(log.timestamp)}
                     </time>
                     <span

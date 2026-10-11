@@ -132,7 +132,7 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                                 {repo.status === 'error' && (
                                   <Tooltip>
                                     <TooltipTrigger asChild>
-                                      <span className="truncate block max-w-[180px] cursor-help text-[11px] text-rose-600 dark:text-rose-400 underline decoration-dotted">
+                                      <span className="truncate block max-w-[180px] cursor-help text-[11px] text-rose-700 dark:text-rose-400 underline decoration-dotted">
                                         {repo.error_message || t('storage.repositoryDialog.checkFailedHint')}
                                       </span>
                                     </TooltipTrigger>
@@ -168,7 +168,7 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                                   variant="ghost"
                                   size="sm"
                                   disabled={actionLoading}
-                                  className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                                  className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                                   onClick={() => onOpenUnbind(repo)}
                                   aria-label={t('storage.repositoryDialog.unbind')}
                                 >
@@ -206,7 +206,7 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                         </div>
                         {repo.status === 'error' && (
                           <div
-                            className="truncate text-[11px] text-rose-600 dark:text-rose-400"
+                            className="truncate text-[11px] text-rose-700 dark:text-rose-400"
                             title={repo.error_message || t('storage.repositoryDialog.checkFailedHint')}
                           >
                             {repo.error_message || t('storage.repositoryDialog.checkFailedHint')}
@@ -233,7 +233,7 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                             variant="ghost"
                             size="sm"
                             disabled={actionLoading}
-                            className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                            className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                             onClick={() => onOpenUnbind(repo)}
                             aria-label={t('storage.repositoryDialog.unbind')}
                           >

@@ -155,7 +155,7 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
                 >
                   <span>{selectedSnapshotView.raw.id}</span>
                   {copiedId ? (
-                    <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                    <Check className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
                   ) : (
                     <Copy className="h-3.5 w-3.5" aria-hidden="true" />
                   )}

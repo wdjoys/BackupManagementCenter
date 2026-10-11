@@ -130,9 +130,9 @@ export const SettingsView: React.FC = () => {
         </CardHeader>
         <CardContent className="space-y-6">
           {settings?.configured && (
-            <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+            <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-400 font-medium">
               <div className="flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                <CheckCircle2 className="h-4 w-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
                 <span>
                   {t('settings.status_configured')}
                 </span>

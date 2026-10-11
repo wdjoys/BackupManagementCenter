@@ -122,7 +122,7 @@ export const StorageTargetsPanel: React.FC<StorageTargetsPanelProps> = ({
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                                className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                                 onClick={() => onOpenDelete(tgt)}
                                 aria-label={t('common.delete')}
                               >
@@ -168,7 +168,7 @@ export const StorageTargetsPanel: React.FC<StorageTargetsPanelProps> = ({
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                          className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                           onClick={() => onOpenDelete(tgt)}
                           aria-label={t('common.delete')}
                         >

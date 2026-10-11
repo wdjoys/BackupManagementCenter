@@ -13,7 +13,8 @@
   --popover: hsl(0 0% 100%);
   --popover-foreground: hsl(222.2 84% 4.9%);
 
-  --primary: hsl(199 89% 44%);
+  /* 32% 亮度：白字于其上 5.5:1、其作为链接/徽标文字于白底及 primary 淡色底上 ≥4.7:1（原 44% 仅 2.7:1/3.3:1） */
+  --primary: hsl(199 89% 32%);
   --primary-foreground: hsl(210 40% 98%);
 
   --secondary: hsl(214.3 31.8% 91.4%);
@@ -25,7 +26,8 @@
   --accent: hsl(214.3 31.8% 91.4%);
   --accent-foreground: hsl(222.2 47.4% 11.2%);
 
-  --destructive: hsl(0 72% 51%);
+  /* 45% 亮度：白字于其上 5.6:1、其作为错误文字于白底 5.8:1（原 51% 为 4.6:1，叠加 /90 透明度后不足 4.5） */
+  --destructive: hsl(0 72% 45%);
   --destructive-foreground: hsl(210 40% 98%);
 
   --border: hsl(214.3 31.8% 88.5%);
@@ -46,7 +48,8 @@
   --popover-foreground: hsl(210 40% 98%);
 
   --primary: hsl(199 89% 48%);
-  --primary-foreground: hsl(210 40% 98%);
+  /* 深色主题下 primary 同时用作背景与文字：背景需深色前景（7.0:1），文字需保持浅蓝（7.0:1） */
+  --primary-foreground: hsl(222.2 84% 4.9%);
 
   --secondary: hsl(217.2 32.6% 17.5%);
   --secondary-foreground: hsl(210 40% 98%);
@@ -57,8 +60,9 @@
   --accent: hsl(217.2 32.6% 17.5%);
   --accent-foreground: hsl(210 40% 98%);
 
-  --destructive: hsl(0 72% 51%);
-  --destructive-foreground: hsl(210 40% 98%);
+  /* 与 primary 同理：深色主题下 destructive 兼作背景与错误文字，浅红 + 深色前景两者均达标 */
+  --destructive: hsl(0 84% 65%);
+  --destructive-foreground: hsl(222.2 84% 4.9%);
 
   --border: hsl(217.2 32.6% 17.5%);
   --input: hsl(217.2 32.6% 17.5%);

@@ -112,7 +112,7 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         <span>{item.agentDisplay.name}</span>
-                        <span className="text-[11px] text-muted-foreground/75 ml-1.5 font-mono">
+                        <span className="text-[11px] text-muted-foreground ml-1.5 font-mono">
                           ({item.agentDisplay.hostname})
                         </span>
                       </TableCell>
@@ -131,7 +131,7 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                             <Button
                               variant="ghost"
                               size="sm"
-                              className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                              className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                               onClick={(e) => onDeleteSnapshot(e, item.raw)}
                               aria-label={t('common.delete')}
                             >
@@ -146,7 +146,7 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                                     variant="ghost"
                                     size="sm"
                                     disabled
-                                    className="h-7 text-xs text-rose-600/40 dark:text-rose-400/40 gap-1 pointer-events-none"
+                                    className="h-7 text-xs text-rose-700/40 dark:text-rose-400/40 gap-1 pointer-events-none"
                                     aria-label={t('common.delete')}
                                   >
                                     <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -206,7 +206,7 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 gap-1"
+                        className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
                         onClick={(e) => onDeleteSnapshot(e, item.raw)}
                         aria-label={t('common.delete')}
                       >
@@ -221,7 +221,7 @@ export const SnapshotList: React.FC<SnapshotListProps> = ({
                               variant="ghost"
                               size="sm"
                               disabled
-                              className="h-7 text-xs text-rose-600/40 dark:text-rose-400/40 gap-1 pointer-events-none"
+                              className="h-7 text-xs text-rose-700/40 dark:text-rose-400/40 gap-1 pointer-events-none"
                               aria-label={t('common.delete')}
                             >
                               <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />

@@ -94,7 +94,7 @@ export const DashboardView: React.FC = () => {
             <CardTitle className="text-xs font-medium text-muted-foreground">
               {t('dashboard.onlineAgents')}
             </CardTitle>
-            <Server className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+            <Server className="h-4 w-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-foreground">
@@ -115,10 +115,10 @@ export const DashboardView: React.FC = () => {
             <CardTitle className="text-xs font-medium text-muted-foreground">
               {t('dashboard.succeeded24h')}
             </CardTitle>
-            <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+            <CheckCircle2 className="h-4 w-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+            <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-400">
               {dashboard.runs_24h_succeeded}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
@@ -133,10 +133,10 @@ export const DashboardView: React.FC = () => {
             <CardTitle className="text-xs font-medium text-muted-foreground">
               {t('dashboard.failed24h')}
             </CardTitle>
-            <XCircle className="h-4 w-4 text-rose-600 dark:text-rose-400" aria-hidden="true" />
+            <XCircle className="h-4 w-4 text-rose-700 dark:text-rose-400" aria-hidden="true" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-rose-600 dark:text-rose-400">
+            <div className="text-2xl font-bold text-rose-700 dark:text-rose-400">
               {dashboard.runs_24h_failed}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
@@ -151,10 +151,10 @@ export const DashboardView: React.FC = () => {
             <CardTitle className="text-xs font-medium text-muted-foreground">
               {t('dashboard.reposNeedingCheck')}
             </CardTitle>
-            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+            <AlertTriangle className="h-4 w-4 text-amber-700 dark:text-amber-400" aria-hidden="true" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-amber-600 dark:text-amber-400">
+            <div className="text-2xl font-bold text-amber-700 dark:text-amber-400">
               {dashboard.repos_needing_check.length}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
@@ -212,7 +212,7 @@ export const DashboardView: React.FC = () => {
         {/* Repositories Needing Check */}
         <Card className="border-border bg-card/60 shadow-sm">
           <CardHeader className="pb-3 flex flex-row items-center gap-2 space-y-0">
-            <Database className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+            <Database className="h-4 w-4 text-amber-700 dark:text-amber-400" aria-hidden="true" />
             <CardTitle className="text-sm font-semibold">
               {t('dashboard.reposNeedingCheck')}
             </CardTitle>
@@ -251,7 +251,7 @@ export const DashboardView: React.FC = () => {
               </div>
             ) : dashboard.repos_error > 0 ? (
               <AppEmptyState
-                icon={<AlertTriangle className="h-6 w-6 text-rose-600 dark:text-rose-400" aria-hidden="true" />}
+                icon={<AlertTriangle className="h-6 w-6 text-rose-700 dark:text-rose-400" aria-hidden="true" />}
                 title={t('dashboard.reposError', { count: dashboard.repos_error })}
                 description={t('dashboard.reposError_desc')}
               />

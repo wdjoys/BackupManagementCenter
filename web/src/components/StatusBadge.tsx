@@ -23,7 +23,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
   const toneStyles: Record<BadgeTone, string> = {
     default: 'bg-primary/15 text-primary border-primary/25 dark:bg-primary/20 dark:text-primary',
     success: 'bg-emerald-500/15 text-emerald-700 border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400 dark:border-emerald-500/30',
-    warning: 'bg-amber-500/15 text-amber-700 border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-400 dark:border-amber-500/30',
+    warning: 'bg-amber-500/15 text-amber-800 border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-400 dark:border-amber-500/30',
     destructive: 'bg-rose-500/15 text-rose-700 border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-400 dark:border-rose-500/30',
     secondary: 'bg-secondary text-secondary-foreground border-border',
     outline: 'bg-transparent text-muted-foreground border-border',

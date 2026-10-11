@@ -44,8 +44,28 @@ func TestValidateExtraArgs(t *testing.T) {
 	if err := ValidateExtraArgs(KindMySQL, []string{"--skip-routines"}); err != nil {
 		t.Fatalf("--skip-routines must be allowed (mysqldump 单引号库名的规避手段): %v", err)
 	}
+	// 授权不足时的降级通道与正当的子集备份都必须可用（此前白名单里一个都没有）。
+	for _, args := range [][]string{
+		{"--skip-events"}, {"--skip-triggers"},
+		{"--tables=t1,t3"}, {"--ignore-table=appdb.t2"},
+		{"--tables=t1", "--ignore-table=appdb.t2", "--single-transaction"},
+	} {
+		if err := ValidateExtraArgs(KindMySQL, args); err != nil {
+			t.Fatalf("%v must be allowed: %v", args, err)
+		}
+	}
+	// 前缀规则不得放行空值或无关参数。
+	for _, args := range [][]string{{"--tables="}, {"--ignore-table="}, {"--tables"}, {"--skip-events=x"}} {
+		if err := ValidateExtraArgs(KindMySQL, args); err == nil {
+			t.Fatalf("%v must be rejected", args)
+		}
+	}
 	if err := ValidateExtraArgs(KindPostgreSQL, []string{"--inserts"}); err != nil {
 		t.Fatalf("--inserts must be allowed: %v", err)
+	}
+	// --tables 是 MySQL 专属前缀，PG 不得放行。
+	if err := ValidateExtraArgs(KindPostgreSQL, []string{"--tables=t1"}); err == nil {
+		t.Fatal("postgresql must not accept mysql-only --tables")
 	}
 	err := ValidateExtraArgs(KindMySQL, []string{"--result-file=/tmp/x.sql"})
 	if err == nil || !strings.Contains(err.Error(), "--result-file=/tmp/x.sql") {

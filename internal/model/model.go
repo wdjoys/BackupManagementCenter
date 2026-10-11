@@ -57,16 +57,39 @@ var SystemDatabases = map[string]map[string]bool{
 // 就会让该参数永远被拒，因此统一放在这里。
 var AllowedExtraArgs = map[string]map[string]bool{
 	KindPostgreSQL: {"--no-owner": true, "--no-privileges": true, "--no-acl": true, "--blobs": true, "--no-comments": true, "--no-publications": true, "--no-subscriptions": true, "--no-security-labels": true, "--inserts": true},
-	KindMySQL:      {"--single-transaction": true, "--quick": true, "--routines": true, "--skip-routines": true, "--events": true, "--triggers": true, "--hex-blob": true, "--skip-lock-tables": true},
+	KindMySQL:      {"--single-transaction": true, "--quick": true, "--routines": true, "--skip-routines": true, "--events": true, "--skip-events": true, "--triggers": true, "--skip-triggers": true, "--hex-blob": true, "--skip-lock-tables": true},
 	KindMongoDB:    {},
 	KindSQLite:     {},
+}
+
+// AllowedExtraArgPrefixes 是允许的「带值开关」前缀（形如 --tables=t1,t3）。
+// 这类参数的取值无法穷举，只校验前缀，值交给 mysqldump 自己校验。
+// 子集备份此前完全无路可走：既没有 --tables/--ignore-table，也没有授权不足时的
+// 降级开关（--skip-events/--skip-triggers 与既有的 --skip-routines 同类）。
+var AllowedExtraArgPrefixes = map[string][]string{
+	KindMySQL: {"--tables=", "--ignore-table="},
 }
 
 // ValidateExtraArgs 拒绝不在白名单中的额外参数，并指出具体选项名。
 func ValidateExtraArgs(kind string, args []string) error {
 	allowed := AllowedExtraArgs[kind]
+	prefixes := AllowedExtraArgPrefixes[kind]
 	for _, arg := range args {
-		if strings.TrimSpace(arg) == "" || !allowed[arg] {
+		if strings.TrimSpace(arg) == "" {
+			return fmt.Errorf("extra_args contains disallowed option %q", arg)
+		}
+		if allowed[arg] {
+			continue
+		}
+		matched := false
+		for _, p := range prefixes {
+			// 前缀之后必须还有内容，否则 --tables= 这种空值会被放行。
+			if strings.HasPrefix(arg, p) && len(arg) > len(p) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return fmt.Errorf("extra_args contains disallowed option %q", arg)
 		}
 	}

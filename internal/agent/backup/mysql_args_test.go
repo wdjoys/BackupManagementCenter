@@ -862,6 +862,46 @@ func TestMySQLBackupAllowsFullGrants(t *testing.T) {
 	}
 }
 
+// --tables=表名,表名 必须被翻译成 mysqldump 需要的位置参数：mysqldump 的 --tables
+// 是布尔开关，原样透传会以 exit 4 失败（实测 "option '--tables' cannot take an
+// argument"）。
+func TestMySQLDumpArgsTranslateTableSelection(t *testing.T) {
+	rec := &argRecorder{}
+	task := mysqlBackupTask("appdb")
+	task.Source.ExtraArgs = []string{"--tables=t1, t3", "--single-transaction"}
+	rc := &RunContext{
+		Task: task, Secrets: SecretBundle{DBPassword: "pw"}, TempDir: t.TempDir(),
+		Exec: rec, Logf: func(string, string, ...any) {},
+	}
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	dump := rec.find("mysqldump")
+	if dump == nil {
+		t.Fatal("mysqldump was never invoked")
+	}
+	for _, a := range dump.Args {
+		if strings.HasPrefix(a, "--tables=") {
+			t.Fatalf("--tables= 不得原样透传: %v", dump.Args)
+		}
+	}
+	dash := indexOf(dump.Args, "--")
+	if dash < 0 || len(dump.Args) < dash+4 ||
+		dump.Args[dash+1] != "appdb" || dump.Args[dash+2] != "t1" || dump.Args[dash+3] != "t3" {
+		t.Fatalf("表名必须作为位置参数紧跟库名之后: %v", dump.Args)
+	}
+}
+
+// 整实例备份与 --tables= 互斥：否则用户以为只备份了部分表，实际拿到整实例 dump。
+func TestMySQLValidateRejectsTablesForAllDatabases(t *testing.T) {
+	spec := PlanSpec{Kind: KindMySQL, Source: model.PlanSource{
+		Database: "all", EstimatedDumpBytes: 1 << 20, ExtraArgs: []string{"--tables=t1"},
+	}}
+	if err := (&MySQLAdapter{}).Validate(context.Background(), spec); err == nil {
+		t.Fatal("database=all 与 --tables= 互斥，必须拒绝")
+	}
+}
+
 // 缺 TRIGGER 权限时 mysqldump --triggers 会静默丢弃触发器（rc=0、无 warn），
 // 必须在导出前明确拒绝，并点名缺的权限与确切 GRANT（实测 MySQL 8.0.46）。
 func TestMySQLBackupRefusesMissingTriggerPrivilege(t *testing.T) {
@@ -931,6 +971,26 @@ func TestMySQLBackupExplicitSkipBypassesObjectCheck(t *testing.T) {
 	joined := strings.Join(logs, "\n")
 	if !strings.Contains(joined, "--skip-triggers") || !strings.Contains(joined, "不含触发器") {
 		t.Fatalf("显式跳过必须在日志里说明本次 dump 不含触发器:\n%s", joined)
+	}
+}
+
+// 显式选表（--tables=...）是正当的子集备份：表级账号不得再被「部分授权」拒绝。
+func TestMySQLBackupExplicitTablesBypassesPartialGrantCheck(t *testing.T) {
+	exec := &grantsExec{grants: []string{
+		"GRANT USAGE ON *.* TO `u`@`%`",
+		"GRANT EVENT, TRIGGER ON `appdb`.* TO `u`@`%`",
+		"GRANT SELECT ON `appdb`.`t1` TO `u`@`%`",
+	}}
+	task := mysqlBackupTask("appdb")
+	task.Source.ExtraArgs = []string{"--tables=t1"}
+	rc := grantsRC(exec, "appdb")
+	rc.Task = task
+	rc.TempDir = t.TempDir()
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("显式选表不得被拒绝: %v", err)
+	}
+	if !exec.dumped {
+		t.Fatal("显式选表后应正常执行 mysqldump")
 	}
 }
 

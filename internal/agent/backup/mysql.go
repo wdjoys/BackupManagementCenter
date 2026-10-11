@@ -60,6 +60,15 @@ func (a *MySQLAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if err := model.ValidateExtraArgs(model.KindMySQL, s.ExtraArgs); err != nil {
 		return err
 	}
+	// 整实例备份不接受表名（mysqldump 的 --all-databases 与位置参数表名互斥），
+	// 否则用户以为只备份了部分表、实际拿到整实例 dump。
+	if s.Database == "all" {
+		for _, a := range s.ExtraArgs {
+			if strings.HasPrefix(a, "--tables=") {
+				return errors.New("--tables 只能用于单库备份（database=all 时 mysqldump 不接受表名）")
+			}
+		}
+	}
 	return nil
 }
 
@@ -137,13 +146,18 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 	args = append(args, "--result-file="+dumpFile)
 	// extra_args 必须排在 -- 之前（它们是选项；-- 之后的一切都会被当作位置参数）。
-	args = append(args, source.ExtraArgs...)
+	// --tables=表名,表名 由 mysqlTableSelection 翻译成位置参数（mysqldump 的
+	// --tables 是布尔开关，传值直接失败：option '--tables' cannot take an argument）。
+	extraArgs, selectedTables := mysqlTableSelection(source.ExtraArgs)
+	args = append(args, extraArgs...)
 	// 位置参数形式的库名必须以 -- 结束选项：合法的库名可以以 '-' 开头（引号标识符），
 	// 否则会被客户端当作选项簇解析（实测 mysqldump 报 unknown option '-s'）。
 	if source.Database == "all" {
 		args = append(args, "--all-databases")
 	} else {
 		args = append(args, "--", source.Database)
+		// 表名同样以位置参数跟在库名之后：mysqldump db t1 t3 只导出这两张表。
+		args = append(args, selectedTables...)
 	}
 
 	// 收集 stderr：MySQL ≤5.7 默认 character_set_server=latin1，官方 8.0 客户端
@@ -354,8 +368,12 @@ func checkMySQLReadScope(ctx context.Context, exec Executor, client, cnfFile, us
 			username, exitErrorWithStderr("mysql client SHOW GRANTS", exit, err, stderrTail))
 	}
 	scope := mysqlSelectScope(grants)
-	if err := mysqlCheckTableScope(scope, username, database); err != nil {
-		return err
+	// 显式选表（--tables/--ignore-table）表示用户已声明本次只导出哪些表，
+	// 表级账号做子集备份是正当用法，不再按「部分授权」拒绝。
+	if !mysqlExplicitTableSelection(extraArgs) {
+		if err := mysqlCheckTableScope(scope, username, database); err != nil {
+			return err
+		}
 	}
 	return mysqlCheckObjectPrivileges(scope, username, database, extraArgs, logf)
 }
@@ -435,6 +453,40 @@ func mysqlDumpObjectTypes(extraArgs []string) (triggers, routines, events bool) 
 		}
 	}
 	return triggers, routines, events
+}
+
+// mysqlExplicitTableSelection 报告 extra_args 是否显式指定了要导出/排除的表。
+// 显式选表意味着用户已声明本次的表范围，未选中的表不算"静默丢失"。
+func mysqlExplicitTableSelection(extraArgs []string) bool {
+	for _, a := range extraArgs {
+		if a == "--tables" || a == "--ignore-table" ||
+			strings.HasPrefix(a, "--tables=") || strings.HasPrefix(a, "--ignore-table=") {
+			return true
+		}
+	}
+	return false
+}
+
+// mysqlTableSelection 把 BMC 暴露的 --tables=表名,表名 拆成 mysqldump 需要的位置参数。
+//
+// mysqldump 的 --tables 是布尔开关（传值直接失败：option '--tables' cannot take an
+// argument），且它把其后的所有名字参数都当成表名；而 BMC 固定把库名放在最后的位置
+// 参数位置，因此 --tables=t1,t3 原样透传必然失败（实测 exit 4），退化成
+// --tables=<单表> 时更会静默导出空 dump。这里把该参数摘出来，表名由调用方追加在库名
+// 之后（等价于 mysqldump db t1 t3）。
+func mysqlTableSelection(extraArgs []string) (rest, tables []string) {
+	for _, a := range extraArgs {
+		if !strings.HasPrefix(a, "--tables=") {
+			rest = append(rest, a)
+			continue
+		}
+		for _, t := range strings.Split(strings.TrimPrefix(a, "--tables="), ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				tables = append(tables, t)
+			}
+		}
+	}
+	return rest, tables
 }
 
 // mysqlCheckObjectPrivileges 判定本次启用的触发器/例程/事件是否会因权限不足而

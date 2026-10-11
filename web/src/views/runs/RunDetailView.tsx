@@ -615,8 +615,8 @@ export const RunDetailView: React.FC = () => {
                   {isTerminal(run.status)
                     ? translateEnum('runs.status', run.status)
                     : run.operation === 'restore'
-                      ? translateEnum('restore.phases', run.progress.phase, 'runDetail.phases')
-                      : translateEnum('runDetail.phases', run.progress.phase, 'restore.phases')}
+                      ? translateEnum('restore.phases', run.progress.phase ?? '', 'runDetail.phases')
+                      : translateEnum('runDetail.phases', run.progress.phase ?? '', 'restore.phases')}
                 </dd>
               </div>
               <div>

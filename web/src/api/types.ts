@@ -52,6 +52,8 @@ export interface Repository {
   last_check_at: string | null
   agent_name?: string
   storage_target_name?: string
+  created_at: string
+  updated_at: string
 }
 
 export interface Snapshot {
@@ -69,7 +71,8 @@ export interface SnapshotDeletionResponse {
 
 export interface TreeEntry {
   name: string
-  type: 'dir' | 'file'
+  type: 'dir' | 'file' | 'symlink'
+  path?: string
   size: number
   mtime: string
 }
@@ -120,20 +123,35 @@ export interface Plan {
   updated_at: string
 }
 
+/** 后端 Progress 的每个字段都带 omitempty：没有进度的运行（snapshots/check 等）
+    返回 `{}`，因此这里全部可选，读取时必须给默认值。 */
 export interface RunProgress {
-  phase: string
-  percent: number
-  bytes_done: number
-  bytes_total: number
-  files_done: number
-  files_total: number
+  phase?: string
+  percent?: number
+  bytes_done?: number
+  bytes_total?: number
+  files_done?: number
+  files_total?: number
 }
+
+/** 取值须与 internal/model/model.go 的 Op* 常量（runs.operation 的 CHECK 约束）一致。 */
+export type RunOperation =
+  | 'backup'
+  | 'restore'
+  | 'restore_dry_run'
+  | 'check'
+  | 'forget'
+  | 'snapshots'
+  | 'snapshot_ls'
+  | 'verify_storage_remote'
+  | 'validate_paths'
+  | 'probe_capabilities'
 
 export interface Run {
   id: string
   plan_id: string
   agent_id: string
-  operation: 'backup' | 'restore' | 'check' | 'forget'
+  operation: RunOperation
   status: 'queued' | 'dispatched' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   queued_at: string
   started_at: string | null
@@ -235,7 +253,8 @@ export interface RepoCheck {
 export interface EnrollmentToken {
   id: string
   expires_at: string
-  used_at: string | null
+  /** 未使用的 token 后端不返回该字段（omitempty）。 */
+  used_at?: string | null
 }
 
 export interface EnrollmentTokenResponse {
@@ -249,6 +268,8 @@ export interface SetupStatus {
 }
 
 export interface AuthUser {
+  /** 仅 GET /auth/me 返回；POST /auth/login 的响应没有该字段。 */
+  id?: string
   username: string
   /** 服务端构建版本（后端注入），取不到时省略。 */
   version?: string

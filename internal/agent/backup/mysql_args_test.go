@@ -1479,3 +1479,52 @@ func TestMySQLDumpDatabaseCount(t *testing.T) {
 	}
 }
 
+// --tables=<源库>.<表> 必须剥离同库前缀后按位置参数导出（用户很容易照
+// --ignore-table 的库.表写法来写 --tables=，原样透传会以
+// Couldn't find table: "p_sb_src.t1" 必然失败）。
+func TestMySQLBackupStripsSourceDatabasePrefixFromTables(t *testing.T) {
+	rec := &argRecorder{}
+	task := mysqlBackupTask("p_sb_src")
+	task.Source.ExtraArgs = []string{"--tables=p_sb_src.t1,`p_sb_src`.`t3`"}
+	rc := &RunContext{
+		Task: task, Secrets: SecretBundle{DBPassword: "pw"}, TempDir: t.TempDir(),
+		Exec: rec, Logf: func(string, string, ...any) {},
+	}
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("同库前缀必须被剥离而不是失败: %v", err)
+	}
+	dump := rec.find("mysqldump")
+	if dump == nil {
+		t.Fatal("mysqldump was never invoked")
+	}
+	dash := indexOf(dump.Args, "--")
+	if dash < 0 || len(dump.Args) < dash+4 ||
+		dump.Args[dash+1] != "p_sb_src" || dump.Args[dash+2] != "t1" || dump.Args[dash+3] != "t3" {
+		t.Fatalf("表名必须剥离库前缀后作为位置参数紧跟库名: %v", dump.Args)
+	}
+}
+
+// --tables=<别的库>.<表> 与单库计划语义不符（mysqldump 的位置参数表名也不支持库名
+// 前缀），必须明确拒绝并说明，而不是 201 后必然失败。
+func TestMySQLBackupRejectsForeignDatabasePrefixInTables(t *testing.T) {
+	rec := &argRecorder{}
+	task := mysqlBackupTask("p_sb_src")
+	task.Source.ExtraArgs = []string{"--tables=otherdb.t1"}
+	rc := &RunContext{
+		Task: task, Secrets: SecretBundle{DBPassword: "pw"}, TempDir: t.TempDir(),
+		Exec: rec, Logf: func(string, string, ...any) {},
+	}
+	_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+	if err == nil {
+		t.Fatal("异库前缀必须拒绝")
+	}
+	for _, want := range []string{"otherdb", "p_sb_src", "--tables=t1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误必须包含 %q: %v", want, err)
+		}
+	}
+	if rec.find("mysqldump") != nil {
+		t.Fatal("拒绝时不得启动 mysqldump")
+	}
+}
+

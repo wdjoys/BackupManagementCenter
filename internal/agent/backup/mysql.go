@@ -75,6 +75,12 @@ func (a *MySQLAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 // Backup runs mysqldump, writes manifest, returns BackupArtifact with staging dir.
 func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtifact, error) {
 	source := rc.Task.Source
+	// 显式选表参数先校验/归一化：自相矛盾或跨库的 --tables= 在动任何东西之前就明确
+	// 拒绝，而不是让 mysqldump 在末尾报 Couldn't find table 或静默忽略 --ignore-table。
+	extraArgs, selectedTables, err := mysqlCheckTableArgs(source.Database, source.ExtraArgs)
+	if err != nil {
+		return nil, err
+	}
 	stagingDir := filepath.Join(rc.TempDir, "staging")
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir staging: %w", err)
@@ -146,9 +152,8 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	}
 	args = append(args, "--result-file="+dumpFile)
 	// extra_args 必须排在 -- 之前（它们是选项；-- 之后的一切都会被当作位置参数）。
-	// --tables=表名,表名 由 mysqlTableSelection 翻译成位置参数（mysqldump 的
+	// --tables=表名,表名 已由 mysqlCheckTableArgs 翻译成位置参数（mysqldump 的
 	// --tables 是布尔开关，传值直接失败：option '--tables' cannot take an argument）。
-	extraArgs, selectedTables := mysqlTableSelection(source.ExtraArgs)
 	args = append(args, extraArgs...)
 	// 位置参数形式的库名必须以 -- 结束选项：合法的库名可以以 '-' 开头（引号标识符），
 	// 否则会被客户端当作选项簇解析（实测 mysqldump 报 unknown option '-s'）。
@@ -588,26 +593,79 @@ func mysqlScopeArgs(extraArgs []string) []string {
 	return out
 }
 
-// mysqlTableSelection 把 BMC 暴露的 --tables=表名,表名 拆成 mysqldump 需要的位置参数。
+// mysqlCheckTableArgs 校验并归一化显式选表参数，返回应透传的 extra_args 与
+// mysqldump 需要的位置参数表名。
 //
 // mysqldump 的 --tables 是布尔开关（传值直接失败：option '--tables' cannot take an
 // argument），且它把其后的所有名字参数都当成表名；而 BMC 固定把库名放在最后的位置
 // 参数位置，因此 --tables=t1,t3 原样透传必然失败（实测 exit 4），退化成
 // --tables=<单表> 时更会静默导出空 dump。这里把该参数摘出来，表名由调用方追加在库名
 // 之后（等价于 mysqldump db t1 t3）。
-func mysqlTableSelection(extraArgs []string) (rest, tables []string) {
+//
+// 位置参数表名**不支持库名前缀**（实测 mysqldump 报
+// Couldn't find table: "p_sb_src.t1"，run 必失败），但用户很容易照 --ignore-table 的
+// 库.表写法写 --tables=。因此：同源库前缀按 --ignore-table 的语义剥掉（行为可预测，
+// 备份照常成功）；别的前缀明确拒绝（跨库选表与单库计划语义不符）。
+func mysqlCheckTableArgs(database string, extraArgs []string) (rest, tables []string, err error) {
 	for _, a := range extraArgs {
 		if !strings.HasPrefix(a, "--tables=") {
 			rest = append(rest, a)
 			continue
 		}
 		for _, t := range strings.Split(strings.TrimPrefix(a, "--tables="), ",") {
-			if t = strings.TrimSpace(t); t != "" {
-				tables = append(tables, t)
+			if t = strings.TrimSpace(t); t == "" {
+				continue
 			}
+			if db, tbl, ok := mysqlSplitTableRef(t); ok {
+				if database == "all" || db != database {
+					return nil, nil, fmt.Errorf("mysql 导出参数被拒绝：--tables=%s 里的 %q 指定了库 %q 中的表，"+
+						"而本计划的源库是 %q；mysqldump 的位置参数表名不支持库名前缀（实测报 Couldn't find table: %q），"+
+						"跨库选表也与单库计划语义不符；请写成同库表名（--tables=%s），或为该库单独建一个计划",
+						t, t, db, database, t, tbl)
+				}
+				t = tbl
+			}
+			tables = append(tables, t)
 		}
 	}
-	return rest, tables
+	return rest, tables, nil
+}
+
+// mysqlSplitTableRef 把 --tables=/--ignore-table= 的单项拆成 <库>.<表>。
+// 两侧可带反引号；反引号内的点号不当作分隔符，因此含点号的表名可写成
+// `库`.`表.名`（带前缀）或 `表.名`（不带前缀）。非限定名返回 ok=false。
+func mysqlSplitTableRef(s string) (db, table string, ok bool) {
+	inQuote := false
+	for i := range len(s) {
+		switch s[i] {
+		case '`':
+			// 两个连续反引号是转义，不成对切换引号状态。
+			if i+1 < len(s) && s[i+1] == '`' {
+				i++
+				continue
+			}
+			inQuote = !inQuote
+		case '.':
+			if inQuote {
+				continue
+			}
+			db, table = mysqlUnquotePart(s[:i]), mysqlUnquotePart(s[i+1:])
+			if db == "" || table == "" {
+				return "", "", false
+			}
+			return db, table, true
+		}
+	}
+	return "", "", false
+}
+
+// mysqlUnquotePart 去掉标识符两侧的反引号并把 `` 还原为 `。
+func mysqlUnquotePart(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' {
+		return strings.ReplaceAll(s[1:len(s)-1], "``", "`")
+	}
+	return s
 }
 
 // mysqlCheckObjectPrivileges 判定本次启用的触发器/例程/事件/视图是否会因权限不足而

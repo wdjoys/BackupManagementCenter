@@ -24,7 +24,6 @@ export interface Agent {
   capabilities: ToolCapability[]
   source_path_mappings: PathMapping[]
   restore_path_mappings: PathMapping[]
-  safe_database_restore: boolean
 }
 
 export interface ToolCapability {
@@ -227,7 +226,8 @@ export interface ScheduledPlan {
 
 export interface RepoCheck {
   id: string
-  name: string
+  /** 后端 /dashboard 的 repos_needing_check 项回传的是仓库路径，不是显示名。 */
+  repository_path: string
   last_check_at: string | null
 }
 

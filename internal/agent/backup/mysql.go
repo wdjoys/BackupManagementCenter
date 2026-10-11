@@ -169,7 +169,7 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mysqldumpPath, Args: args, Env: nil}, logLine, capture.line)
 	if err != nil || exitCode != 0 {
 		// 单引号库名的原因更具体，优先给出；字符集提示只在 8.0 客户端路径下成立。
-		if hint := mysqlDumpFailureHint(source.Database, capture.tail, tools.legacy); hint != "" {
+		if hint := mysqlDumpFailureHint(source.Database, source.Username, capture.tail, tools.legacy); hint != "" {
 			rc.Logf("warn", "%s", hint)
 		}
 		return nil, exitErrorWithStderr("mysqldump", exitCode, err, capture.tail)
@@ -408,7 +408,7 @@ func mysqlCheckTableScope(scope mysqlReadScope, username, database string) error
 		sort.Strings(partial)
 		return fmt.Errorf("mysql 导出被拒绝：账号 %q 只被授予部分表的 SELECT 权限（%s），"+
 			"mysqldump 会静默跳过未授权的表，整实例备份将缺失这些表的数据；"+
-			"请为该账号授予库级 SELECT（GRANT SELECT ON `<库名>`.* TO %q）后重试，或改用拥有全局 SELECT 的账号",
+			"请为该账号授予库级 SELECT（GRANT SELECT ON `<库名>`.* TO %q）后重试",
 			username, strings.Join(partial, "；"), username)
 	}
 	if scope.schemas[database] {
@@ -426,7 +426,8 @@ func mysqlCheckTableScope(scope mysqlReadScope, username, database string) error
 	}
 	return fmt.Errorf("mysql 导出被拒绝：账号 %q 只被授予数据库 %q 中部分表的 SELECT 权限（%s），"+
 		"mysqldump 会静默跳过未授权的表，备份将缺失这些表的数据；"+
-		"请为该账号授予库级 SELECT（GRANT SELECT ON `%s`.* TO %q）后重试，或改用拥有库级/全局 SELECT 的账号",
+		"请为该账号授予库级 SELECT（GRANT SELECT ON `%s`.* TO %q）后重试；"+
+		"若确实只想备份其中部分表，请在该计划 extra_args 中显式指定 \"--tables=表名,表名\" 或 \"--ignore-table=库.表\"（显式选表即不再按部分授权拒绝）",
 		username, database, detail, strings.ReplaceAll(database, "`", "``"), username)
 }
 
@@ -638,15 +639,83 @@ func mysqlGrantObject(line string) (object string, privs map[string]bool, allPri
 // legacy 表示本次用的是 5.7 客户端：此时不可能发生 8.0 客户端的 utf8mb4 排序规则
 // 回退，同样的 "Unknown database" 就是库确实不存在，不能再提示字符集问题（实测
 // bmc-mysql56 上不存在的非 ASCII 库名被误诊为"库实际存在"的字符集问题）。
-func mysqlDumpFailureHint(database string, stderrTail []string, legacy bool) string {
+func mysqlDumpFailureHint(database, username string, stderrTail []string, legacy bool) string {
 	// 单引号库名的原因更具体，优先给出（含单引号且非 ASCII 时避免被字符集提示误导）。
 	if hint := mysqlDumpQuoteNameHint(database, stderrTail); hint != "" {
+		return hint
+	}
+	// 权限类错误与库名无关，任何客户端路径下都应给出（缺权限在 5.7 客户端上同样发生）。
+	if hint := mysqlDumpPrivilegeHint(database, username, stderrTail); hint != "" {
 		return hint
 	}
 	if legacy {
 		return ""
 	}
 	return mysqlDumpNameCharsetHint(database, stderrTail)
+}
+
+// mysqlDumpPrivilegeHint 在 mysqldump 因权限不足（1044/1142）失败时给出精确的授权
+// 建议。
+//
+// 这类报错在 MySQL 里对 SHOW EVENTS/SHOW TRIGGERS/SHOW CREATE PROCEDURE 都写作
+// "Access denied for user 'u'@'%' to database 'db'"，字面像是"库级授权缺失"，但被拒
+// 的库级 SELECT 往往早已授予（实测 SELECT+EVENT 账号报 'show events' 1044 而库级
+// SELECT 正常，事件只是缺 EVENT 权限）。因此这里点名真正缺的权限，且不得再建议
+// "改用全局 SELECT"——实测 GRANT SELECT ON *.* 仍无法执行 SHOW EVENTS。
+func mysqlDumpPrivilegeHint(database, username string, stderrTail []string) string {
+	if database == "" {
+		return ""
+	}
+	all := database == "all"
+	missing := ""
+	for _, line := range stderrTail {
+		switch {
+		case strings.Contains(line, "show events"), strings.Contains(line, "SHOW EVENTS"):
+			missing = "EVENT"
+		case strings.Contains(line, "show triggers"), strings.Contains(line, "SHOW TRIGGERS"):
+			missing = "TRIGGER"
+		case strings.Contains(line, "SHOW CREATE PROCEDURE"), strings.Contains(line, "SHOW CREATE FUNCTION"):
+			missing = "SHOW_ROUTINE"
+		}
+		if missing != "" {
+			break
+		}
+	}
+	// 整实例备份报错里的库名可能是任意库（实测缺 EVENT 时先卡在 'mysql' 库），
+	// 因此只能给全局授权；单库给出精确到库的授权。
+	scope := fmt.Sprintf("`%s`.*", strings.ReplaceAll(database, "`", "``"))
+	target := fmt.Sprintf("库 %q", database)
+	if all {
+		scope, target = "*.*", "整实例备份涉及的各库"
+	}
+	var grant string
+	switch missing {
+	case "EVENT":
+		grant = fmt.Sprintf("GRANT EVENT ON %s TO %q;", scope, username)
+	case "TRIGGER":
+		grant = fmt.Sprintf("GRANT TRIGGER ON %s TO %q;", scope, username)
+	case "SHOW_ROUTINE":
+		grant = fmt.Sprintf("GRANT SHOW_ROUTINE ON *.* TO %q;（MySQL 8.0.20+；MariaDB/旧版可用全局 SELECT 代替）", username)
+	default:
+		// 未识别的 1044/1142：只纠正误导性的措辞，不猜具体权限。
+		for _, line := range stderrTail {
+			if strings.Contains(line, "Access denied") && strings.Contains(line, "to database") {
+				missing = "未知（见下方 mysqldump 原文）"
+				break
+			}
+		}
+		if missing == "" {
+			return ""
+		}
+		grant = fmt.Sprintf("按报错语句补齐对应权限（常见：GRANT EVENT ON %s TO %q; / GRANT TRIGGER ON %s TO %q; / GRANT SHOW_ROUTINE ON *.* TO %q;）",
+			scope, username, scope, username, username)
+	}
+	return fmt.Sprintf("mysqldump 因权限不足失败，真正缺少的权限是 %s；报错里的 "+
+		"\"Access denied ... to database '...'\" 是 MySQL 对 SHOW EVENTS/SHOW TRIGGERS/SHOW CREATE 的措辞，"+
+		"**不代表**该账号缺少库级 SELECT（它通常已有）。请针对%s执行 %s 后重试；"+
+		"也可在该计划 extra_args 中显式跳过对应对象（--skip-events / --skip-triggers / --skip-routines）。"+
+		"注意：全局 SELECT（GRANT SELECT ON *.*）**不能**替代 EVENT/TRIGGER 权限。",
+		missing, target, grant)
 }
 
 // mysqlDumpQuoteNameHint 在"库名含单引号"且 mysqldump 报 1049 时给出可诊断提示。

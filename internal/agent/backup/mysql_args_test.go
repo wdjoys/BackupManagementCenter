@@ -353,26 +353,26 @@ func TestVerifyTableSetsFoldsOnlyWhenServerIsCaseInsensitive(t *testing.T) {
 // bmc-mysql56 上不存在的非 ASCII 库名被误诊为"库实际存在"的字符集问题。
 func TestMysqlDumpFailureHintSkipsCharsetHintOnLegacyClient(t *testing.T) {
 	unknown := []string{"mysqldump: Got error: 1049: Unknown database 'p_中文库' when selecting the database"}
-	if got := mysqlDumpFailureHint("p_中文库", unknown, true); got != "" {
+	if got := mysqlDumpFailureHint("p_中文库", "u", unknown, true); got != "" {
 		t.Fatalf("legacy client must not get the charset hint, got %q", got)
 	}
-	if got := mysqlDumpFailureHint("p_中文库", unknown, false); got == "" {
+	if got := mysqlDumpFailureHint("p_中文库", "u", unknown, false); got == "" {
 		t.Fatal("modern client with a non-ASCII name must get the charset hint")
 	}
 	// 含单引号的库名在任何客户端下都优先给更具体的原因（该缺陷与客户端版本无关）。
 	quoted := []string{"mysqldump: Got error: 1049: Unknown database 'a\\'b' when selecting the database"}
-	if got := mysqlDumpFailureHint("a'b", quoted, true); !strings.Contains(got, "--skip-routines") {
+	if got := mysqlDumpFailureHint("a'b", "u", quoted, true); !strings.Contains(got, "--skip-routines") {
 		t.Fatalf("quote hint must fire on the legacy client too, got %q", got)
 	}
 	// 与库名无关的错误（如连不上）不给任何提示。
-	if got := mysqlDumpFailureHint("p_中文库", []string{"mysqldump: Got error: 2003: Can't connect"}, false); got != "" {
+	if got := mysqlDumpFailureHint("p_中文库", "u", []string{"mysqldump: Got error: 2003: Can't connect"}, false); got != "" {
 		t.Fatalf("unrelated error must not produce a hint, got %q", got)
 	}
 	// 提示不得再断言库一定存在（曾因此把"库不存在"误诊为字符集问题）。
 	for _, db := range []string{"p_中文库", "a'b"} {
-		hint := mysqlDumpFailureHint(db, unknown, false)
+		hint := mysqlDumpFailureHint(db, "u", unknown, false)
 		if hint == "" {
-			hint = mysqlDumpFailureHint(db, quoted, false)
+			hint = mysqlDumpFailureHint(db, "u", quoted, false)
 		}
 		if strings.Contains(hint, "（库实际存在）") {
 			t.Fatalf("hint must not assert the database exists: %q", hint)
@@ -1022,6 +1022,35 @@ func TestMySQLBackupWarnsWhenRoutinesInvisible(t *testing.T) {
 	// 有全局 SHOW_ROUTINE 时不再告警。
 	if logs := collect(&grantsExec{grants: []string{"GRANT SELECT, EVENT, TRIGGER, SHOW_ROUTINE ON *.* TO `u`@`%`"}}); len(logs) != 0 {
 		t.Fatalf("全局 SHOW_ROUTINE 不应产生例程告警: %v", logs)
+	}
+}
+
+// 权限类失败必须点名真正缺的权限，不得把 "Access denied ... to database" 读成
+// 库级授权缺失，也不得再建议「改用全局 SELECT」（实测全局 SELECT 无法执行
+// SHOW EVENTS）。
+func TestMySQLDumpPrivilegeHintNamesMissingPrivilege(t *testing.T) {
+	events := []string{"mysqldump: Couldn't execute 'show events': Access denied for user 'u'@'%' to database 'appdb' (1044)"}
+	hint := mysqlDumpFailureHint("appdb", "u", events, false)
+	for _, want := range []string{"EVENT", "GRANT EVENT ON `appdb`.*", "--skip-events", "不代表"} {
+		if !strings.Contains(hint, want) {
+			t.Fatalf("事件权限提示必须包含 %q: %q", want, hint)
+		}
+	}
+	if strings.Contains(hint, "改用拥有全局 SELECT") {
+		t.Fatalf("提示不得再建议全局 SELECT: %q", hint)
+	}
+	triggers := []string{"mysqldump: Couldn't execute 'show triggers': Access denied for user 'u'@'%' to database 'appdb' (1044)"}
+	if hint := mysqlDumpFailureHint("appdb", "u", triggers, true); !strings.Contains(hint, "GRANT TRIGGER ON `appdb`.*") {
+		t.Fatalf("触发器权限提示缺失: %q", hint)
+	}
+	routines := []string{"mysqldump: u has insufficient privileges to SHOW CREATE FUNCTION `f`!"}
+	if hint := mysqlDumpFailureHint("appdb", "u", routines, false); !strings.Contains(hint, "SHOW_ROUTINE") {
+		t.Fatalf("例程权限提示缺失: %q", hint)
+	}
+	// 整实例备份只能给全局授权（报错里的库名可能是任意库）。
+	allHint := mysqlDumpFailureHint("all", "u", events, false)
+	if !strings.Contains(allHint, "GRANT EVENT ON *.*") {
+		t.Fatalf("整实例提示必须给全局授权: %q", allHint)
 	}
 }
 

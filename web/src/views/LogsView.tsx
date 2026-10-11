@@ -294,8 +294,8 @@ export const LogsView: React.FC = () => {
                 {t('logs.filters.allLevels') || 'All Levels'}
               </SelectItem>
               {LOG_LEVELS.map((lvl) => (
-                <SelectItem key={lvl} value={lvl} className="text-xs uppercase font-mono">
-                  {lvl}
+                <SelectItem key={lvl} value={lvl} className="text-xs font-mono">
+                  {t(`logs.levels.${lvl}`)}
                 </SelectItem>
               ))}
             </SelectContent>

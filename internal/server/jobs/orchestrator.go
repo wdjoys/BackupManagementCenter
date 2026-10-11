@@ -178,9 +178,11 @@ type Orchestrator struct {
 	// 数据库恢复将按未就绪处理。
 	AgentCaps AgentCapabilitySource
 
-	mu          sync.RWMutex
-	confStash   map[string]stashEntry
-	browseMu    sync.Mutex
+	mu        sync.RWMutex
+	confStash map[string]stashEntry
+	browseMu  sync.Mutex
+	// bindMu 串行化仓库绑定的"查-建-初始化"（见 BindRepository）。
+	bindMu      sync.Mutex
 	listFlights map[string]*snapshotListFlight
 	treeFlights map[string]*snapshotTreeFlight
 }
@@ -1036,7 +1038,17 @@ func (o *Orchestrator) RenameStorageTarget(ctx context.Context, actorID, targetI
 }
 
 // BindRepository creates (or returns existing) repository for the agent+target pair.
+//
+// "查已有 → 建行 → 初始化"整段必须在进程内串行：重复点击/客户端重试会让两个调用方
+// 同时落在 GetRepositoryByAgentAndTarget 的 TOCTOU 窗口里，一个调用方拿到
+// UNIQUE(agent_id, storage_target_id) 冲突（冒泡成 500 并把 SQL 原文泄给客户端），
+// 另一个复用前者的探测运行、在它按"仓库不存在"丢弃该运行后读到 store.ErrNotFound
+// （冒泡成 404 "resource not found"，而仓库其实已经建好）。实测两者都会出现。
+// ponytail: 单把全局锁；绑定是低频管理操作，若并发绑定成为常态再按 (agent,target) 分锁。
 func (o *Orchestrator) BindRepository(ctx context.Context, actorID, agentID, storageTargetID string) (*model.Repository, error) {
+	o.bindMu.Lock()
+	defer o.bindMu.Unlock()
+
 	target, err := o.Store.GetStorageTarget(ctx, storageTargetID)
 	if err != nil {
 		return nil, err

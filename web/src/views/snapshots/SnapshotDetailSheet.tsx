@@ -13,7 +13,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { StatusBadge } from '@/components/StatusBadge'
 import { PageLoadingState } from '@/components/PageLoadingState'
-import { formatDateTime } from '@/i18n'
+import { formatDateTime, translateEnum } from '@/i18n'
 import type { TreeEntry } from '@/api/types'
 import { formatSize, type BreadcrumbPart, type SnapshotView } from './Types'
 import {
@@ -273,7 +273,7 @@ export const SnapshotDetailSheet: React.FC<SnapshotDetailSheetProps> = ({
                             )}
                           </TableCell>
                           <TableCell className="text-[11px] text-muted-foreground font-mono px-2">
-                            {entry.type}
+                            {translateEnum('snapshots.entryTypes', entry.type)}
                           </TableCell>
                           <TableCell className="text-xs text-muted-foreground font-mono text-right px-2">
                             {formatSize(entry.size)}

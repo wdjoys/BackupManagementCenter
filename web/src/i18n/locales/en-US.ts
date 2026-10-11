@@ -590,6 +590,10 @@ export default {
       "modified": "Modified",
       "path": "Path"
     },
+    "entryTypes": {
+      "dir": "Directory",
+      "file": "File"
+    },
     "selectedItems": "Selected Included Items ({{count}})",
     "restoreDialog": {
       "title": "Restore Snapshot (Filesystem)",

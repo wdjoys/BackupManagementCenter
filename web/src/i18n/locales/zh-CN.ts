@@ -590,6 +590,10 @@ export default {
       "modified": "修改时间",
       "path": "路径"
     },
+    "entryTypes": {
+      "dir": "目录",
+      "file": "文件"
+    },
     "selectedItems": "已选包含项 ({{count}})",
     "restoreDialog": {
       "title": "恢复快照（文件系统）",

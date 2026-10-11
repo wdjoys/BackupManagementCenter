@@ -23,7 +23,7 @@ import { ConfirmActionDialog } from '@/components/ConfirmActionDialog'
 import { PageLoadingState } from '@/components/PageLoadingState'
 import { toastSuccess, toastError } from '@/lib/toast'
 import {
-  STATUS_VALUE_KEYS,
+  RUN_STATUS_VALUES,
   OPERATION_VALUE_KEYS,
   statusTagType,
   operationTagType,
@@ -85,9 +85,9 @@ export const RunsView: React.FC = () => {
 
   const statusOptions = useMemo(
     () =>
-      Object.entries(STATUS_VALUE_KEYS).map(([value, key]) => ({
+      RUN_STATUS_VALUES.map((value) => ({
         value,
-        label: t(key),
+        label: translateEnum('runs.status', value),
       })),
     [t]
   )

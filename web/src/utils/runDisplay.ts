@@ -1,13 +1,16 @@
 import type { BadgeTone } from '@/components/StatusBadge'
 
-export const STATUS_VALUE_KEYS: Record<string, string> = {
-  queued: 'status.queued',
-  dispatched: 'status.dispatched',
-  running: 'status.running',
-  succeeded: 'status.succeeded',
-  failed: 'status.failed',
-  cancelled: 'status.cancelled',
-}
+/** 运行状态取值（渲染文案统一走 translateEnum('runs.status', value)）。
+    此前这里映射到 status.* 命名空间，但该命名空间只有 Agent 状态，导致
+    状态筛选下拉渲染出字面 key（status.queued 等）。 */
+export const RUN_STATUS_VALUES: readonly string[] = [
+  'queued',
+  'dispatched',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+]
 
 export const OPERATION_VALUE_KEYS: Record<string, string> = {
   backup: 'runs.operations.backup',

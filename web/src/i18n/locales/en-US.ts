@@ -29,7 +29,8 @@ export default {
     "removeTag": "Remove {{tag}}",
     "toggle_menu": "Toggle menu",
     "previous": "Previous",
-    "next": "Next"
+    "next": "Next",
+    "page_crashed": "This page failed to render. Please retry."
   },
   "app": {
     "initializing": "Initializing BMC Console..."

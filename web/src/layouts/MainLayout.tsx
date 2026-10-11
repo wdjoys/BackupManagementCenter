@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { LocaleSwitcher } from '@/components/LocaleSwitcher'
+import { PageErrorBoundary } from '@/components/PageErrorBoundary'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { useAuthStore } from '@/stores/auth'
 import { toastSuccess, toastError } from '@/lib/toast'
@@ -235,7 +236,9 @@ export const MainLayout: React.FC = () => {
 
         {/* View Outlet Container */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-          <Outlet />
+          <PageErrorBoundary resetKey={location.pathname}>
+            <Outlet />
+          </PageErrorBoundary>
         </main>
       </div>
     </div>

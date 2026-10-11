@@ -29,7 +29,8 @@ export default {
     "removeTag": "移除 {{tag}}",
     "toggle_menu": "切换菜单",
     "previous": "上一页",
-    "next": "下一页"
+    "next": "下一页",
+    "page_crashed": "页面渲染出错，请重试"
   },
   "app": {
     "initializing": "正在初始化 BMC 控制台..."

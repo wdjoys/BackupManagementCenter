@@ -62,6 +62,9 @@ func main() {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		log.Fatalf("[FATAL] data dir: %v", err)
 	}
+	if cfg.PublicURL == "" {
+		log.Printf("[WARN] BMC_PUBLIC_URL is not set: notification links and Secure-cookie detection have no public origin (see deploy/.env.example)")
+	}
 
 	// Server instance ID: stable random UUID persisted under DataDir.
 	instanceID, err := loadOrCreateInstanceID(cfg.DataDir)

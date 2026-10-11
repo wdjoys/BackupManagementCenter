@@ -30,8 +30,10 @@ services:
       BMC_METRICS_ADDR: ${BMC_METRICS_ADDR:-127.0.0.1:9100}
       # 容器内持久化数据目录（存放 SQLite 数据库等）
       BMC_DATA_DIR: /var/lib/bmc
-      # BMC 对外公开访问的根 URL（供 Web 控制台、回调及 Agent 下载凭据等引用，结尾不加斜杠）
-      BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:-https://backup.example.com}
+      # BMC 对外公开访问的根 URL（供 Web 控制台、回调及 Agent 下载凭据等引用，结尾不加斜杠）。
+      # 必填：留空会让通知链接与 Secure cookie 判定缺少公网地址；此处刻意不给占位默认值，
+      # 避免误部署时静默使用错误地址。
+      BMC_PUBLIC_URL: ${BMC_PUBLIC_URL:-}
       # 已通过真实隔离实例验证的数据库恢复类型（逗号分隔，默认全部禁用）
       BMC_DATABASE_RESTORE_KINDS: ${BMC_DATABASE_RESTORE_KINDS:-}
       # 运行历史（runs/日志/审计事件）保留天数，0（默认）表示永久保留

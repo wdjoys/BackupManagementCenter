@@ -295,11 +295,16 @@ func (a *PostgreSQLAdapter) TargetExists(ctx context.Context, spec *RestoreSpec)
 		return false, err
 	}
 	var out string
+	// stderr 必须并入错误：连接被拒/口令错误时 psql 的原因行只出现在 stderr，
+	// 此前只写进日志流，运行详情页只剩 "check postgres target database failed (exit 2)"，
+	// 无法区分"目标不可达"与"凭据错误"（实测：连接被拒与 password authentication
+	// failed 给出完全相同的 error_message）。
+	cap := &stderrCapture{logf: c.logf}
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(
 		"SELECT 1 FROM pg_database WHERE datname = '" + strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "'"),
-		Env: c.env}, func(line string) { out = strings.TrimSpace(line) }, c.logf)
+		Env: c.env}, func(line string) { out = strings.TrimSpace(line) }, cap.line)
 	if err != nil || exit != 0 {
-		return false, exitError("check postgres target database", exit, err)
+		return false, exitErrorWithStderr("check postgres target database", exit, err, cap.tail)
 	}
 	return out != "", nil
 }
@@ -316,6 +321,10 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 		return fmt.Errorf("refusing to restore into system database %q", c.db.TargetDatabase)
 	}
 	quoted := `"` + strings.ReplaceAll(c.db.TargetDatabase, `"`, `""`) + `"`
+	// 与 TargetExists 同理：重建权限/终止连接/DROP/CREATE 的失败原因都在 psql stderr，
+	// 不并入错误时运行详情只剩 "... failed (exit 1)"，看不出是权限不足、库被占用
+	// 还是目标不可达。
+	cap := &stderrCapture{logf: c.logf}
 
 	if !spec.TargetIsNew {
 		// 覆盖前确认具备重建权限：非 owner 且非 superuser 时必须拒绝，不能依赖
@@ -324,9 +333,9 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 		exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(
 			"SELECT CASE WHEN (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) OR EXISTS (SELECT 1 FROM pg_database d WHERE d.datname = '" +
 				strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "' AND d.datdba = (SELECT oid FROM pg_roles WHERE rolname = current_user)) THEN 'ok' ELSE 'denied' END"),
-			Env: c.env}, func(line string) { ability = strings.TrimSpace(line) }, c.logf)
+			Env: c.env}, func(line string) { ability = strings.TrimSpace(line) }, cap.line)
 		if err != nil || exit != 0 {
-			return exitError("check postgres rebuild permission", exit, err)
+			return exitErrorWithStderr("check postgres rebuild permission", exit, err, cap.tail)
 		}
 		if ability != "ok" {
 			return fmt.Errorf("current role cannot drop and recreate database %q; refusing a partial overwrite", c.db.TargetDatabase)
@@ -334,8 +343,8 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 		// 断开其他连接后才能 DROP DATABASE。
 		termSQL := "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '" +
 			strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "' AND pid <> pg_backend_pid()"
-		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(termSQL), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-			return exitError("terminate postgres target connections", exit, err)
+		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(termSQL), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+			return exitErrorWithStderr("terminate postgres target connections", exit, err, cap.tail)
 		}
 		// DROP DATABASE 必须带 IF EXISTS：第一次尝试的 DROP 可能已被服务端执行完毕，
 		// 但 psql 客户端因取消/超时被杀（exit -1）而报错退出——此时库已不存在，回滚
@@ -343,13 +352,13 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 		// 用到保护快照之前就中止（实测：取消命中该步骤 → rollback_failed、目标库数据
 		// 丢失、全局数据库恢复互斥被占住直到人工 resolve）。下面的 CREATE DATABASE
 		// 仍不带 IF NOT EXISTS，并发创建者冲突失败的保护不变。
-		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE IF EXISTS " + quoted), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-			return exitError("drop postgres target database", exit, err)
+		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE IF EXISTS " + quoted), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+			return exitErrorWithStderr("drop postgres target database", exit, err, cap.tail)
 		}
 	}
 	// CREATE DATABASE 不带 IF NOT EXISTS：并发的其他执行者创建的库必须冲突失败。
-	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("CREATE DATABASE " + quoted), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-		return exitError("create postgres target database", exit, err)
+	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("CREATE DATABASE " + quoted), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+		return exitErrorWithStderr("create postgres target database", exit, err, cap.tail)
 	}
 
 	if spec.ArtifactFile == "" {
@@ -375,7 +384,7 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 	}
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.pgRest, Args: args, Env: c.env}, c.logf, onStderr)
 	if err != nil {
-		return exitError("pg_restore", exit, err)
+		return exitErrorWithStderr("pg_restore", exit, err, stderrLines)
 	}
 	if exit != 0 {
 		// 放行版本偏斜的前提是"正常退出但忽略过错误"：pg_restore 的约定是 exit 1。
@@ -387,7 +396,7 @@ func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error
 		if nurr := pgIgnorableRestoreErrors(stderrLines); exit == 1 && nurr > 0 && pgOnlyIgnorableRestoreErrors(stderrLines) {
 			spec.Logf("warn", "pg_restore 报告 %d 处版本偏斜错误（目标服务端低于归档客户端），已忽略；由恢复校验兜底", nurr)
 		} else {
-			return exitError("pg_restore", exit, nil)
+			return exitErrorWithStderr("pg_restore", exit, nil, stderrLines)
 		}
 	}
 	return nil
@@ -403,10 +412,11 @@ func (a *PostgreSQLAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpe
 	}
 	dumpObjects := map[string]struct{}{}
 	var listOut strings.Builder
+	cap := &stderrCapture{logf: c.logf}
 	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.pgRest, Args: []string{"-l", spec.ArtifactFile}},
-		func(line string) { listOut.WriteString(line); listOut.WriteString("\n") }, c.logf)
+		func(line string) { listOut.WriteString(line); listOut.WriteString("\n") }, cap.line)
 	if err != nil || exit != 0 {
-		return exitError("pg_restore -l", exit, err)
+		return exitErrorWithStderr("pg_restore -l", exit, err, cap.tail)
 	}
 	for name := range pgDumpRelationNames(listOut.String()) {
 		dumpObjects[name] = struct{}{}
@@ -423,9 +433,9 @@ func (a *PostgreSQLAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpe
 		"AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = c.oid) " +
 		"AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' ORDER BY 1"
 	exit, err = spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.targetQuery(query), Env: c.env},
-		func(line string) { got.WriteString(strings.TrimSpace(line)); got.WriteString("\n") }, c.logf)
+		func(line string) { got.WriteString(strings.TrimSpace(line)); got.WriteString("\n") }, cap.line)
 	if err != nil || exit != 0 {
-		return exitError("postgresql verification query", exit, err)
+		return exitErrorWithStderr("postgresql verification query", exit, err, cap.tail)
 	}
 	for _, line := range strings.Split(got.String(), "\n") {
 		if line = strings.TrimSpace(line); line != "" {
@@ -451,12 +461,13 @@ func (a *PostgreSQLAdapter) RemoveTarget(ctx context.Context, spec *RestoreSpec)
 	}
 	termSQL := "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '" +
 		strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "' AND pid <> pg_backend_pid()"
-	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(termSQL), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-		return exitError("terminate postgres target connections", exit, err)
+	cap := &stderrCapture{logf: c.logf}
+	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(termSQL), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+		return exitErrorWithStderr("terminate postgres target connections", exit, err, cap.tail)
 	}
 	quoted := `"` + strings.ReplaceAll(c.db.TargetDatabase, `"`, `""`) + `"`
-	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE IF EXISTS " + quoted), Env: c.env}, c.logf, c.logf); err != nil || exit != 0 {
-		return exitError("drop postgres target database", exit, err)
+	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE IF EXISTS " + quoted), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+		return exitErrorWithStderr("drop postgres target database", exit, err, cap.tail)
 	}
 	return nil
 }

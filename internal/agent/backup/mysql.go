@@ -1215,9 +1215,10 @@ func (a *MySQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
 		"--",
 		c.db.TargetDatabase,
 	}
-	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.mysql, Args: dumpArgs, StdinPath: spec.ArtifactFile}, c.logf, c.logf)
+	cap := &stderrCapture{logf: c.logf}
+	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.mysql, Args: dumpArgs, StdinPath: spec.ArtifactFile}, c.logf, cap.line)
 	if err != nil || exit != 0 {
-		return exitError("mysql restore", exit, err)
+		return exitErrorWithStderr("mysql restore", exit, err, cap.tail)
 	}
 	return nil
 }

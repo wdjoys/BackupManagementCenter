@@ -350,3 +350,41 @@ func TestPGDumpArgsEndOptionsBeforeDatabase(t *testing.T) {
 		t.Fatalf("extra_args must stay before -- (they are options), got %v", dump.Args)
 	}
 }
+
+// pgTargetProbe 模拟"目标存在性探测失败"：psql 以非零码退出，原因只出现在 stderr。
+type pgTargetProbe struct {
+	exit   int
+	stderr []string
+}
+
+func (f *pgTargetProbe) Run(_ context.Context, _ Cmd, _, onStderr func(string)) (int, error) {
+	if onStderr != nil {
+		for _, l := range f.stderr {
+			onStderr(l)
+		}
+	}
+	return f.exit, nil
+}
+
+// 目标探测失败的 error_message 必须带上 psql 的原因行。此前原因只进日志流，运行详情页
+// 只剩 "check postgres target database failed (exit 2)"——连接被拒与口令错误给出完全
+// 相同的文案，运维无法判断该查网络还是查凭据（实测：p_rf 失败矩阵）。
+func TestPostgreSQLTargetExistsCarriesStderrReason(t *testing.T) {
+	cases := []struct{ name, reason string }{
+		{"unreachable", `psql: error: connection to server at "db" (10.0.0.1), port 5433 failed: Connection refused`},
+		{"bad credentials", `psql: error: connection to server at "db" (10.0.0.1), port 5432 failed: FATAL:  password authentication failed for user "bmc"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := pgRestoreSpec(t)
+			spec.Exec = &pgTargetProbe{exit: 2, stderr: []string{tc.reason}}
+			_, err := (&PostgreSQLAdapter{}).TargetExists(context.Background(), spec)
+			if err == nil {
+				t.Fatal("TargetExists: expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("error message must carry the psql reason; got %q", err.Error())
+			}
+		})
+	}
+}

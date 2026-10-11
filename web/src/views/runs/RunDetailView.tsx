@@ -551,7 +551,7 @@ export const RunDetailView: React.FC = () => {
           <div className="space-y-1">
             <span className="text-[11px] text-muted-foreground">{t('runs.columns.duration')}</span>
             <p className="text-xs font-mono text-foreground">
-              {formatDuration(run.started_at, run.finished_at)}
+              {formatDuration(run.started_at ?? null, run.finished_at ?? null)}
             </p>
           </div>
 

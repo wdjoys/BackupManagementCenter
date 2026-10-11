@@ -387,8 +387,8 @@ export const RunsView: React.FC = () => {
                     </TableHeader>
                     <TableBody>
                       {runs.map((run) => {
-                        const plan = planMap.get(run.plan_id)
-                        const planLabel = plan ? plan.name : run.plan_id
+                        const plan = planMap.get(run.plan_id ?? '')
+                        const planLabel = plan ? plan.name : (run.plan_id ?? '')
                         const agent = agentMap.get(run.agent_id)
                         const canCancel = isCancelable(run.status)
                         return (
@@ -454,7 +454,7 @@ export const RunsView: React.FC = () => {
                               )}
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground font-mono">
-                              {formatDuration(run.started_at, run.finished_at)}
+                              {formatDuration(run.started_at ?? null, run.finished_at ?? null)}
                             </TableCell>
                             <TableCell className="text-xs">
                               {canCancel && (
@@ -480,8 +480,8 @@ export const RunsView: React.FC = () => {
                 {/* Mobile Cards */}
                 <div className="md:hidden divide-y divide-border">
                   {runs.map((run) => {
-                    const plan = planMap.get(run.plan_id)
-                    const planLabel = plan ? plan.name : run.plan_id
+                    const plan = planMap.get(run.plan_id ?? '')
+                    const planLabel = plan ? plan.name : (run.plan_id ?? '')
                     const agent = agentMap.get(run.agent_id)
                     const canCancel = isCancelable(run.status)
                     return (
@@ -508,7 +508,7 @@ export const RunsView: React.FC = () => {
                           </div>
                           <div>
                             <span className="text-muted-foreground/70">{t('runs.columns.duration')}: </span>
-                            {formatDuration(run.started_at, run.finished_at)}
+                            {formatDuration(run.started_at ?? null, run.finished_at ?? null)}
                           </div>
                           <div className="col-span-2 truncate">
                             <span className="text-muted-foreground/70">{t('runs.columns.agent')}: </span>

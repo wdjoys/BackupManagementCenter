@@ -150,19 +150,25 @@ export type RunOperation =
 
 export interface Run {
   id: string
-  plan_id: string
+  /** 系统运行（快照浏览/仓库检查/校验等）不绑定计划，后端省略该字段。 */
+  plan_id?: string
   agent_id: string
   operation: RunOperation
   status: 'queued' | 'dispatched' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   queued_at: string
-  started_at: string | null
-  finished_at: string | null
+  /** 以下字段后端均为 omitempty：未开始/未结束/无快照/无错误时不出现。 */
+  started_at?: string | null
+  finished_at?: string | null
   progress: RunProgress | null
-  snapshot_id: string | null
-  error_code: string | null
-  error_message: string | null
+  snapshot_id?: string | null
+  error_code?: string | null
+  error_message?: string | null
   attempt?: number
   lease_expires_at?: string | null
+  /** 计划调度槽位，仅定时触发的运行有值。 */
+  scheduled_at?: string | null
+  /** 系统运行所属仓库（后台创建/校验/浏览）。 */
+  repository_id?: string
 }
 
 export interface RunLog {

@@ -175,7 +175,11 @@ func (b *planBody) validate() (string, bool) {
 		return "timeout_seconds must be 60..21600 (six-hour window)", false
 	}
 	if _, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(b.Schedule); err != nil {
-		return "schedule is not a valid 5-field cron expression", false
+		// robfig 的错误本身已指出越界值（如 dow=7 → "end of range (7) above maximum (6): 7"），
+		// 但原先被通用文案盖掉，用户只知道"表达式非法"而不知道错在哪个字段。原样透出，
+		// 并补上星期取值口径——dow 用 7 表达周日是最常见的踩坑点。
+		return "schedule is not a valid 5-field cron expression: " + err.Error() +
+			" (fields: minute hour day-of-month month day-of-week; day-of-week uses 0-6 or SUN-SAT, 7 is not accepted)", false
 	}
 	if _, err := time.LoadLocation(b.Timezone); err != nil {
 		return "timezone must be a valid IANA timezone", false

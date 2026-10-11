@@ -592,7 +592,8 @@ export default {
     },
     "entryTypes": {
       "dir": "目录",
-      "file": "文件"
+      "file": "文件",
+      "symlink": "符号链接"
     },
     "selectedItems": "已选包含项 ({{count}})",
     "restoreDialog": {

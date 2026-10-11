@@ -592,7 +592,8 @@ export default {
     },
     "entryTypes": {
       "dir": "Directory",
-      "file": "File"
+      "file": "File",
+      "symlink": "Symlink"
     },
     "selectedItems": "Selected Included Items ({{count}})",
     "restoreDialog": {

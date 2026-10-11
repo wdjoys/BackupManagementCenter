@@ -220,9 +220,6 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 		return fmt.Errorf("connect: %w", err)
 	}
 	ss := newSafeStream(stream)
-	// 每次连上都把"当前上行流"交给 runner：run 可能跨越重连，日志/进度/结果必须
-	// 发到新连接，否则重连后仍往已死的流里写（实测全部 EOF、进度与日志丢失）。
-	c.runner.SetStream(ss)
 
 	// Reset heartbeat interval
 	c.mu.Lock()
@@ -234,6 +231,13 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 	if err := ss.Send(hello); err != nil {
 		return fmt.Errorf("send hello: %w", err)
 	}
+
+	// 每次连上都把"当前上行流"交给 runner：run 可能跨越重连，日志/进度/结果必须
+	// 发到新连接，否则重连后仍往已死的流里写（实测全部 EOF、进度与日志丢失）。
+	// 必须在 Hello 之后：SetStream 会把断流期间的结果补发出去，而服务端要求流的
+	// 第一条消息是 Hello（否则 RST 掉整条流），补发先到会让 agent 陷入
+	// "reconnect → 补发 → first message must be Hello → reconnect" 的死循环。
+	c.runner.SetStream(ss)
 
 	c.mu.Lock()
 	logSink := c.logSink

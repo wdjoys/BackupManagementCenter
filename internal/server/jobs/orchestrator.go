@@ -1423,8 +1423,8 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 			}
 		}
 		if in.RestoreKind != model.KindSQLite {
-			if in.Target.Host == "" || in.Target.Port <= 0 || in.Target.Username == "" {
-				return nil, nil, fmt.Errorf("%w: database target host, port and username are required", ErrPathInvalid)
+			if in.Target.Host == "" || in.Target.Port <= 0 || in.Target.Port > 65535 || in.Target.Username == "" {
+				return nil, nil, fmt.Errorf("%w: database target host, port (1..65535) and username are required", ErrPathInvalid)
 			}
 		}
 		if in.Target.Database == "" {

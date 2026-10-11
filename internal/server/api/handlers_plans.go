@@ -206,8 +206,24 @@ func validateScheduleWindow(expr, timezone string, timeout time.Duration) error 
 		return err
 	}
 	prev := sched.Next(time.Now().In(loc))
-	for i := 0; i < 4; i++ {
+	if prev.IsZero() {
+		// robfig 的 Next 在 5 年内找不到匹配时返回零值：既可能是 2/30 这类日历上
+		// 永不存在的日期，也可能是 2/29 这类间隔超过 5 年的合法计划。从零时刻再探
+		// 一次即可区分——成立的日期最迟 6 年内必然出现（闰日落在第 4 年），
+		// 永不成立的日期在任何窗口都找不到。
+		if sched.Next(time.Time{}).IsZero() {
+			return fmt.Errorf("schedule never fires: no matching date exists")
+		}
+		return nil
+	}
+	for range 4 {
 		next := sched.Next(prev)
+		if next.IsZero() {
+			// 下一次触发已超出 5 年窗口（跨世纪年的闰日间隔可达 8 年）：没有相邻
+			// 两次运行，谈不上窗口重叠。原先这里用零值相减得到负间隔，会把合法的
+			// 闰日计划误报为"间隔比 timeout 短"。
+			return nil
+		}
 		if next.Sub(prev) < timeout {
 			return fmt.Errorf("schedule interval (%s) is shorter than timeout_seconds (%s); backup windows would overlap", next.Sub(prev), timeout)
 		}

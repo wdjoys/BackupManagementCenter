@@ -592,10 +592,16 @@ export const RunDetailView: React.FC = () => {
                 <dd className="font-medium text-foreground">
                   {/* 阶段文案按 operation 选命名空间：备份阶段在 runDetail.phases、恢复阶段在
                       restore.phases，另一个作回退。此前统一查 runDetail.phases，导致恢复运行
-                      的「当前步骤」渲染未本地化的英文枚举原值（如 succeeded）。 */}
-                  {run.operation === 'restore'
-                    ? translateEnum('restore.phases', run.progress.phase, 'runDetail.phases')
-                    : translateEnum('runDetail.phases', run.progress.phase, 'restore.phases')}
+                      的「当前步骤」渲染未本地化的英文枚举原值（如 succeeded）。
+
+                      终态运行没有「当前步骤」：progress.phase 记录的是最后到达的相位，失败/
+                      取消/超时/中断时会停在 dumping 之类的进行中相位。终态一律显示运行状态，
+                      否则详情页会把已经结束的运行渲染成「导出中」。 */}
+                  {isTerminal(run.status)
+                    ? translateEnum('status', run.status)
+                    : run.operation === 'restore'
+                      ? translateEnum('restore.phases', run.progress.phase, 'runDetail.phases')
+                      : translateEnum('runDetail.phases', run.progress.phase, 'restore.phases')}
                 </dd>
               </div>
               <div>

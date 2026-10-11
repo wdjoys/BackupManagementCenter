@@ -282,6 +282,7 @@ export default {
     },
     "rules": {
       "nameRequired": "Name is required",
+      "nameTooLong": "Name must be at most 200 characters",
       "agentRequired": "Agent is required",
       "kindRequired": "Kind is required",
       "repositoryRequired": "Repository is required",
@@ -290,6 +291,7 @@ export default {
       "timezoneRequired": "Timezone is required",
       "timeoutRequired": "Timeout is required",
       "timeoutRange": "Timeout must be between 60 and 21600 seconds",
+      "timeoutExceedsInterval": "Timeout cannot exceed the schedule interval ({{seconds}}s); backup windows would overlap",
       "hostRequired": "Host is required",
       "portRange": "Port must be between 1 and 65535",
       "usernameRequired": "Username is required",

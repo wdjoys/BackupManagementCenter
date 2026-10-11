@@ -282,6 +282,7 @@ export default {
     },
     "rules": {
       "nameRequired": "请输入名称",
+      "nameTooLong": "名称不能超过 200 个字符",
       "agentRequired": "请选择 Agent",
       "kindRequired": "请选择类型",
       "repositoryRequired": "请选择仓库",
@@ -290,6 +291,7 @@ export default {
       "timezoneRequired": "请选择时区",
       "timeoutRequired": "请输入超时时间",
       "timeoutRange": "超时必须在 60 到 21600 秒之间",
+      "timeoutExceedsInterval": "超时不能超过调度间隔（{{seconds}} 秒），否则备份窗口会重叠",
       "hostRequired": "请输入主机地址",
       "portRange": "端口必须在 1 到 65535 之间",
       "usernameRequired": "请输入用户名",

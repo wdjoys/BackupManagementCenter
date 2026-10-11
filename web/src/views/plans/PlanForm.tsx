@@ -102,7 +102,10 @@ export const PlanForm: React.FC<PlanFormProps> = ({
   const validate = (): boolean => {
     const errs: Record<string, string> = {}
 
+    // 服务端 planBody.validate 限制 name 为 1..200 个字符；此前前端无任何长度规则，
+    // 超长名称保存必然 400（且通用错误码把原因吃掉）。
     if (!model.name.trim()) errs.name = t('plans.rules.nameRequired')
+    else if (model.name.trim().length > 200) errs.name = t('plans.rules.nameTooLong')
     if (!model.agent_id) errs.agent_id = t('plans.rules.agentRequired')
     if (!model.kind) errs.kind = t('plans.rules.kindRequired')
     if (!model.repository_id) errs.repository_id = t('plans.rules.repositoryRequired')
@@ -119,6 +122,15 @@ export const PlanForm: React.FC<PlanFormProps> = ({
       errs.timeout_seconds = t('plans.rules.timeoutRequired')
     } else if (timeout < 60 || timeout > 21600) {
       errs.timeout_seconds = t('plans.rules.timeoutRange')
+    } else {
+      // 服务端 validateScheduleWindow 要求相邻调度间隔 ≥ timeout_seconds。预设表达式的
+      // 间隔已知（CRON_PRESETS.intervalSeconds），超时被改到超过它时保存必然 400
+      // "backup windows would overlap"；手填的其它表达式客户端算不出间隔，仍由服务端
+      // 返回可读原因（错误码文案会带上 message 原文）。
+      const interval = CRON_PRESETS.find((p) => p.value === model.schedule.trim())?.intervalSeconds
+      if (interval && timeout > interval) {
+        errs.timeout_seconds = t('plans.rules.timeoutExceedsInterval', { seconds: interval })
+      }
     }
 
     // Source specific validation

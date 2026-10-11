@@ -152,6 +152,15 @@ func (b *planBody) validate() (string, bool) {
 	if b.ExtraArgs != nil {
 		return "extra_args must be nested inside source (source.extra_args)", false
 	}
+	// 默认值必须在 switch 之前应用：switch 只执行首个匹配分支，而 timezone 为空
+	// 时首个匹配的正是 timezone 分支，timeout_seconds 的默认值（3600）会被跳过，
+	// 导致「两个字段都没填」的合法请求被误报为 timeout_seconds must be 60..21600。
+	if b.Timezone == "" {
+		b.Timezone = "UTC"
+	}
+	if b.TimeoutSeconds == 0 {
+		b.TimeoutSeconds = 3600
+	}
 	switch {
 	case len(b.Name) < 1 || len(b.Name) > 200:
 		return "name must be 1..200 chars", false
@@ -161,10 +170,6 @@ func (b *planBody) validate() (string, bool) {
 		return "agent_id and repository_id are required", false
 	case b.Schedule == "":
 		return "schedule (5-field cron) is required", false
-	case b.Timezone == "":
-		b.Timezone = "UTC"
-	case b.TimeoutSeconds == 0:
-		b.TimeoutSeconds = 3600
 	}
 	if b.TimeoutSeconds < 60 || b.TimeoutSeconds > 21600 {
 		return "timeout_seconds must be 60..21600 (six-hour window)", false

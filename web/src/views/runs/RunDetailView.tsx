@@ -422,11 +422,23 @@ export const RunDetailView: React.FC = () => {
           <CardContent className="p-4 space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[11px] text-muted-foreground">{t('runDetail.progress.phase')}</span>
-              <StatusBadge tone={RESTORE_PHASE_TONES[restoreRequest.phase] ?? 'secondary'}>
+              <StatusBadge
+                tone={
+                  isTerminal(run.status)
+                    ? statusTagType(run.status)
+                    : (RESTORE_PHASE_TONES[restoreRequest.phase] ?? 'secondary')
+                }
+              >
                 {/* 恢复相位（如 running）可能只在 runDetail.phases 里有译文，必须跨命名
                     空间回退；此前直接拼 restore.phases.<phase> 查键且无回退，zh 下渲染
-                    未本地化的英文枚举原值（显示为「阶段：running」）。 */}
-                {translateEnum('restore.phases', restoreRequest.phase, 'runDetail.phases')}
+                    未本地化的英文枚举原值（显示为「阶段：running」）。
+
+                    终态运行时恢复请求的相位是陈旧值（本页只在挂载时拉取 /restores，
+                    之后仅由 WS 更新 run 本身），会与顶部「运行已结束」并存显示「运行中」；
+                    终态一律显示运行状态，与「当前步骤」的处理保持一致。 */}
+                {isTerminal(run.status)
+                  ? translateEnum('runs.status', run.status)
+                  : translateEnum('restore.phases', restoreRequest.phase, 'runDetail.phases')}
               </StatusBadge>
               {restoreRequest.rollback_snapshot_id && (
                 <span className="text-[11px] text-muted-foreground font-mono">

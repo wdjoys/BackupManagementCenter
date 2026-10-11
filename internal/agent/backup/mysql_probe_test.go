@@ -17,9 +17,10 @@ func (fakeProbeExec) Run(_ context.Context, c Cmd, onStdout, _ func(line string)
 	if strings.Contains(args, "information_schema.tables") {
 		return 1, nil
 	}
-	// 导出前的授权范围检查需要 SHOW GRANTS 有输出（真实服务端总会回答）。
+	// 导出前的授权范围检查需要 SHOW GRANTS 有输出（真实服务端总会回答），
+	// 且账号需具备 BMC 恒定开启的 --events/--triggers 所需权限。
 	if strings.Contains(args, "SHOW GRANTS FOR CURRENT_USER()") && onStdout != nil {
-		onStdout("GRANT SELECT ON *.* TO `bmc`@`%`")
+		onStdout("GRANT SELECT, EVENT, TRIGGER ON *.* TO `bmc`@`%`")
 	}
 	return 0, nil
 }

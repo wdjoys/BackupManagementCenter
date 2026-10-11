@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,9 +28,10 @@ func (r *argRecorder) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (i
 		}
 	}
 	// 真实服务端总能回答 SHOW GRANTS；导出前的授权范围检查依赖它，缺了会被判成
-	// "只被授予部分表"而拒绝备份。这里模拟全局 SELECT 的账号。
+	// "只被授予部分表"而拒绝备份。这里模拟 SELECT+EVENT+TRIGGER 全实例账号
+	// （BMC 恒定带 --events --routines --triggers，缺 EVENT/TRIGGER 会被明确拒绝）。
 	if indexOf(c.Args, "SHOW GRANTS FOR CURRENT_USER()") >= 0 && onStdout != nil {
-		onStdout("GRANT SELECT ON *.* TO `bmc`@`%`")
+		onStdout("GRANT SELECT, EVENT, TRIGGER ON *.* TO `bmc`@`%`")
 	}
 	if code, ok := r.exitTools[filepath.Base(c.Exe)]; ok {
 		return code, nil
@@ -832,16 +834,18 @@ func TestMySQLBackupRefusesPartialTableGrants(t *testing.T) {
 }
 
 // 库级/全局 SELECT 必须照常成功，不能因新检查误伤正常备份。
+// （BMC 恒定带 --events --routines --triggers，因此账号还需 EVENT 与 TRIGGER：
+// 缺 EVENT 会在 show events 处响亮失败，缺 TRIGGER 会静默丢触发器。）
 func TestMySQLBackupAllowsFullGrants(t *testing.T) {
 	cases := map[string][]string{
-		"全局 SELECT": {"GRANT SELECT ON *.* TO `u`@`%`"},
-		"库级 SELECT": {"GRANT SELECT, EVENT ON `appdb`.* TO `u`@`%`"},
+		"全局 SELECT+EVENT+TRIGGER": {"GRANT SELECT, EVENT, TRIGGER ON *.* TO `u`@`%`"},
+		"库级 SELECT+EVENT+TRIGGER": {"GRANT SELECT, EVENT, TRIGGER ON `appdb`.* TO `u`@`%`"},
 		"库级 ALL PRIVILEGES": {
 			"GRANT ALL PRIVILEGES ON `appdb`.* TO `u`@`%`",
 		},
-		"角色展开后的库级 SELECT": {
+		"角色展开后的库级 SELECT+EVENT+TRIGGER": {
 			"GRANT USAGE ON *.* TO `u`@`%`",
-			"GRANT SELECT ON `appdb`.* TO `u`@`%`",
+			"GRANT SELECT, EVENT, TRIGGER ON `appdb`.* TO `u`@`%`",
 			"GRANT `r`@`%` TO `u`@`%`",
 		},
 	}
@@ -855,6 +859,109 @@ func TestMySQLBackupAllowsFullGrants(t *testing.T) {
 		if !exec.dumped {
 			t.Fatalf("%s: 应正常执行 mysqldump", name)
 		}
+	}
+}
+
+// 缺 TRIGGER 权限时 mysqldump --triggers 会静默丢弃触发器（rc=0、无 warn），
+// 必须在导出前明确拒绝，并点名缺的权限与确切 GRANT（实测 MySQL 8.0.46）。
+func TestMySQLBackupRefusesMissingTriggerPrivilege(t *testing.T) {
+	exec := &grantsExec{grants: []string{
+		"GRANT USAGE ON *.* TO `u`@`%`",
+		"GRANT SELECT, EVENT ON `appdb`.* TO `u`@`%`",
+	}}
+	rc := grantsRC(exec, "appdb")
+	rc.TempDir = t.TempDir()
+	_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+	if err == nil {
+		t.Fatal("缺 TRIGGER 权限必须拒绝备份")
+	}
+	for _, want := range []string{"TRIGGER", "appdb", "GRANT TRIGGER ON `appdb`.*", "--skip-triggers"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误必须包含 %q: %v", want, err)
+		}
+	}
+	if exec.dumped {
+		t.Fatal("拒绝时不得启动 mysqldump（否则仍会静默丢触发器）")
+	}
+}
+
+// 缺 EVENT 权限时同样拒绝，且不得把 "to database" 读成库级授权缺失。
+func TestMySQLBackupRefusesMissingEventPrivilege(t *testing.T) {
+	exec := &grantsExec{grants: []string{
+		"GRANT USAGE ON *.* TO `u`@`%`",
+		"GRANT SELECT, TRIGGER ON `appdb`.* TO `u`@`%`",
+	}}
+	rc := grantsRC(exec, "appdb")
+	rc.TempDir = t.TempDir()
+	_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+	if err == nil {
+		t.Fatal("缺 EVENT 权限必须拒绝备份")
+	}
+	for _, want := range []string{"EVENT", "GRANT EVENT ON `appdb`.*", "--skip-events", "与库级 SELECT 是否缺失无关"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误必须包含 %q: %v", want, err)
+		}
+	}
+	if exec.dumped {
+		t.Fatal("拒绝时不得启动 mysqldump")
+	}
+}
+
+// 显式跳过（--skip-triggers）是授权不足时的正当降级通道：不再拒绝。
+func TestMySQLBackupExplicitSkipBypassesObjectCheck(t *testing.T) {
+	exec := &grantsExec{grants: []string{
+		"GRANT USAGE ON *.* TO `u`@`%`",
+		"GRANT SELECT, EVENT ON `appdb`.* TO `u`@`%`",
+	}}
+	task := mysqlBackupTask("appdb")
+	task.Source.ExtraArgs = []string{"--skip-triggers"}
+	rc := grantsRC(exec, "appdb")
+	rc.Task = task
+	rc.TempDir = t.TempDir()
+	var logs []string
+	rc.Logf = func(lvl, format string, args ...any) {
+		logs = append(logs, lvl+" "+fmt.Sprintf(format, args...))
+	}
+	if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+		t.Fatalf("显式 --skip-triggers 不得被拒绝: %v", err)
+	}
+	if !exec.dumped {
+		t.Fatal("显式跳过后应正常执行 mysqldump")
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "--skip-triggers") || !strings.Contains(joined, "不含触发器") {
+		t.Fatalf("显式跳过必须在日志里说明本次 dump 不含触发器:\n%s", joined)
+	}
+}
+
+// 例程可见性无法证明（无权限时无法得知库中是否有例程），因此只告警不拒绝：
+// 硬拒绝会误伤不含例程的库，以及没有 SHOW_ROUTINE 权限的 MariaDB。
+func TestMySQLBackupWarnsWhenRoutinesInvisible(t *testing.T) {
+	collect := func(exec *grantsExec) []string {
+		var logs []string
+		rc := grantsRC(exec, "appdb")
+		rc.TempDir = t.TempDir()
+		rc.Logf = func(lvl, format string, args ...any) {
+			if lvl == "warn" {
+				logs = append(logs, fmt.Sprintf(format, args...))
+			}
+		}
+		if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+			t.Fatalf("例程不可见不得拒绝备份: %v", err)
+		}
+		return logs
+	}
+	logs := collect(&grantsExec{grants: []string{
+		"GRANT USAGE ON *.* TO `u`@`%`",
+		"GRANT SELECT, EVENT, TRIGGER ON `appdb`.* TO `u`@`%`",
+	}})
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "SHOW_ROUTINE") || !strings.Contains(joined, "--skip-routines") {
+		t.Fatalf("必须给出可执行的例程告警: %v", logs)
+	}
+	// 有全局 SHOW_ROUTINE 时不再告警。
+	if logs := collect(&grantsExec{grants: []string{"GRANT SELECT, EVENT, TRIGGER, SHOW_ROUTINE ON *.* TO `u`@`%`"}}); len(logs) != 0 {
+		t.Fatalf("全局 SHOW_ROUTINE 不应产生例程告警: %v", logs)
 	}
 }
 
@@ -889,7 +996,7 @@ func (f *failingGrantsExec) Run(_ context.Context, c Cmd, onStdout, onStderr fun
 // 日志流里，列表/详情页只剩 "mysqldump failed (exit 2)"，权限错与网络错不可区分）。
 func TestMySQLBackupErrorMessageCarriesStderrReason(t *testing.T) {
 	exec := &grantsExec{
-		grants:   []string{"GRANT SELECT ON *.* TO `u`@`%`"},
+		grants:   []string{"GRANT SELECT, EVENT, TRIGGER ON *.* TO `u`@`%`"},
 		dumpExit: 2,
 		dumpErr: []string{
 			"mysqldump: [Warning] Using a password on the command line interface can be insecure.",

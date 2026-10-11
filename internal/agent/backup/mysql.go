@@ -90,11 +90,13 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 	if tools.legacy {
 		rc.Logf("info", "使用 MySQL 5.7 客户端连接旧版服务端/MariaDB（避免 utf8mb4 排序规则回退）")
 	}
-	// 导出前的授权范围检查：mysqldump 按账号权限枚举表，对"只有部分表 SELECT"的
-	// 账号会正常退出（rc=0）却只导出已授权的表，备份报 succeeded、恢复校验也比对
-	// 不出来（VerifyRestored 只比 dump↔恢复后），未授权表的数据无声消失。
+	// 导出前的授权范围检查：mysqldump 按账号权限枚举表/触发器/例程，对"只有部分表
+	// SELECT"或"缺 TRIGGER/EVENT"的账号会正常退出（rc=0）却静默丢对象，备份报
+	// succeeded、恢复校验也比对不出来（VerifyRestored 只比 dump↔恢复后）。
 	// PostgreSQL 在同场景下因覆盖全表的 LOCK TABLE 而失败，这里对齐该行为。
-	if err := checkMySQLReadScope(ctx, rc.Exec, tools.client, cnfFile, source.Username, source.Database, logLine); err != nil {
+	if err := checkMySQLReadScope(ctx, rc.Exec, tools.client, cnfFile, source.Username, source.Database, source.ExtraArgs, func(level, msg string) {
+		rc.Logf(level, "%s", msg)
+	}); err != nil {
 		return nil, err
 	}
 	// Non-transactional tables are not protected by --single-transaction and
@@ -291,31 +293,46 @@ func mysqlMajorVersion(version string) int {
 	return n
 }
 
-// mysqlReadScope 汇总 SHOW GRANTS 里与 SELECT 有关的授权范围。
+// mysqlReadScope 汇总 SHOW GRANTS 里与「导出内容完整性」有关的授权范围。
 type mysqlReadScope struct {
 	global  bool                // SELECT ON *.*（含 ALL PRIVILEGES）
 	schemas map[string]bool     // 库级 SELECT 的库名
 	tables  map[string][]string // 仅有表级 SELECT 的表（key 为库名）
+
+	// 对象类型权限：缺 TRIGGER 时 mysqldump 会静默丢弃触发器（实测），
+	// 缺 EVENT 时在 SHOW EVENTS 处响亮失败（1044）。
+	triggerGlobal  bool
+	triggerSchemas map[string]bool
+	eventGlobal    bool
+	eventSchemas   map[string]bool
+	// 例程可见性：information_schema.ROUTINES 只对拥有全局 SHOW_ROUTINE
+	// （MySQL 8.0.20+）或全局 SELECT 的账号完整可见，否则例程被静默过滤。
+	showRoutineGlobal bool
 }
 
-// checkMySQLReadScope 在导出前确认账号能读到目标库（或整实例）的全部表。
+// routineVisible 报告账号能否看见库中的全部例程。
 //
-// mysqldump 按账号权限从 information_schema 枚举表，对只被授予部分表 SELECT 的
-// 账号会正常退出（rc=0）却只导出已授权的表：run 报 succeeded、VerifyRestored 也
-// 只比对 dump↔恢复后，未授权表的数据静默消失（实测 MySQL 8.0.46：账号仅被授予
-// `db`.`t1`/`db`.`t3` 的表级 SELECT + 库级 EVENT 时，t2 的 2500 行无声消失）。
-// PostgreSQL 在同一场景下因覆盖全表的 LOCK TABLE 而响亮失败，这里对齐该行为：
-// 判定为部分授权时明确拒绝，而不是产出不完整的 dump。
+// 实测 MySQL 8.0.46：库级 SELECT+EVENT+TRIGGER 的账号执行 --routines 时 dump 里
+// 存储过程/函数计数为 0（root 为 2/2），mysqldump 仍以 rc=0 退出——即例程被静默
+// 丢弃；补 SHOW_ROUTINE ON *.* 或 SELECT ON *.* 后例程才出现。库级 EXECUTE /
+// ALTER ROUTINE / ALL 只能让例程"可见"但 SHOW CREATE 仍会失败，因此不算可见。
+func (s mysqlReadScope) routineVisible() bool { return s.global || s.showRoutineGlobal }
+
+// checkMySQLReadScope 在导出前证明账号的授权足以产出完整 dump：表范围 + 本次
+// 启用的对象类型（触发器/例程/事件）。无法证明时宁可明确失败，也不静默丢数据。
 //
 // 判定依据是 SHOW GRANTS FOR CURRENT_USER()：它按**有效权限**输出（默认/已激活的
 // 角色会被展开成具体的 GRANT 行，实测 MySQL 8.0.46），因此不需要另行处理角色；
 // information_schema 的授权视图则**不含**角色带来的权限（同环境实测为 0 行），
-// 用它会把"权限来自角色"的账号误判为部分授权。读取授权失败时同样拒绝备份：
-// 无法证明授权完整时宁可明确失败，也不静默丢数据。
+// 用它会把"权限来自角色"的账号误判为部分授权。读取授权失败时同样拒绝备份。
 //
-// 已知缺口：database="all" 且账号对某些库**完全没有**授权时，SHOW GRANTS 里没有
-// 任何可判断的行，这类库仍会被静默跳过；只有能证实的部分授权才会被拦下。
-func checkMySQLReadScope(ctx context.Context, exec Executor, client, cnfFile, username, database string, logf func(string)) error {
+// extraArgs 决定本次真正启用的对象类型与表范围：用户显式选表（--tables/
+// --ignore-table）或显式跳过某项（--skip-triggers/--skip-events/--skip-routines）
+// 时按显式意图放行，只对「未声明意图的静默丢失」拒绝。
+//
+// 无法证实、只做提示的情形（例程可见性、整实例备份的对象权限、显式跳过的对象）
+// 通过 logf 以 info/warn 级别落日志。
+func checkMySQLReadScope(ctx context.Context, exec Executor, client, cnfFile, username, database string, extraArgs []string, logf func(level, msg string)) error {
 	var stderrTail []string
 	var grants []string
 	exit, err := exec.Run(ctx, Cmd{Exe: client, Args: []string{
@@ -329,7 +346,7 @@ func checkMySQLReadScope(ctx context.Context, exec Executor, client, cnfFile, us
 			stderrTail = append(stderrTail, trimmed)
 		}
 		if logf != nil {
-			logf(line)
+			logf("info", line)
 		}
 	})
 	if err != nil || exit != 0 {
@@ -337,6 +354,24 @@ func checkMySQLReadScope(ctx context.Context, exec Executor, client, cnfFile, us
 			username, exitErrorWithStderr("mysql client SHOW GRANTS", exit, err, stderrTail))
 	}
 	scope := mysqlSelectScope(grants)
+	if err := mysqlCheckTableScope(scope, username, database); err != nil {
+		return err
+	}
+	return mysqlCheckObjectPrivileges(scope, username, database, extraArgs, logf)
+}
+
+// mysqlCheckTableScope 判定账号能否读到目标库（或整实例）的全部表。
+//
+// mysqldump 按账号权限从 information_schema 枚举表，对只被授予部分表 SELECT 的
+// 账号会正常退出（rc=0）却只导出已授权的表：run 报 succeeded、VerifyRestored 也
+// 只比对 dump↔恢复后，未授权表的数据静默消失（实测 MySQL 8.0.46：账号仅被授予
+// `db`.`t1`/`db`.`t3` 的表级 SELECT + 库级 EVENT 时，t2 的 2500 行无声消失）。
+// PostgreSQL 在同一场景下因覆盖全表的 LOCK TABLE 而响亮失败，这里对齐该行为：
+// 判定为部分授权时明确拒绝，而不是产出不完整的 dump。
+//
+// 已知缺口：database="all" 且账号对某些库**完全没有**授权时，SHOW GRANTS 里没有
+// 任何可判断的行，这类库仍会被静默跳过；只有能证实的部分授权才会被拦下。
+func mysqlCheckTableScope(scope mysqlReadScope, username, database string) error {
 	if scope.global {
 		return nil
 	}
@@ -377,16 +412,116 @@ func checkMySQLReadScope(ctx context.Context, exec Executor, client, cnfFile, us
 		username, database, detail, strings.ReplaceAll(database, "`", "``"), username)
 }
 
-// mysqlSelectScope 解析 SHOW GRANTS 的每一行，汇总账号的 SELECT 授权范围。
+// mysqlDumpObjectTypes 依据 extra_args 推导本次 dump 是否包含触发器/例程/事件。
+//
+// BMC 的基础参数恒定带 --triggers --routines --events（见 Backup），extra_args 追加
+// 在它们之后；mysqldump 的布尔开关以最后一次出现为准，因此显式的 --skip-* 生效。
+func mysqlDumpObjectTypes(extraArgs []string) (triggers, routines, events bool) {
+	triggers, routines, events = true, true, true
+	for _, a := range extraArgs {
+		switch a {
+		case "--triggers":
+			triggers = true
+		case "--skip-triggers":
+			triggers = false
+		case "--routines":
+			routines = true
+		case "--skip-routines":
+			routines = false
+		case "--events":
+			events = true
+		case "--skip-events":
+			events = false
+		}
+	}
+	return triggers, routines, events
+}
+
+// mysqlCheckObjectPrivileges 判定本次启用的触发器/例程/事件是否会因权限不足而
+// 静默缺失（或失败）：能证实的直接拒绝，无法证实的给出告警。
+//
+// 实测（MySQL 8.0.46）：账号只有库级 SELECT+EVENT（无 TRIGGER）时，mysqldump
+// --triggers 正常退出（rc=0）却完全不输出触发器，且没有任何 warn/error
+// （information_schema.TRIGGERS 按权限过滤）——run 报 succeeded，恢复后触发器无声
+// 消失，与「部分表 SELECT 静默漏表」同类，因此导出前直接拒绝。缺 EVENT 时
+// SHOW EVENTS 是响亮失败（1044），提前拒绝只是把 "Access denied ... to database"
+// 这种误导措辞换成精确的授权建议。
+//
+// 例程（information_schema.ROUTINES）缺可见权限时同样静默丢弃（实测 --routines 下
+// 存储过程/函数计数为 0，mysqldump 仍 rc=0），但"库中是否存在例程"在无权限时**无法
+// 证明**：硬拒绝会误伤大量不含例程的库，以及没有 SHOW_ROUTINE 权限的 MariaDB，
+// 因此只给出告警，由 --skip-routines 显式关闭。
+//
+// 整实例备份（database="all"）无法枚举账号在各库的授权，同样只告警不拒绝。
+// 显式跳过某项（--skip-triggers/--skip-events/--skip-routines）时按用户意图放行，
+// 但会留下一条说明，避免"日志里看不出本次 dump 少了什么"。
+func mysqlCheckObjectPrivileges(scope mysqlReadScope, username, database string, extraArgs []string, logf func(level, msg string)) error {
+	triggers, routines, events := mysqlDumpObjectTypes(extraArgs)
+	all := database == "all"
+	log := func(level, msg string) {
+		if logf != nil {
+			logf(level, msg)
+		}
+	}
+	for _, skip := range []struct {
+		enabled bool
+		name    string
+		flag    string
+	}{{triggers, "触发器", "--skip-triggers"}, {routines, "存储过程/函数", "--skip-routines"}, {events, "事件", "--skip-events"}} {
+		if !skip.enabled {
+			log("info", fmt.Sprintf("本次导出按 extra_args 显式跳过%s（%s），dump 不含%s", skip.name, skip.flag, skip.name))
+		}
+	}
+	if triggers && !scope.triggerGlobal && !(all || scope.triggerSchemas[database]) {
+		return fmt.Errorf("mysql 导出被拒绝：账号 %q 在库 %q 上没有 TRIGGER 权限，"+
+			"mysqldump --triggers 会静默跳过该库的全部触发器（run 仍报成功，恢复后触发器无声消失）；"+
+			"请执行 GRANT TRIGGER ON `%s`.* TO %q; 后重试，"+
+			"或在该计划 extra_args 中加入 \"--skip-triggers\" 显式声明本次不含触发器",
+			username, database, strings.ReplaceAll(database, "`", "``"), username)
+	}
+	if events && !scope.eventGlobal && !(all || scope.eventSchemas[database]) {
+		return fmt.Errorf("mysql 导出被拒绝：账号 %q 在库 %q 上没有 EVENT 权限，"+
+			"mysqldump --events 会在 'show events' 阶段被拒绝（MySQL 的报错写作 "+
+			"\"Access denied ... to database '%s'\"，与库级 SELECT 是否缺失无关）；"+
+			"请执行 GRANT EVENT ON `%s`.* TO %q; 后重试，"+
+			"或在该计划 extra_args 中加入 \"--skip-events\" 显式跳过事件",
+			username, database, database, strings.ReplaceAll(database, "`", "``"), username)
+	}
+	if all {
+		if triggers && !scope.triggerGlobal {
+			log("warn", fmt.Sprintf("账号 %q 没有全局 TRIGGER 权限，整实例备份中未授权的库会静默丢失触发器；"+
+				"如需触发器请执行 GRANT TRIGGER ON *.* TO %q;，或在该计划 extra_args 中加入 \"--skip-triggers\"", username, username))
+		}
+		if events && !scope.eventGlobal {
+			log("warn", fmt.Sprintf("账号 %q 没有全局 EVENT 权限，整实例备份中未授权的库会在导出事件时失败；"+
+				"如需事件请执行 GRANT EVENT ON *.* TO %q;，或在该计划 extra_args 中加入 \"--skip-events\"", username, username))
+		}
+	}
+	if routines && !scope.routineVisible() {
+		log("warn", fmt.Sprintf("账号 %q 缺少全局 SHOW_ROUTINE（MySQL 8.0.20+）或全局 SELECT，"+
+			"mysqldump --routines 会静默跳过该库的存储过程/函数（实测 dump 内例程计数为 0 且 rc=0）；"+
+			"如需例程请执行 GRANT SHOW_ROUTINE ON *.* TO %q;（或改用拥有全局 SELECT 的账号），"+
+			"或在该计划 extra_args 中加入 \"--skip-routines\" 显式声明本次不含例程", username, username))
+	}
+	return nil
+}
+
+// mysqlSelectScope 解析 SHOW GRANTS 的每一行，汇总账号的表范围与对象类型权限。
 func mysqlSelectScope(grants []string) mysqlReadScope {
-	scope := mysqlReadScope{schemas: map[string]bool{}, tables: map[string][]string{}}
+	scope := mysqlReadScope{schemas: map[string]bool{}, tables: map[string][]string{},
+		triggerSchemas: map[string]bool{}, eventSchemas: map[string]bool{}}
 	for _, line := range grants {
-		object, hasSelect, ok := mysqlGrantObject(line)
-		if !ok || !hasSelect {
+		object, privs, allPriv, ok := mysqlGrantObject(line)
+		if !ok {
 			continue
 		}
 		if object == "*.*" {
-			scope.global = true
+			// 同一账号可能有多行 *.* 授权（如 mysql8.4 的 root 分成权限行与
+			// 管理权限行），必须累加而不能被后一行覆盖。
+			scope.global = scope.global || allPriv || privs["SELECT"]
+			scope.triggerGlobal = scope.triggerGlobal || allPriv || privs["TRIGGER"]
+			scope.eventGlobal = scope.eventGlobal || allPriv || privs["EVENT"]
+			scope.showRoutineGlobal = scope.showRoutineGlobal || allPriv || privs["SHOW_ROUTINE"]
 			continue
 		}
 		db, rest, ok := mysqlUnquoteIdentifier(strings.TrimPrefix(object, "`"))
@@ -395,8 +530,16 @@ func mysqlSelectScope(grants []string) mysqlReadScope {
 		}
 		switch {
 		case rest == ".*":
-			scope.schemas[db] = true
-		case strings.HasPrefix(rest, ".`"):
+			if allPriv || privs["SELECT"] {
+				scope.schemas[db] = true
+			}
+			if allPriv || privs["TRIGGER"] {
+				scope.triggerSchemas[db] = true
+			}
+			if allPriv || privs["EVENT"] {
+				scope.eventSchemas[db] = true
+			}
+		case strings.HasPrefix(rest, ".`") && (allPriv || privs["SELECT"]):
 			if tbl, _, ok := mysqlUnquoteIdentifier(rest[2:]); ok {
 				scope.tables[db] = append(scope.tables[db], tbl)
 			}
@@ -405,32 +548,37 @@ func mysqlSelectScope(grants []string) mysqlReadScope {
 	return scope
 }
 
-// mysqlGrantObject 解析一行 SHOW GRANTS，返回被授权对象与权限清单里是否含 SELECT。
+// mysqlGrantObject 解析一行 SHOW GRANTS，返回被授权对象与权限清单。
+// allPriv 表示清单里含 ALL/ALL PRIVILEGES（等价于全部权限）。
 // ok=false 表示该行不是"ON <对象>"形式的授权（如 GRANT <角色> TO <账号>）。
 // 对象形如 *.*（全局）、`db`.*（库级）、`db`.`tbl`（表级）。
-func mysqlGrantObject(line string) (object string, hasSelect bool, ok bool) {
+func mysqlGrantObject(line string) (object string, privs map[string]bool, allPriv bool, ok bool) {
 	s := strings.TrimSpace(line)
 	if len(s) <= len("GRANT ") || !strings.EqualFold(s[:len("GRANT ")], "GRANT ") {
-		return "", false, false
+		return "", nil, false, false
 	}
 	rest := s[len("GRANT "):]
 	on := strings.Index(strings.ToUpper(rest), " ON ")
 	if on < 0 {
-		return "", false, false
+		return "", nil, false, false
 	}
 	// 合法库名可以含 " TO "，因此用最后一个 " TO " 作分隔；权限清单里不可能出现
 	// " ON "，所以第一个 " ON " 就是权限与对象的分隔符。
 	to := strings.LastIndex(strings.ToUpper(rest), " TO ")
 	if to < on {
-		return "", false, false
+		return "", nil, false, false
 	}
+	privs = map[string]bool{}
 	for _, p := range strings.Split(rest[:on], ",") {
-		switch strings.ToUpper(strings.TrimSpace(p)) {
-		case "SELECT", "ALL", "ALL PRIVILEGES":
-			hasSelect = true
+		switch name := strings.ToUpper(strings.TrimSpace(p)); name {
+		case "ALL", "ALL PRIVILEGES":
+			allPriv = true
+		case "":
+		default:
+			privs[name] = true
 		}
 	}
-	return strings.TrimSpace(rest[on+len(" ON ") : to]), hasSelect, true
+	return strings.TrimSpace(rest[on+len(" ON ") : to]), privs, allPriv, true
 }
 
 // mysqlDumpFailureHint 选出与失败原因匹配的诊断提示（无匹配返回空串）。

@@ -31,6 +31,10 @@ import {
 } from '@/utils/runDisplay'
 import { RefreshCw, Search, XSquare, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
 
+// failureTitle 让运行列表的失败徽标悬停即可看到完整原因，无需进入详情页。
+const failureTitle = (run: Run): string | undefined =>
+  run.status === 'failed' && run.error_message ? run.error_message : undefined
+
 export interface RunFilters {
   planId: string
   agentId: string
@@ -428,6 +432,7 @@ export const RunsView: React.FC = () => {
                               <StatusBadge
                                 tone={statusTagType(run.status)}
                                 dot={run.status === 'running' || run.status === 'dispatched'}
+                                title={failureTitle(run)}
                               >
                                 {translateEnum('runs.status', run.status)}
                               </StatusBadge>
@@ -491,6 +496,7 @@ export const RunsView: React.FC = () => {
                           <StatusBadge
                             tone={statusTagType(run.status)}
                             dot={run.status === 'running' || run.status === 'dispatched'}
+                            title={failureTitle(run)}
                           >
                             {translateEnum('runs.status', run.status)}
                           </StatusBadge>

@@ -9,6 +9,8 @@ interface StatusBadgeProps {
   children: React.ReactNode
   className?: string
   dot?: boolean
+  // title 提供悬停可见的说明（如运行失败原因），保持徽标自身紧凑。
+  title?: string
 }
 
 export const StatusBadge: React.FC<StatusBadgeProps> = ({
@@ -16,6 +18,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
   children,
   className = '',
   dot = false,
+  title,
 }) => {
   const toneStyles: Record<BadgeTone, string> = {
     default: 'bg-primary/15 text-primary border-primary/25 dark:bg-primary/20 dark:text-primary',
@@ -38,6 +41,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
   return (
     <Badge
       variant="outline"
+      title={title}
       className={cn(
         'font-medium text-xs px-2 py-0.5 inline-flex items-center gap-1.5 transition-colors',
         toneStyles[tone],

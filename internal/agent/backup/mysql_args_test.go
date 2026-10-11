@@ -12,6 +12,20 @@ import (
 	"backupmanagementcenter/internal/model"
 )
 
+// writeDumpFile 复刻 mysqldump --result-file 的行为：把 dump 内容写进目标文件。
+// 整实例备份现在要求 dump 至少含一条 CREATE DATABASE（空 dump 一律判失败），
+// 假执行器必须真的产出文件，否则会被判成"mysqldump 没写出文件"。
+func writeDumpFile(c Cmd, content string) {
+	for _, a := range c.Args {
+		if p, ok := strings.CutPrefix(a, "--result-file="); ok {
+			_ = os.WriteFile(p, []byte(content), 0o600)
+		}
+	}
+}
+
+// fakeInstanceDump 是整实例 dump 的最小可信内容（至少一条 CREATE DATABASE）。
+const fakeInstanceDump = "CREATE DATABASE /*!32312 IF NOT EXISTS*/ `appdb` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;\n"
+
 // argRecorder 记录每次命令调用的参数，并可按可执行文件名返回退出码。
 type argRecorder struct {
 	calls     []Cmd
@@ -35,6 +49,9 @@ func (r *argRecorder) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (i
 	}
 	if code, ok := r.exitTools[filepath.Base(c.Exe)]; ok {
 		return code, nil
+	}
+	if filepath.Base(c.Exe) == "mysqldump" {
+		writeDumpFile(c, fakeInstanceDump)
 	}
 	return 0, nil
 }
@@ -728,6 +745,7 @@ func (e *grantsExec) Run(_ context.Context, c Cmd, onStdout, onStderr func(strin
 		return 0, nil
 	case filepath.Base(c.Exe) == "mysqldump":
 		e.dumped = true
+		writeDumpFile(c, fakeInstanceDump)
 		for _, l := range e.dumpErr {
 			if onStderr != nil {
 				onStderr(l)
@@ -1216,6 +1234,7 @@ func (e *viewScopeExec) Run(_ context.Context, c Cmd, onStdout, onStderr func(st
 		return 0, nil
 	case filepath.Base(c.Exe) == "mysqldump":
 		e.dumped = true
+		writeDumpFile(c, fakeInstanceDump)
 		return 0, nil
 	}
 	return 0, nil
@@ -1322,3 +1341,141 @@ func TestMySQLBackupAllModeWarnsWithoutGlobalShowView(t *testing.T) {
 		t.Fatalf("应给出全局 SHOW VIEW 的告警，实际日志:\n%s", joined)
 	}
 }
+
+// 整实例备份（database="all"）必须有全局 SELECT：mysqldump --all-databases 对看不到
+// mysql 库的账号会 rc=0 却产出空 dump（实测：仅 SELECT ON 一个库的账号得到 0 个
+// CREATE DATABASE、run 报 succeeded、连唯一有权限的库都不在快照里），补上
+// SELECT ON mysql.* 后又变成"只含可见库"的残缺 dump。库级/表级授权无论覆盖多少库
+// 都无法证明完整性，一律在导出前拒绝，且不得启动 mysqldump。
+func TestMySQLBackupRefusesInstanceWideWithoutGlobalSelect(t *testing.T) {
+	cases := map[string][]string{
+		"仅一个库的库级 SELECT": {"GRANT USAGE ON *.* TO `u`@`%`", "GRANT SELECT ON `p_iw_my1`.* TO `u`@`%`"},
+		"库级 SELECT + 可见 mysql": {
+			"GRANT USAGE ON *.* TO `u`@`%`",
+			"GRANT SELECT ON `p_iw_my1`.* TO `u`@`%`",
+			"GRANT SELECT ON `mysql`.* TO `u`@`%`",
+		},
+		"只有部分表 SELECT": {"GRANT USAGE ON *.* TO `u`@`%`", "GRANT SELECT ON `p_iw_my1`.`t1` TO `u`@`%`"},
+		"无任何授权": {"GRANT USAGE ON *.* TO `u`@`%`"},
+	}
+	for name, grants := range cases {
+		exec := &grantsExec{grants: grants}
+		rc := grantsRC(exec, "all")
+		rc.TempDir = t.TempDir()
+		_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+		if err == nil {
+			t.Fatalf("%s: 整实例备份缺全局 SELECT 必须拒绝", name)
+		}
+		for _, want := range []string{"整实例备份", "全局 SELECT", "GRANT SELECT ON *.*"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s: 错误必须包含 %q: %v", name, want, err)
+			}
+		}
+		if exec.dumped {
+			t.Fatalf("%s: 拒绝时不得启动 mysqldump（否则仍会产出空/残缺 dump）", name)
+		}
+	}
+}
+
+// 全局 SELECT（含 ALL PRIVILEGES）必须照常放行整实例备份。
+func TestMySQLBackupAllowsInstanceWideWithGlobalSelect(t *testing.T) {
+	for name, grants := range map[string][]string{
+		"全局 ALL":    {"GRANT ALL PRIVILEGES ON *.* TO `root`@`localhost` WITH GRANT OPTION"},
+		"全局 SELECT": {"GRANT SELECT, EVENT, TRIGGER ON *.* TO `u`@`%`"},
+	} {
+		exec := &grantsExec{grants: grants}
+		rc := grantsRC(exec, "all")
+		rc.TempDir = t.TempDir()
+		if _, err := (&MySQLAdapter{}).Backup(context.Background(), rc); err != nil {
+			t.Fatalf("%s: 全局授权不得被拒绝: %v", name, err)
+		}
+		if !exec.dumped {
+			t.Fatalf("%s: 应正常执行 mysqldump", name)
+		}
+	}
+}
+
+// 第二道防线：即使前置检查被绕过，整实例 dump 里没有任何 CREATE DATABASE 也必须判失败，
+// 绝不把空快照当成功上传。
+func TestMySQLBackupRefusesEmptyInstanceDump(t *testing.T) {
+	exec := &emptyDumpExec{grants: []string{"GRANT SELECT, EVENT, TRIGGER ON *.* TO `u`@`%`"}}
+	rc := grantsRC(exec, "all")
+	rc.TempDir = t.TempDir()
+	_, err := (&MySQLAdapter{}).Backup(context.Background(), rc)
+	if err == nil {
+		t.Fatal("空 dump 必须判失败")
+	}
+	for _, want := range []string{"没有任何 CREATE DATABASE", "空 dump"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误必须包含 %q: %v", want, err)
+		}
+	}
+	if !exec.dumped {
+		t.Fatal("本用例要验证的是导出后的健全性断言，mysqldump 应已启动")
+	}
+}
+
+// emptyDumpExec 让 mysqldump 成功退出却不写出任何内容（复刻上游"看不到 mysql 库"
+// 的静默空 dump 路径）。
+type emptyDumpExec struct {
+	grants []string
+	dumped bool
+}
+
+func (e *emptyDumpExec) Run(_ context.Context, c Cmd, onStdout, _ func(string)) (int, error) {
+	args := strings.Join(c.Args, " ")
+	switch {
+	case strings.Contains(args, "SHOW GRANTS FOR CURRENT_USER()"):
+		for _, g := range e.grants {
+			if onStdout != nil {
+				onStdout(g)
+			}
+		}
+		return 0, nil
+	case strings.Contains(args, "information_schema.VIEWS"):
+		if onStdout != nil {
+			onStdout("0")
+		}
+		return 0, nil
+	case filepath.Base(c.Exe) == "mysqldump":
+		e.dumped = true
+		writeDumpFile(c, "")
+		return 0, nil
+	}
+	return 0, nil
+}
+
+// CREATE DATABASE 计数是空 dump 断言的唯一依据：只有行首的 CREATE DATABASE 计入，
+// 空文件/仅 INSERT 的 dump 必须为 0。
+func TestMySQLDumpDatabaseCount(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cases := map[string]struct {
+		path string
+		want int
+	}{
+		"空文件":     {write("empty.sql", ""), 0},
+		"仅表数据":    {write("data.sql", "INSERT INTO `t` VALUES (1);\n"), 0},
+		"两个库":     {write("two.sql", "CREATE DATABASE /*!32312 IF NOT EXISTS*/ `a`;\n-- x\nCREATE DATABASE /*!32312 IF NOT EXISTS*/ `b`;\n"), 2},
+		"缩进的不计入": {write("indent.sql", "  CREATE DATABASE `a`;\n"), 0},
+	}
+	for name, c := range cases {
+		got, err := mysqlDumpDatabaseCount(c.path)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got != c.want {
+			t.Fatalf("%s: count=%d want %d", name, got, c.want)
+		}
+	}
+	if _, err := mysqlDumpDatabaseCount(filepath.Join(dir, "missing.sql")); err == nil {
+		t.Fatal("文件缺失必须报错而不是当成 0")
+	}
+}
+

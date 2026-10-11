@@ -174,6 +174,21 @@ func (a *MySQLAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArtif
 		}
 		return nil, exitErrorWithStderr("mysqldump", exitCode, err, capture.tail)
 	}
+	// 整实例 dump 的健全性断言（第二道防线，见 mysqlCheckInstanceScope）：至少要有一条
+	// CREATE DATABASE，否则就是上游"看不到 mysql 库 → 空 dump + rc=0"的静默路径，
+	// 宁可失败也不上传空快照。
+	if source.Database == "all" {
+		n, countErr := mysqlDumpDatabaseCount(dumpFile)
+		if countErr != nil {
+			return nil, countErr
+		}
+		if n == 0 {
+			return nil, fmt.Errorf("mysqldump --all-databases 的产出里没有任何 CREATE DATABASE（空 dump），判定备份失败：" +
+				"账号看不到实例中的库时 mysqldump 会静默退出 0 并产出空文件；" +
+				"请为该账号授予全局 SELECT（GRANT SELECT ON *.* TO <账号>;）后重试")
+		}
+		rc.Logf("info", "整实例 dump 包含 %d 个 CREATE DATABASE", n)
+	}
 	toolVersions["mysqldump"] = getToolVersion(ctx, rc.Exec, mysqldumpPath, nil)
 
 	restoreHints := map[string]string{
@@ -371,6 +386,13 @@ func checkMySQLReadScope(ctx context.Context, exec Executor, client, cnfFile, us
 			username, exitErrorWithStderr("mysql client SHOW GRANTS", exit, err, stderrTail))
 	}
 	scope := mysqlSelectScope(grants)
+	// 整实例备份的完整性只能由全局 SELECT 证明，且与显式选表无关（--ignore-table
+	// 不改变 mysqldump 必须遍历整个实例的事实），因此不受下面的显式选表放行影响。
+	if database == "all" {
+		if err := mysqlCheckInstanceScope(scope, username); err != nil {
+			return err
+		}
+	}
 	// 显式选表（--tables/--ignore-table）表示用户已声明本次只导出哪些表，
 	// 表级账号做子集备份是正当用法，不再按「部分授权」拒绝。
 	if !mysqlExplicitTableSelection(extraArgs) {
@@ -440,7 +462,49 @@ func mysqlCheckViewScope(ctx context.Context, exec Executor, client, cnfFile str
 		username, database, count, strings.ReplaceAll(database, "`", "``"), username, database)
 }
 
-// mysqlCheckTableScope 判定账号能否读到目标库（或整实例）的全部表。
+// mysqlCheckInstanceScope 判定账号能否完整导出整个实例（database="all"）。
+//
+// mysqldump --all-databases 先把库名缓存起来，只有结果集中出现名为 mysql 的库时才
+// flush（上游 dump_all_databases()）；看不到 mysql schema 的账号缓存永不 flush，
+// release 版里被编译掉的 assert(mysql_db_found) 不再兜底 —— 结果是 rc=0 且 dump
+// 完全为空（实测 MySQL 8.0.46：仅 SELECT ON 一个库的账号跑 database="all" 得到
+// 0 个 CREATE DATABASE、run 报 succeeded、快照里连唯一有权限的库都不在）；补上
+// SELECT ON mysql.* 后同一命令变成"只含可见库"的残缺 dump，同样静默。
+//
+// 因此整实例备份要求账号具备**全局** SELECT：只有它能证明"看到实例里的每个库"。
+// 库级/表级授权无论覆盖多少库都无法证明完整性（完全未授权的库连一行 GRANT 都
+// 不会出现），一律拒绝并给出可操作的处置。
+func mysqlCheckInstanceScope(scope mysqlReadScope, username string) error {
+	if scope.global {
+		return nil
+	}
+	detail := "没有任何可判断的授权行"
+	var partial []string
+	for db, tables := range scope.tables {
+		if !scope.schemas[db] {
+			sort.Strings(tables)
+			partial = append(partial, db+"("+strings.Join(tables, ", ")+")")
+		}
+	}
+	if len(partial) > 0 {
+		sort.Strings(partial)
+		detail = "只被授予部分表的 SELECT（" + strings.Join(partial, "；") + "）"
+	} else if len(scope.schemas) > 0 {
+		dbs := make([]string, 0, len(scope.schemas))
+		for db := range scope.schemas {
+			dbs = append(dbs, db)
+		}
+		sort.Strings(dbs)
+		detail = "只有库级 SELECT（" + strings.Join(dbs, ", ") + "）"
+	}
+	return fmt.Errorf("mysql 导出被拒绝：整实例备份（database=\"all\"）需要全局 SELECT 权限，账号 %q %s；"+
+		"mysqldump --all-databases 对看不到 mysql 库的账号会静默产出空 dump（或只含可见库的残缺 dump）"+
+		"而 run 仍报 succeeded；请执行 GRANT SELECT ON *.* TO %q; 后重试，"+
+		"或改用单库计划（--tables 只适用于单库，整实例不接受表名）",
+		username, detail, username)
+}
+
+// mysqlCheckTableScope 判定账号能否读到目标库的全部表。
 //
 // mysqldump 按账号权限从 information_schema 枚举表，对只被授予部分表 SELECT 的
 // 账号会正常退出（rc=0）却只导出已授权的表：run 报 succeeded、VerifyRestored 也
@@ -449,29 +513,11 @@ func mysqlCheckViewScope(ctx context.Context, exec Executor, client, cnfFile str
 // PostgreSQL 在同一场景下因覆盖全表的 LOCK TABLE 而响亮失败，这里对齐该行为：
 // 判定为部分授权时明确拒绝，而不是产出不完整的 dump。
 //
-// 已知缺口：database="all" 且账号对某些库**完全没有**授权时，SHOW GRANTS 里没有
-// 任何可判断的行，这类库仍会被静默跳过；只有能证实的部分授权才会被拦下。
+// 整实例（database="all"）不在这里判定：它要求全局 SELECT，由
+// mysqlCheckInstanceScope 在更早处拒绝（全局授权在这里必然通过首行短路）。
 func mysqlCheckTableScope(scope mysqlReadScope, username, database string) error {
-	if scope.global {
+	if scope.global || database == "all" {
 		return nil
-	}
-	if database == "all" {
-		// 整实例备份：只有"表级 SELECT 未被同库的库级 SELECT 覆盖"才是可证实的部分授权。
-		var partial []string
-		for db, tables := range scope.tables {
-			if !scope.schemas[db] {
-				sort.Strings(tables)
-				partial = append(partial, db+"("+strings.Join(tables, ", ")+")")
-			}
-		}
-		if len(partial) == 0 {
-			return nil
-		}
-		sort.Strings(partial)
-		return fmt.Errorf("mysql 导出被拒绝：账号 %q 只被授予部分表的 SELECT 权限（%s），"+
-			"mysqldump 会静默跳过未授权的表，整实例备份将缺失这些表的数据；"+
-			"请为该账号授予库级 SELECT（GRANT SELECT ON `<库名>`.* TO %q）后重试",
-			username, strings.Join(partial, "；"), username)
 	}
 	if scope.schemas[database] {
 		return nil
@@ -1176,6 +1222,31 @@ func mysqlDumpTableNames(path string) ([]string, error) {
 		return nil, fmt.Errorf("scan mysql dump: %w", err)
 	}
 	return names, nil
+}
+
+// mysqlDumpDatabaseCount 统计 dump 里的 CREATE DATABASE 语句数。
+//
+// mysqldump --all-databases 为每个库输出独占一行的
+// "CREATE DATABASE /*!32312 IF NOT EXISTS*/ `db` /*!40100 ... */;"；空 dump（上游
+// 静默路径，见 mysqlCheckInstanceScope）一条都没有。
+func mysqlDumpDatabaseCount(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("open mysql dump: %w", err)
+	}
+	defer f.Close()
+	count := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		if strings.HasPrefix(strings.ToUpper(scanner.Text()), "CREATE DATABASE") {
+			count++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("scan mysql dump: %w", err)
+	}
+	return count, nil
 }
 
 // verifyTableSets 比对 dump 的表集合与目标库实际表集合，返回缺失的表名（升序）。

@@ -1457,6 +1457,10 @@ func (o *Orchestrator) StartRestore(ctx context.Context, actorID string, in Rest
 		Status:       model.RunQueued,
 		QueuedAt:     now,
 		RepositoryID: repo.ID,
+		// 恢复运行也要带上源快照 ID：运行详情页的「快照」字段此前对恢复 run 恒为
+		// 占位符「—」，而 /restores 记录里一直有这个 ID。数据库恢复的
+		// FinishRestoreRun 在结果快照为空时保留该值（CASE WHEN ? = '' THEN snapshot_id）。
+		SnapshotID:   in.SnapshotID,
 		ProgressJSON: "{}",
 		DedupKey:     restoreRunDedupKey(repo.ID, targetAgentID, in.SnapshotID, in.RestoreKind, string(targetJSON), in.Overwrite, credentialFingerprint),
 	}

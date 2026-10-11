@@ -128,6 +128,14 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - **计划保留策略的执行节奏（重要）**：计划的 `retention`（如 `keep_last`）**不在每次备份后执行**，而是由调度器的日常维护任务派发（`forget` 不带 prune，按仓库排队、与在途备份串行），且**每仓库 24 小时内至多一次**。因此高频计划（例如每分钟）在两次保留之间会持续累积快照：实测 `keep_last=1` 的每分钟计划在 15 分钟窗口内快照由 1 增至 16（零清理），按此节奏一天可达约 1440 份。需要即时清理时可手动删除单份快照（`DELETE /api/v1/repositories/{repo}/snapshots/{snapshotID}`）或清理整个计划的备份（`POST /api/v1/plans/{id}/backups/delete`）。保留被跳过的原因（仓库有在途备份 / 24h 内已执行过保留 / Agent 离线）现在会写入服务端日志，同一仓库同一原因每小时至多一条，便于判断"保留为何没跑"。
 - **孤儿扫描退避（`0015_snapshot_cleanup_backoff.sql`）**：`snapshot_cleanup_state` 新增 `next_attempt_at` 列。此前孤儿扫描失败后状态表没有退避字段，`ClearSnapshotCleanupScan` 传入的退避时间被静默忽略，导致扫描持续失败的仓库在每个 scheduler tick（15 秒）重发一次 `snapshots`，7 天可累积数万 run 与数百万行日志，并最终因 restic/rclone 进程耗尽出现 `fork/exec ... resource temporarily unavailable`。升级后扫描失败按 1 小时退避重试，成功则清除退避并按 24 小时周期扫描。迁移为纯增量加列，可重复启动安全。
 
+### 认证、事件与日志的运维注意事项
+
+- **登录限流按对端地址计数（反代部署下必须补边缘限流）**：`POST /api/v1/auth/login` 与 `POST /api/v1/setup` 共享一个进程内限流器，**按 TCP 对端地址（`RemoteAddr`）** 计数，10 次 / 15 分钟，失败尝试同样计入。经反向代理部署时所有客户端在 Server 眼里都是同一个代理地址，**全部坍缩进同一个桶**：正常用户也会被误限流，且限流本身起不到防护作用。因此反代部署**必须在边缘代理再加一层按真实客户端 IP 的限流**（如 nginx `limit_req`，或 `real_ip` 模块还原 `X-Forwarded-For` 后再限）。被限流时返回 `429` + `Retry-After`（秒，等于当前窗口剩余时间），客户端可据此退避重试。
+- **`BMC_PUBLIC_URL` 与 Secure cookie**：`BMC_PUBLIC_URL` 为 **`https://`** 时，会话/CSRF cookie 强制带 `Secure`；为 `http://`（明文入口，如 `http://<host>:18080`）时不再强制——此前只要该变量非空就强制 `Secure`，明文部署下浏览器会丢弃会话 cookie，表现为**登录成功后立刻 401 的登录循环**。若你的入口是 https 但反代到 Server 的明文端口，请把 `BMC_PUBLIC_URL` 写成 https 形式。
+- **WS 运行日志无续传游标（重连会全量重放）**：`GET /api/v1/runs/{id}/ws` 在建立连接时先回放**当前 run 快照 + 该 run 的全部历史日志**，随后才推送增量事件；连接断开重连后同样从头回放，**没有 `since`/游标参数**。因此重连会重复收到已看过的日志条目，**前端/客户端必须自行按 `(source, source_seq)` 去重**，不能假设事件流是精确一次的。
+- **慢订阅者会被丢弃（有 warn 日志与指标）**：每个订阅者有一个 256 条的事件缓冲区；某订阅者消费不过来（例如卡住的 WS 客户端）时，该订阅者会被**丢弃**（通道关闭、连接结束），而不是阻塞生产者。丢弃时服务端记录 `WARN events: dropped slow subscriber run_id=... event_type=...`，并递增 Prometheus 指标 `bmc_events_subscribers_dropped_total`（`/metrics`，默认 `127.0.0.1:9100`）。界面表现为「该运行的进度/日志不再更新」——出现这种症状时先看该指标与 warn 日志，而不是怀疑备份任务本身。
+- **500 响应体会带内部错误原文**：`5xx` 响应的 `error.message` 会带上内部错误文本（数据库/Agent/存储等真实原因），这是为排障刻意保留的。该内容仅对**已认证**调用方可见；未认证请求不会拿到这类细节。对外暴露的告警面板/日志采集若会转发响应体，请注意其中可能包含内部路径与主机名。
+
 ### 数据库备份权限前置校验（行为收紧）
 
 数据库备份（MySQL/MariaDB、MongoDB）在导出前先核对账号授权，把此前「静默丢对象/丢数据」的场景改为**明确失败**。失败 run 记为 `backup_failed`、**不产生快照**（不再留下半成品快照），失败原因已并入 run 的 `error_message`（`GET /api/v1/runs/{id}`）。

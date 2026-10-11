@@ -98,7 +98,8 @@ func (s *Server) handleListStorageTargets(w http.ResponseWriter, r *http.Request
 // credentials or move a remote safely.
 func (s *Server) handleRenameStorageTarget(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
+		Name       string  `json:"name"`
+		RemotePath *string `json:"remote_path"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -106,6 +107,15 @@ func (s *Server) handleRenameStorageTarget(w http.ResponseWriter, r *http.Reques
 	if strings.TrimSpace(body.Name) == "" {
 		writeErr(w, http.StatusBadRequest, "validation_failed", "name is required")
 		return
+	}
+	// remote_path 不可变：以前带该字段会被静默忽略并回 200，运维以为改成功。
+	// 明确拒绝，避免"看起来生效了"的错误预期。
+	if body.RemotePath != nil {
+		if cur, err := s.ST.GetStorageTarget(r.Context(), pathParam(r, "id")); err == nil && *body.RemotePath != cur.RemotePath {
+			writeErr(w, http.StatusBadRequest, "validation_failed",
+				"remote_path is immutable; create a new storage target to change it")
+			return
+		}
 	}
 	t, err := s.Jobs.RenameStorageTarget(r.Context(), actorID(r), pathParam(r, "id"), body.Name)
 	if err != nil {

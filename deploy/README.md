@@ -205,6 +205,7 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 | `duplicate_storage_target` | 409 | 已存在同名存储目标，改名后再导入。 |
 | `invalid_plan` | 422 / 计划 run 的错误码 | 计划配置校验失败：`extra_args` 含被拒绝的选项（消息形如 `extra_args contains disallowed option "--evil"`），或 `capture_oplog` 已不再支持（消息以 `capture_oplog is not supported:` 开头）。 |
 | `snapshot_list_refresh_required` | 409 | 缺少可用的已验证快照列表/目录缓存（缺失、损坏或生成号变化），需先在界面上**刷新快照列表**再操作。 |
+| `repository_unavailable` | 409 | 仓库当前不可用：仓库状态未就绪（`error`/`pending`）导致计划运行被拒，或 Agent 侧打不开/初始化/浏览远端仓库（远端不可达、存储目标配置错误等）。真实原因在 `message` 中；先修好存储目标再重新绑定/校验仓库。 |
 
 ## 7. 管理员密码重置
 

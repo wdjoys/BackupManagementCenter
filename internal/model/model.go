@@ -171,6 +171,10 @@ const (
 	ErrAgentUpgradeRequired = "agent_upgrade_required"
 	// ErrDatabaseRestoreDisabled 表示该部署尚未启用这个 kind 的数据库恢复。
 	ErrDatabaseRestoreDisabled = "database_restore_disabled"
+	// ErrRepositoryUnavailable 表示仓库当前不可用：状态未就绪，或 Agent 侧无法
+	// 打开/初始化/浏览远端仓库（远端不可达、配置错误等）。属操作者可自行纠正的
+	// 前置条件问题，不得折成 500 internal。
+	ErrRepositoryUnavailable = "repository_unavailable"
 )
 
 func nowUTC() time.Time { return time.Now().UTC() }

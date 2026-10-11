@@ -70,6 +70,10 @@ var (
 	ErrSnapshotRestoreProtected = errors.New(model.ErrSnapshotRestoreProtected)
 	// ErrRepositoryNotReady 表示跨 Agent 恢复要求来源仓库处于 ready。
 	ErrRepositoryNotReady = errors.New("source repository is not ready")
+	// ErrRepositoryUnavailable 表示仓库当前不可用：状态未就绪，或 Agent 侧无法
+	// 打开/初始化/浏览远端仓库。任何使用该仓库的操作都可能遇到，属操作者可自行
+	// 纠正的前置条件问题，API 必须映射为 409 + repository_unavailable 而非 500。
+	ErrRepositoryUnavailable = errors.New(model.ErrRepositoryUnavailable)
 	// ErrRestoreConflict 表示人工解除的目标状态不匹配（run ID 不符或阶段不可解除）。
 	ErrRestoreConflict = errors.New("restore_conflict")
 )
@@ -226,7 +230,10 @@ func (o *Orchestrator) StartPlanRun(ctx context.Context, planID string, schedule
 		return nil, fmt.Errorf("%s: repository %s belongs to agent %s, plan selects agent %s", model.ErrInvalidPlan, repo.ID, repo.AgentID, plan.AgentID)
 	}
 	if repo.Status != "ready" {
-		return nil, fmt.Errorf("repository not ready: %s", repo.Status)
+		// 仓库未就绪（error/pending）是操作者可自行纠正的前置条件：必须带稳定码
+		// 上抛，否则会以裸文本落到 500 internal。
+		return nil, fmt.Errorf("%w: the repository is not ready (status %q); re-check or re-bind it before running backups",
+			ErrRepositoryUnavailable, repo.Status)
 	}
 
 	target, err := o.Store.GetStorageTarget(ctx, repo.StorageTargetID)
@@ -595,7 +602,7 @@ func (o *Orchestrator) SnapshotsWithOptions(ctx context.Context, repoID, agentID
 	}
 	if term.Status != model.RunSucceeded {
 		if term.ErrorMessage != "" {
-			return o.finishListFlight(flight, nil, term, CacheInfo{}, fmt.Errorf("snapshot list failed: %s", term.ErrorMessage))
+			return o.finishListFlight(flight, nil, term, CacheInfo{}, fmt.Errorf("%w: snapshot list failed: %s", ErrRepositoryUnavailable, term.ErrorMessage))
 		}
 		return o.finishListFlight(flight, nil, term, CacheInfo{}, errors.New("snapshot list run failed"))
 	}
@@ -749,7 +756,7 @@ func (o *Orchestrator) SnapshotTreeWithOptions(ctx context.Context, repoID, agen
 	}
 	if term.Status != model.RunSucceeded {
 		if term.ErrorMessage != "" {
-			return o.finishTreeFlight(flight, nil, term, CacheInfo{}, fmt.Errorf("snapshot tree failed: %s", term.ErrorMessage))
+			return o.finishTreeFlight(flight, nil, term, CacheInfo{}, fmt.Errorf("%w: snapshot tree failed: %s", ErrRepositoryUnavailable, term.ErrorMessage))
 		}
 		return o.finishTreeFlight(flight, nil, term, CacheInfo{}, errors.New("snapshot tree run failed"))
 	}
@@ -1187,7 +1194,9 @@ func (o *Orchestrator) EnsureRepository(ctx context.Context, repo *model.Reposit
 		case model.ErrRepositoryLocked:
 			return ErrRepoLocked
 		default:
-			return fmt.Errorf("ensure repository probe failed: %s %s", term.ErrorCode, term.ErrorMessage)
+			// 远端不可达、配置错误等：操作者可自行纠正（改存储目标/重新绑定），
+			// 必须带稳定码而不是裸文本 500。
+			return fmt.Errorf("%w: repository probe failed: %s %s", ErrRepositoryUnavailable, term.ErrorCode, term.ErrorMessage)
 		}
 	}
 
@@ -1204,7 +1213,7 @@ func (o *Orchestrator) EnsureRepository(ctx context.Context, repo *model.Reposit
 	if term.Status == model.RunSucceeded {
 		return o.Store.UpdateRepositoryStatus(ctx, repo.ID, "ready")
 	}
-	return fmt.Errorf("ensure repository init failed: %s %s", term.ErrorCode, term.ErrorMessage)
+	return fmt.Errorf("%w: repository init failed: %s %s", ErrRepositoryUnavailable, term.ErrorCode, term.ErrorMessage)
 }
 
 // dropProbeRun 丢弃一条"结果符合预期"的内部探测运行（见 EnsureRepository 的

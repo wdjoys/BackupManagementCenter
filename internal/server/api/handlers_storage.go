@@ -540,6 +540,13 @@ func (s *Server) jobsErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, model.ErrAgentRevoked, "target agent is revoked")
 		return
 	}
+	if errors.Is(err, jobs.ErrRepositoryUnavailable) {
+		// 仓库不可用（状态未就绪，或远端打不开/初始化/浏览失败）：属操作者可自行
+		// 纠正的前置条件问题，必须回 409 + 稳定码，而不是 500 internal。真实原因
+		// 保留在 message 中。
+		writeErr(w, http.StatusConflict, model.ErrRepositoryUnavailable, redactMsg(err.Error()))
+		return
+	}
 	if errors.Is(err, jobs.ErrRepositoryNotReady) {
 		writeErr(w, http.StatusConflict, model.ErrRepositoryMissing, "cross-agent restore requires a ready source repository")
 		return

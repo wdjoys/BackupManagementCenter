@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"backupmanagementcenter/internal/server/events"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -37,6 +38,11 @@ func New() *Metrics {
 		}),
 		registry: reg,
 	}
+	// 慢订阅者被丢弃的次数：丢弃是静默的数据丢失（该 WS 客户端后续不再收到进度/日志），
+	// 必须有可观测信号才能发现"界面不再更新"的根因。
+	reg.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
+		Name: "bmc_events_subscribers_dropped_total", Help: "Event bus subscribers dropped for being too slow.",
+	}, func() float64 { return float64(events.DroppedSubscribers()) }))
 	reg.MustRegister(m.runsTotal, m.runDuration, m.repoLastCheck, m.grpcReconnects)
 	return m
 }

@@ -32,6 +32,10 @@ func TestSlowSubscriberIsDroppedWithoutBlockingPublisher(t *testing.T) {
 	if n != 256 {
 		t.Fatalf("dropped subscriber received %d events, want 256 (buffer size) before close", n)
 	}
+	// 丢弃必须有可观测信号：没有计数就只能从"界面不再更新"反推慢消费者。
+	if got := DroppedSubscribers(); got < 1 {
+		t.Fatalf("DroppedSubscribers() = %d, want >= 1 after dropping a slow subscriber", got)
+	}
 }
 
 // 订阅者取消（WS 断开时的 defer cancel）与生产者并发时，Publish 绝不能向已关闭的

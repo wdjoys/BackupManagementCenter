@@ -186,7 +186,22 @@ export const PlansView: React.FC = () => {
     const nextState = !plan.enabled
     setToggleLoading((prev) => ({ ...prev, [plan.id]: true }))
     try {
-      await apiPut(`/plans/${plan.id}`, { enabled: nextState })
+      // 服务端 PUT /plans/{id} 是整对象更新：planBody.validate 要求 name/kind/
+      // agent_id/repository_id/schedule/retention 齐全，只发 { enabled } 会被判
+      // 400 validation_failed（实测 "name must be 1..200 chars"），开关永远切不动。
+      // 这里用列表项里的完整字段 + 目标 enabled 组装请求体。
+      await apiPut(`/plans/${plan.id}`, {
+        name: plan.name,
+        agent_id: plan.agent_id,
+        kind: plan.kind,
+        schedule: plan.schedule,
+        timezone: plan.timezone,
+        enabled: nextState,
+        source: plan.source,
+        repository_id: plan.repository_id,
+        retention: plan.retention,
+        timeout_seconds: plan.timeout_seconds,
+      })
       setPlans((prev) =>
         prev.map((p) => (p.id === plan.id ? { ...p, enabled: nextState } : p))
       )

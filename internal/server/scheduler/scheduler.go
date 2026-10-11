@@ -45,6 +45,13 @@ const (
 	defaultTimeout         = 300 * time.Second
 )
 
+// cursorState 是某个计划的调度游标：next 为下次触发时间（UTC），key 记录算出它的
+// schedule+timezone——计划一改，key 失配，游标即作废重算（见 tickPlan）。
+type cursorState struct {
+	key  string
+	next time.Time
+}
+
 type Scheduler struct {
 	store                store.Store
 	starter              RunStarter
@@ -61,9 +68,9 @@ type Scheduler struct {
 	closeCh chan struct{}
 	wg      sync.WaitGroup
 
-	// planID -> next fire time (UTC). Re-computed every tick from the plan's
-	// schedule+timezone.
-	cursors map[string]time.Time
+	// planID -> 游标（下次触发时间 UTC + 算出它的表达式键）。Re-computed every tick
+	// from the plan's schedule+timezone.
+	cursors map[string]cursorState
 
 	// retentionSkipMu/retentionSkipAt 给"保留策略被跳过"的日志限频：tick 每 15s 一次，
 	// 不限频会变成新的刷屏；同一仓库同一原因每小时最多记一条。此前因 active/recent
@@ -87,7 +94,7 @@ func New(st store.Store, starter RunStarter, notifier notification.FailureNotifi
 		tickFn:               time.NewTicker,
 		now:                  func() time.Time { return time.Now().UTC() },
 		closeCh:              make(chan struct{}),
-		cursors:              make(map[string]time.Time),
+		cursors:              make(map[string]cursorState),
 	}
 }
 
@@ -342,7 +349,25 @@ func (s *Scheduler) tickPlan(ctx context.Context, now time.Time, p model.Plan) {
 	}
 
 	next := sched.Next(now.In(loc)).UTC()
-	prev, exists := s.cursors[p.ID]
+	key := cursorKey(p)
+	st, cached := s.cursors[p.ID]
+	if cached && st.key != key {
+		// 计划改了 schedule/timezone：内存游标来自旧表达式，沿用会在旧槽位补触发一次
+		// （实测：* * * * * 改成 0 3 * * * 后，14:32:07 的 tick 仍建了
+		// scheduled_at=14:32:00Z 的运行），且与仪表盘按新表达式现算的下次时间互相矛盾
+		// （API 显示 03:00Z 而调度器在 14:32Z 触发）。丢弃旧游标、按新表达式重算，本 tick
+		// 不触发。此处不回落 DB：DB 里存的正是同一个旧值。
+		//
+		// ponytail: 游标与表达式的绑定只在内存里。进程重启后首次 tick 会重新信任 DB 游标，
+		// 若恰好落在「改计划 + 重启」的 15s 窗口内仍会补触发一次；要彻底封死需把表达式
+		// 一并持久化到 schedule_cursor（加一列即可）。
+		slog.Info("scheduler: plan schedule changed, cursor recomputed", "planID", p.ID,
+			"schedule", p.Schedule, "timezone", p.Timezone, "staleCursor", st.next, "next", next)
+		s.cursors[p.ID] = cursorState{key: key, next: next}
+		s.saveCursor(ctx, p.ID, next)
+		return
+	}
+	prev, exists := st.next, cached
 	if !exists {
 		if cs, ok := s.store.(interface {
 			GetScheduleCursor(context.Context, string) (time.Time, error)
@@ -355,7 +380,7 @@ func (s *Scheduler) tickPlan(ctx context.Context, now time.Time, p model.Plan) {
 		}
 	}
 	if !exists || prev.IsZero() {
-		s.cursors[p.ID] = next
+		s.cursors[p.ID] = cursorState{key: key, next: next}
 		s.saveCursor(ctx, p.ID, next)
 		return
 	}
@@ -371,8 +396,14 @@ func (s *Scheduler) tickPlan(ctx context.Context, now time.Time, p model.Plan) {
 			}
 		}
 	}
-	s.cursors[p.ID] = next
+	s.cursors[p.ID] = cursorState{key: key, next: next}
 	s.saveCursor(ctx, p.ID, next)
+}
+
+// cursorKey identifies the expression a cursor was derived from: 计划一改（schedule 或
+// timezone），键即不再匹配，游标随即失效重算。
+func cursorKey(p model.Plan) string {
+	return p.Schedule + "\x00" + p.Timezone
 }
 
 func (s *Scheduler) saveCursor(ctx context.Context, planID string, next time.Time) {

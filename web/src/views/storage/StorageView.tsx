@@ -246,11 +246,18 @@ export const StorageView: React.FC = () => {
   const handleRetryRepo = async (repo: Repository) => {
     setRepoActionLoading((prev) => ({ ...prev, [repo.id]: true }))
     try {
-      await apiPost(`/repositories/${repo.id}/retry`, {})
-      toastSuccess(t('storage.repositoryDialog.retryDispatched'))
+      // 服务端只有 /check（触发一次 restic check）；此前的 /retry 未注册，必然 404。
+      await apiPost(`/repositories/${repo.id}/check`, {})
+      toastSuccess(t('storage.repositoryDialog.retried'))
       await loadRepos()
     } catch (err: unknown) {
-      toastError(isApiClientError(err) ? err.message : t('storage.repositoryDialog.retryFailed'))
+      // toast 文案一律走 i18n：直接透传 err.message 会把服务端英文原文
+      // （如 "Not Found"）暴露给中文用户。
+      toastError(
+        isApiClientError(err)
+          ? t('storage.repositoryDialog.retryFailedCode', { code: err.code })
+          : t('storage.repositoryDialog.retryFailed')
+      )
     } finally {
       setRepoActionLoading((prev) => ({ ...prev, [repo.id]: false }))
     }

@@ -712,6 +712,41 @@ func TestRunFilesystemRestorePreflightFailureReportsSafePhase(t *testing.T) {
 	}
 }
 
+// 文件系统恢复成功同样必须回写终态相位：此前成功分支返回空 Result{}，运行详情页
+// 对 filesystem 恢复的进度卡恒为 progress={}（无相位），而数据库恢复是
+// {"phase":"succeeded"}。
+func TestRunFilesystemRestoreSuccessReportsTerminalPhase(t *testing.T) {
+	target := t.TempDir()
+	deps := Deps{
+		Exec:     &protectionRestoreExecutor{dumpName: "fs.txt"},
+		Logf:     func(string, string, ...any) {},
+		Progress: func(model.Progress) {},
+	}
+	task := model.RestoreTask{
+		RunID: "run-fs-1",
+		Kind:  "filesystem",
+		Filesystem: &model.FilesystemRestore{
+			SnapshotID: "snap-1", TargetPath: target, OverwriteMode: "overwrite",
+		},
+	}
+	res, err := runFilesystemRestore(context.Background(), deps, restic.Options{Exe: "restic"}, task, false)
+	if err != nil {
+		t.Fatalf("filesystem restore: %v", err)
+	}
+	var payload struct {
+		Phase string `json:"phase"`
+	}
+	if len(res.ResultJSON) == 0 {
+		t.Fatal("successful filesystem restore must report a terminal phase")
+	}
+	if err := json.Unmarshal(res.ResultJSON, &payload); err != nil {
+		t.Fatalf("unmarshal result json: %v", err)
+	}
+	if payload.Phase != model.RestorePhaseSucceeded {
+		t.Fatalf("phase = %q, want %q", payload.Phase, model.RestorePhaseSucceeded)
+	}
+}
+
 // 恢复任务解码失败发生在任何破坏性操作之前，同样必须上报安全阶段；
 // 否则服务端判为 manual_recovery_required 并阻塞整个来源仓库。
 func TestRunRestoreInvalidParamsReportsSafePhase(t *testing.T) {

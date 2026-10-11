@@ -411,7 +411,14 @@ func runFilesystemRestore(ctx context.Context, d Deps, opts restic.Options, task
 	if err := validateRestoredSymlinks(execFS.TargetPath); err != nil {
 		return nil, &PipelineError{Code: "path_not_allowed", Message: "restored symlink escapes target root", Cause: err}
 	}
-	return &Result{}, nil
+	// 与数据库恢复一致地回写终态相位：此前返回空 Result{}，运行详情页的进度卡对
+	// filesystem 恢复恒为 progress={}（无相位、无百分比），而数据库恢复是
+	// {"phase":"succeeded"}。文件系统恢复没有可比对的数据库级校验（restic 已按
+	// overwrite_mode 落地并逐文件比对目标内容），因此这里用日志把成功结论说清楚，
+	// 而不是静默省略。
+	d.logf("info", "文件系统恢复完成：%s（overwrite_mode=%s；已校验恢复结果不含逃逸软链接，文件内容由 restic 按目标现状比对，本类型无数据库级校验项）",
+		execFS.TargetPath, execFS.OverwriteMode)
+	return &Result{ResultJSON: restoreResultJSON(model.RestorePhaseSucceeded, "")}, nil
 }
 
 // databaseRestoreMu 串行化本 Agent 上的数据库恢复：存在性检查、预备份、导入、

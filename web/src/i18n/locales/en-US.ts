@@ -687,5 +687,32 @@ export default {
     "passwords_must_match": "Passwords do not match",
     "bot_token_required": "Bot Token is required",
     "chat_id_required": "Chat ID is required"
+  },
+  "errors": {
+    "unauthorized": "Not signed in or session expired, please sign in again",
+    "invalid_credentials": "Invalid username or password",
+    "rate_limited": "Too many requests, please try again later",
+    "not_found": "The requested resource does not exist",
+    "validation_failed": "Request validation failed",
+    "conflict": "Resource conflict, please refresh and retry",
+    "invalid_request": "Invalid request",
+    "internal": "Internal server error, please try again later",
+    "unknown": "Request failed, please try again",
+    "duplicate_storage_target": "A storage target with this name already exists",
+    "invalid_plan": "Invalid plan configuration (check extra args, capture_oplog, etc.)",
+    "plan_has_snapshots": "This plan still has snapshots and cannot be deleted",
+    "restore_target_not_empty": "Restore target directory is not empty",
+    "restore_target_exists": "Restore target already exists",
+    "restore_target_busy": "Restore target is busy with another task, please retry later",
+    "restore_preflight_failed": "Restore preflight check failed, verify the target path and permissions",
+    "unsupported_restore_manifest": "This snapshot is a whole-instance backup and cannot be restored",
+    "snapshot_list_refresh_required": "Snapshot list must be refreshed before retrying",
+    "backup_failed": "Backup failed",
+    "restore_failed": "Restore failed",
+    "repository_missing": "Backup repository is missing or not initialized",
+    "insufficient_temp_space": "Insufficient temporary space",
+    "missing_tools": "Required tools are missing on the Agent",
+    "agent_unavailable": "Agent is currently unavailable",
+    "run_timeout": "Task timed out"
   }
 }

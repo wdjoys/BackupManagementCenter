@@ -1,4 +1,5 @@
 import type { ApiErrorPayload } from './types'
+import { localizeErrorCode } from '@/lib/errors'
 
 const BASE_URL = '/api/v1'
 
@@ -83,20 +84,20 @@ export async function api<T = unknown>(
     const body = await response.json()
     if (!response.ok) {
       const err = body?.error as ApiErrorPayload | undefined
-      throw new ApiClientError(
-        err?.message || response.statusText || 'Request failed',
-        err?.code || 'unknown',
-        response.status,
-      )
+      const code = err?.code || 'unknown'
+      // 已映射的错误码在构造时即本地化：toast/表单/页面错误条统一从这里取文案，
+      // 避免各处透传服务端英文原文；未映射的码保持服务端 message 原样。
+      const message = err?.message || response.statusText || 'Request failed'
+      throw new ApiClientError(localizeErrorCode(code) ?? message, code, response.status)
     }
     // 空列表在 Go 侧为 nil slice，JSON 编码为 null；列表消费方统一假设数组，这里归一为 []。
     return (body === null ? [] : body) as T
   }
 
-  // Non-JSON failure
+  // Non-JSON failure（网关/代理返回的纯文本错误）：statusText 是英文，同样按码本地化。
   if (!response.ok) {
     throw new ApiClientError(
-      response.statusText || 'Request failed',
+      localizeErrorCode('unknown') ?? (response.statusText || 'Request failed'),
       'unknown',
       response.status,
     )

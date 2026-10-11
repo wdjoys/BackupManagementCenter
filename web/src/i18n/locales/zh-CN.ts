@@ -685,7 +685,34 @@ export default {
     "password_min_length": "密码长度至少为 8 个字符",
     "confirm_password_required": "请确认密码",
     "passwords_must_match": "两次输入的密码不一致",
-    "bot_token_required": "请输入 Bot Token",
-    "chat_id_required": "请输入 Chat ID"
+    "bot_token_required": "请填写 Bot Token",
+    "chat_id_required": "请填写 Chat ID"
+  },
+  "errors": {
+    "unauthorized": "未登录或登录已过期，请重新登录",
+    "invalid_credentials": "用户名或密码错误",
+    "rate_limited": "操作过于频繁，请稍后再试",
+    "not_found": "请求的资源不存在",
+    "validation_failed": "请求参数校验失败",
+    "conflict": "资源状态冲突，请刷新后重试",
+    "invalid_request": "请求格式不正确",
+    "internal": "服务端内部错误，请稍后重试",
+    "unknown": "请求失败，请稍后重试",
+    "duplicate_storage_target": "已存在同名存储目标",
+    "invalid_plan": "计划配置无效（请检查额外参数、capture_oplog 等设置）",
+    "plan_has_snapshots": "该计划仍有快照，无法删除",
+    "restore_target_not_empty": "恢复目标目录非空",
+    "restore_target_exists": "恢复目标已存在",
+    "restore_target_busy": "恢复目标正被其他任务占用，请稍后重试",
+    "restore_preflight_failed": "恢复预检未通过，请检查目标路径与权限",
+    "unsupported_restore_manifest": "该快照为整实例备份，暂不支持恢复",
+    "snapshot_list_refresh_required": "快照列表需刷新后重试",
+    "backup_failed": "备份失败",
+    "restore_failed": "恢复失败",
+    "repository_missing": "备份仓库不存在或未初始化",
+    "insufficient_temp_space": "临时空间不足",
+    "missing_tools": "Agent 缺少所需工具",
+    "agent_unavailable": "Agent 当前不可用",
+    "run_timeout": "任务执行超时"
   }
 }

@@ -1732,7 +1732,8 @@ func TestRequiredTools(t *testing.T) {
 		model.KindPostgreSQL: {"restic", "pg_dump", "psql"},
 		model.KindMySQL:      {"restic", "mysqldump", "mysql"},
 		model.KindMongoDB:    {"restic", "mongodump", "mongorestore"},
-		model.KindSQLite:     {"restic", "sqlite3"},
+		// sqlite 走 Go 驱动，无 CLI 依赖；sqlite3 仅用于版本探测。
+		model.KindSQLite: {"restic"},
 	}
 	for kind, want := range cases {
 		got := requiredTools(kind)

@@ -2174,7 +2174,9 @@ func requiredTools(kind string) []string {
 	case model.KindMongoDB:
 		return []string{"restic", "mongodump", "mongorestore"}
 	case model.KindSQLite:
-		return []string{"restic", "sqlite3"}
+		// sqlite 备份走 modernc.org/sqlite 驱动（VACUUM INTO + PRAGMA），
+		// 无 CLI 依赖；sqlite3 仅用于版本探测，缺失不应拒绝派发。
+		return []string{"restic"}
 	default:
 		return nil
 	}

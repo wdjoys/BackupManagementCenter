@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { apiGet, isApiClientError, isAbortError } from '@/api/client'
-import { formatDateTime } from '@/i18n'
+import { formatDateTime, translateEnum } from '@/i18n'
 import type { SystemLog, Agent } from '@/api/types'
 import { AppEmptyState } from '@/components/AppEmptyState'
 import { AppErrorState } from '@/components/AppErrorState'
@@ -371,7 +371,7 @@ export const LogsView: React.FC = () => {
                           </TableCell>
                           <TableCell className="text-xs py-2">
                             <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                              {item.type}
+                              {translateEnum('logs.types', item.type)}
                             </span>
                           </TableCell>
                           {scope === 'agent' && (
@@ -384,7 +384,7 @@ export const LogsView: React.FC = () => {
                           </TableCell>
                           <TableCell className="text-xs py-2">
                             <StatusBadge tone={LEVEL_TONES[item.level] || 'secondary'}>
-                              {item.level.toUpperCase()}
+                              {translateEnum('logs.levels', item.level)}
                             </StatusBadge>
                           </TableCell>
                           <TableCell className="text-xs font-mono text-foreground py-2 max-w-0">
@@ -422,10 +422,10 @@ export const LogsView: React.FC = () => {
                         </span>
                         <div className="flex items-center gap-1.5">
                           <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                            {item.type}
+                            {translateEnum('logs.types', item.type)}
                           </span>
                           <StatusBadge tone={LEVEL_TONES[item.level] || 'secondary'}>
-                            {item.level.toUpperCase()}
+                            {translateEnum('logs.levels', item.level)}
                           </StatusBadge>
                         </div>
                       </div>

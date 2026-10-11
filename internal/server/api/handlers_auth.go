@@ -179,6 +179,8 @@ func mapStoreErr(w http.ResponseWriter, err error) bool {
 		writeErr(w, http.StatusConflict, "plan_has_snapshots", "plan still has snapshots")
 	case errors.Is(err, store.ErrInUse):
 		writeErr(w, http.StatusConflict, "conflict", "resource still referenced")
+	case errors.Is(err, store.ErrDuplicateStorageTarget):
+		writeErr(w, http.StatusConflict, "duplicate_storage_target", "a storage target with this name already exists")
 	case errors.Is(err, store.ErrDuplicateRun):
 		writeErr(w, http.StatusConflict, "duplicate_slot", "run already queued for this slot")
 	case errors.Is(err, store.ErrInvalidTransition):

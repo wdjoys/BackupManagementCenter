@@ -295,6 +295,8 @@ var (
 	ErrTokenInvalid           = errors.New("store: enrollment token invalid")
 	ErrAdminExists            = errors.New("store: admin already exists")
 	ErrInUse                  = errors.New("store: resource still referenced")
+	// ErrDuplicateStorageTarget 表示存储目标名称已被占用（UNIQUE 约束）。
+	ErrDuplicateStorageTarget = errors.New("store: storage target name already exists")
 	ErrPlanHasSnapshots       = errors.New("store: plan still has snapshots")
 	ErrCacheGenerationChanged = errors.New("store: snapshot cache generation changed")
 	// ErrDatabaseRestoreBusy 表示已有未安全终结的数据库恢复占用全局互斥。

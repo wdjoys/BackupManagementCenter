@@ -645,6 +645,9 @@ func (s *sqliteStore) CreateStorageTarget(ctx context.Context, t *model.StorageT
 		t.CreatedAt.Format(time.RFC3339), t.UpdatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
+		if isUniqueConstraint(err) {
+			return ErrDuplicateStorageTarget
+		}
 		return fmt.Errorf("create storage target: %w", err)
 	}
 	return nil
@@ -665,6 +668,9 @@ func (s *sqliteStore) UpdateStorageTarget(ctx context.Context, t *model.StorageT
 		t.Name, t.RemoteName, t.RemotePath, t.EncryptedConfig,
 		t.UpdatedAt.Format(time.RFC3339), t.ID,
 	); err != nil {
+		if isUniqueConstraint(err) {
+			return ErrDuplicateStorageTarget
+		}
 		return fmt.Errorf("update storage target: %w", err)
 	}
 	if err := invalidateTargetCaches(ctx, tx, t.ID); err != nil {

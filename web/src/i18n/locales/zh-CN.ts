@@ -640,7 +640,7 @@ export default {
       "allNotAllowed": "整实例还原（all）不开放，请指定单个数据库。",
       "systemDatabaseNotAllowed": "「{{database}}」是系统库，不能作为恢复目标，请换一个库名。",
       "targetPassword": "目标数据库密码",
-      "targetPasswordHint": "仅用于本次恢复，不落库到前端或配置中。",
+      "targetPasswordHint": "可选：目标实例允许免密 / trust 认证时留空。仅用于本次恢复，不落库到前端或配置中。",
       "overwriteExisting": "覆盖已存在的目标（先做保护备份）",
       "databaseRequired": "请填写目标数据库名称与连接信息。",
       "portInvalid": "端口必须是 1-65535 的整数。"

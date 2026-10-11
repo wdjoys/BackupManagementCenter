@@ -640,7 +640,7 @@ export default {
       "allNotAllowed": "Whole-instance restore (all) is not supported; specify a single database.",
       "systemDatabaseNotAllowed": "\"{{database}}\" is a system database and cannot be a restore target; pick another name.",
       "targetPassword": "Target database password",
-      "targetPasswordHint": "Used for this restore only and never persisted in the UI or configuration.",
+      "targetPasswordHint": "Optional: leave empty when the target accepts passwordless/trust authentication. Used for this restore only and never persisted in the UI or configuration.",
       "overwriteExisting": "Overwrite an existing target (protected backup first)",
       "databaseRequired": "Provide the target database name and connection details.",
       "portInvalid": "Port must be an integer between 1 and 65535."

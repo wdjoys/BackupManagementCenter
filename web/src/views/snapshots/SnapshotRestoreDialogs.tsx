@@ -308,7 +308,7 @@ export const SnapshotRestoreDialogs: React.FC<SnapshotRestoreDialogsProps> = ({
                 )}
 
                 <div className="space-y-1.5">
-                  <Label className="text-xs">{t('snapshots.restoreDialog.targetPassword')} *</Label>
+                  <Label className="text-xs">{t('snapshots.restoreDialog.targetPassword')}</Label>
                   <Input
                     type="password"
                     autoComplete="off"

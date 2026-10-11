@@ -261,6 +261,9 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("recv: %w", err)
 		}
+		// 收到服务端消息即证明连接双向可达：此前发出但未确认的运行结果已被写出去，
+		// 不必在换流时重复补发。
+		c.runner.confirmSentResults()
 		if err := c.handleServerMessage(ctx, ss, msg); err != nil {
 			log.Printf("[ERROR] handling message: %v", err)
 		}

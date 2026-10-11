@@ -103,3 +103,45 @@ func TestRunnerKeepsResultWhenReplayAlsoFails(t *testing.T) {
 		t.Fatalf("下一次连接必须补发，pending=%d sent=%d", n, len(live.results()))
 	}
 }
+
+// Send 返回 nil 不等于送达：网络断开时 gRPC 只把消息放进本地写队列就返回 nil，结果
+// 被静默丢弃（实测 `docker network disconnect`），run 卡在 running 直到看门狗租约
+// 到期。发出后没收到任何服务端消息的结果必须在换流时重新入队补发。
+func TestRunnerRequeuesResultSentButUnackedOnStreamSwitch(t *testing.T) {
+	runner := ccReplayRunner(t)
+	dead := &ccReplayStream{} // Send 返回 nil，但服务端收不到（连接已断）
+	runner.SetStream(dead)
+
+	runner.sendRunResult(&bmcv1.RunResult{
+		RunId: "run-lost", Status: bmcv1.RunResult_SUCCEEDED, SnapshotIds: []string{"snap-1"},
+	})
+	if n := len(dead.results()); n != 1 {
+		t.Fatalf("Send 成功时旧流会记下结果，got %d", n)
+	}
+
+	live := &ccReplayStream{}
+	runner.SetStream(live) // 模拟断流后重连
+
+	got := live.results()
+	if len(got) != 1 || got[0].GetRunId() != "run-lost" || len(got[0].GetSnapshotIds()) != 1 {
+		t.Fatalf("未确认的结果必须在重连后补发，got %+v", got)
+	}
+	if n := len(runner.pendingResults); n != 0 {
+		t.Fatalf("补发后队列必须清空，pending=%d", n)
+	}
+}
+
+// 收到服务端消息即证明连接双向可达，此时结果视为已送达：换流不得重复补发。
+func TestRunnerDoesNotReplayConfirmedResult(t *testing.T) {
+	runner := ccReplayRunner(t)
+	runner.SetStream(&ccReplayStream{})
+	runner.sendRunResult(&bmcv1.RunResult{RunId: "run-ok", Status: bmcv1.RunResult_SUCCEEDED})
+
+	runner.confirmSentResults() // 服务端回消息了
+
+	live := &ccReplayStream{}
+	runner.SetStream(live)
+	if got := live.results(); len(got) != 0 {
+		t.Fatalf("已确认送达的结果不应重复补发，got %+v", got)
+	}
+}

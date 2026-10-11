@@ -48,6 +48,15 @@ type Runner struct {
 	// 看门狗超时，期间该仓库的 FIFO 队列被阻塞（实测一次 EOF 让整个仓库队列停摆）。
 	pendingMu      sync.Mutex
 	pendingResults []*bmcv1.AgentMessage
+
+	// unackedMu/unacked 记录已交给当前流发送、但之后还没收到任何服务端消息的结果。
+	// gRPC 的 Send 只把消息放进本地写队列就返回 nil：网络断开时底层 TCP 写失败不会
+	// 让 Send 报错（实测 `docker network disconnect` 后 Send 返回 nil），结果被静默
+	// 丢弃，run 只能等看门狗租约（2 分钟）到期 requeue 才收敛。收到任意服务端消息即
+	// 证明连接双向可达、此前发出的结果已写出去，故清空；换流时仍未确认的结果重新
+	// 入队补发。服务端对已终结 run 的重复结果按幂等处理，重复补发安全。
+	unackedMu sync.Mutex
+	unacked   []*bmcv1.AgentMessage
 }
 
 // SweepStaleRunDirs 回收上一次进程遗留的 run 临时目录（bmc-run-*）。
@@ -95,6 +104,9 @@ func (r *Runner) SetStream(stream bmcv1.AgentControl_ConnectClient) {
 	r.streamMu.Lock()
 	r.stream = stream
 	r.streamMu.Unlock()
+	// 旧流上"发出成功但未获任何服务端消息确认"的结果可能已被静默丢弃（见 unacked
+	// 字段注释），换流时必须重新入队，否则 run 只能等看门狗租约到期。
+	r.requeueUnackedResults()
 	r.flushPendingResults(stream)
 }
 
@@ -467,7 +479,39 @@ func (r *Runner) sendRunResult(result *bmcv1.RunResult) {
 		// 全部排在队列里无法下发。
 		log.Printf("[WARN] send RunResult failed, queued for replay after reconnect: %v", err)
 		r.stashPendingResult(msg)
+		return
 	}
+	// Send 返回 nil 不等于送达（只入本地写队列），收到服务端消息才算确认。
+	r.markResultSent(msg)
+}
+
+// markResultSent 记录刚交给当前流发送的结果，等收到服务端消息才确认送达。
+func (r *Runner) markResultSent(msg *bmcv1.AgentMessage) {
+	r.unackedMu.Lock()
+	r.unacked = append(r.unacked, msg)
+	r.unackedMu.Unlock()
+}
+
+// confirmSentResults 在收到服务端消息后调用：连接双向可达，此前发出的结果已被写出去。
+func (r *Runner) confirmSentResults() {
+	r.unackedMu.Lock()
+	r.unacked = nil
+	r.unackedMu.Unlock()
+}
+
+// requeueUnackedResults 把"发出成功但未获确认"的结果重新入队，等下一次补发。
+func (r *Runner) requeueUnackedResults() {
+	r.unackedMu.Lock()
+	unacked := r.unacked
+	r.unacked = nil
+	r.unackedMu.Unlock()
+	if len(unacked) == 0 {
+		return
+	}
+	log.Printf("[WARN] %d run result(s) sent without server ack before disconnect, queued for replay", len(unacked))
+	r.pendingMu.Lock()
+	r.pendingResults = append(unacked, r.pendingResults...)
+	r.pendingMu.Unlock()
 }
 
 func (r *Runner) stashPendingResult(msg *bmcv1.AgentMessage) {
@@ -492,7 +536,10 @@ func (r *Runner) flushPendingResults(stream bmcv1.AgentControl_ConnectClient) {
 		if err := stream.Send(msg); err != nil {
 			log.Printf("[WARN] replay pending RunResult failed: %v", err)
 			failed = append(failed, msg)
+			continue
 		}
+		// 补发同样只算"发出"：确认送达前仍要能被下一次断流重新入队。
+		r.markResultSent(msg)
 	}
 	if len(failed) > 0 {
 		r.pendingMu.Lock()

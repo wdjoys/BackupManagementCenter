@@ -710,8 +710,14 @@ func (s *sqliteStore) DeleteStorageTarget(ctx context.Context, id string) error 
 	); err != nil {
 		return fmt.Errorf("delete storage target detached repositories: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM storage_targets WHERE id = ?", id); err != nil {
+	res, err := tx.ExecContext(ctx, "DELETE FROM storage_targets WHERE id = ?", id)
+	if err != nil {
 		return fmt.Errorf("delete storage target: %w", err)
+	}
+	// 删除不存在的 id 必须报 ErrNotFound（映射为 404），与计划/仓库的删除保持一致：
+	// 静默 204 会让调用方以为删掉了一个并不存在的资源。
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("delete storage target commit: %w", err)

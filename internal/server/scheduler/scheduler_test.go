@@ -431,6 +431,51 @@ func TestCronFiresOncePerSlot(t *testing.T) {
 	}
 }
 
+// TestCronCursorResetOnScheduleChange 复现并锁住 L1：PUT 改计划后，内存游标来自旧
+// 表达式，若沿用会在旧槽位补触发一次（实测 * * * * * 改成 0 3 * * * 后 14:32:07 的
+// tick 仍建了 scheduled_at=14:32:00Z 的运行），且与按新表达式现算的下次时间不一致。
+func TestCronCursorResetOnScheduleChange(t *testing.T) {
+	fst := newFakeStore(t)
+	fst.plans = append(fst.plans, model.Plan{
+		ID:       "plan-1",
+		Enabled:  true,
+		Schedule: "* * * * *",
+		Timezone: "UTC",
+	})
+	start := newFakeStarter()
+	s := New(fst, start, nil, 0)
+
+	tickAt(s, mustTime("2026-08-22T10:00:00Z")) // 游标初始化为 10:01
+	tickAt(s, mustTime("2026-08-22T10:01:01Z")) // 按时触发一次
+	if len(start.startPlanRunCalls) != 1 {
+		t.Fatalf("expected 1 fire before the change, got %d", len(start.startPlanRunCalls))
+	}
+	if got := s.cursors["plan-1"].next; !got.Equal(mustTime("2026-08-22T10:02:00Z")) {
+		t.Fatalf("cursor after fire = %v, want 10:02:00", got)
+	}
+
+	// 计划改成每天 03:00（等价于 PUT /plans/{id}）。
+	fst.plans[0].Schedule = "0 3 * * *"
+
+	// 旧的分钟槽位 10:02 已到点：游标必须被丢弃重算，本 tick 不触发。
+	tickAt(s, mustTime("2026-08-22T10:02:05Z"))
+	if len(start.startPlanRunCalls) != 1 {
+		t.Fatalf("expected no fire on the stale slot, got %d fires", len(start.startPlanRunCalls))
+	}
+	if got := s.cursors["plan-1"].next; !got.Equal(mustTime("2026-08-23T03:00:00Z")) {
+		t.Fatalf("cursor after schedule change = %v, want next day 03:00", got)
+	}
+
+	// 新表达式的槽位到点后仍要正常触发。
+	tickAt(s, mustTime("2026-08-23T03:00:05Z"))
+	if len(start.startPlanRunCalls) != 2 {
+		t.Fatalf("expected the new schedule to fire, got %d fires", len(start.startPlanRunCalls))
+	}
+	if got := start.startPlanRunCalls[1].scheduledAt.UTC(); !got.Equal(mustTime("2026-08-23T03:00:00Z")) {
+		t.Fatalf("scheduledAt=%v, want 2026-08-23T03:00:00Z", got)
+	}
+}
+
 // TestCronToleratesDuplicateRun verifies that ErrDuplicateRun from the
 // starter is logged (not fatal) and the cursor still advances.
 func TestCronToleratesDuplicateRun(t *testing.T) {

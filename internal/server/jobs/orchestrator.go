@@ -451,6 +451,14 @@ func (o *Orchestrator) CancelRun(ctx context.Context, runID string) error {
 
 	switch run.Status {
 	case model.RunQueued:
+		// 恢复不能只改 run 状态：restore_requests 行必须一起终结，否则该仓库被
+		// "未安全终结的恢复"永久阻塞（RepositoryRestoreBlocked → 后续 run 全部暂缓、
+		// 快照列表排队超时），而 resolve 接口只受理 manual_recovery_required /
+		// rollback_failed，queued 阶段无法解除，只能手工改库。dispatcher 的恢复取消
+		// 路径已经把 queued 恢复终结为 cancelled+failed 阶段。
+		if run.Operation == model.OpRestore {
+			return o.Disp.Cancel(ctx, runID)
+		}
 		return o.Store.TransitionRun(ctx, runID, run.Status, model.RunCancelled,
 			func(r *model.Run) {
 				now := time.Now().UTC()

@@ -158,6 +158,8 @@ export default {
     "noUpcomingPlans": "暂无即将调度的计划",
     "lastCheck": "上次检查",
     "allReposHealthy": "所有仓库状态正常",
+    "reposError": "{{count}} 个仓库处于错误状态",
+    "reposError_desc": "存在不可用的备份仓库，请在「存储」页查看失败原因并处理",
     "loadFailed": "加载仪表盘数据失败，请确认服务端是否在运行。",
     "subtitle": "系统状态、Agent 与调度任务概览",
     "agents_active_desc": "当前正常上报状态的 Agent 数量",

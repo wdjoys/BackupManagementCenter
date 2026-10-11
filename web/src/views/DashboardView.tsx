@@ -32,6 +32,7 @@ export const DashboardView: React.FC = () => {
     runs_24h_failed: 0,
     next_scheduled: [],
     repos_needing_check: [],
+    repos_error: 0,
   })
 
   const loadData = async () => {
@@ -245,6 +246,12 @@ export const DashboardView: React.FC = () => {
                   </TableBody>
                 </Table>
               </div>
+            ) : dashboard.repos_error > 0 ? (
+              <AppEmptyState
+                icon={<AlertTriangle className="h-6 w-6 text-rose-600 dark:text-rose-400" aria-hidden="true" />}
+                title={t('dashboard.reposError', { count: dashboard.repos_error })}
+                description={t('dashboard.reposError_desc')}
+              />
             ) : (
               <AppEmptyState
                 title={t('dashboard.allReposHealthy')}

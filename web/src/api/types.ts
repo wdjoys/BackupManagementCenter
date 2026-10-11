@@ -216,6 +216,7 @@ export interface Dashboard {
   runs_24h_failed: number
   next_scheduled: ScheduledPlan[]
   repos_needing_check: RepoCheck[]
+  repos_error: number
 }
 
 export interface ScheduledPlan {

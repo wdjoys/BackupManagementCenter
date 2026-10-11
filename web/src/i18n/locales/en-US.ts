@@ -158,6 +158,8 @@ export default {
     "noUpcomingPlans": "No upcoming scheduled plans",
     "lastCheck": "Last Check",
     "allReposHealthy": "All repositories are healthy",
+    "reposError": "Repositories in error state: {{count}}",
+    "reposError_desc": "Some backup repositories are unavailable; check the Storage page for the reason",
     "loadFailed": "Failed to load dashboard data. Is the server running?",
     "subtitle": "System overview, agents, and schedules",
     "agents_active_desc": "Agents currently reporting status",

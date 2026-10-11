@@ -97,5 +97,19 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		out["repos_needing_check"] = list
 	}
 
+	// 处于 error 的仓库必须让仪表盘知道：否则「待检查仓库」为空时会谎报
+	// 「所有仓库状态正常」，而实际上有仓库已不可用。
+	if all, err := s.ST.ListRepositories(ctx); err == nil {
+		errCount := 0
+		for i := range all {
+			if all[i].Status == "error" {
+				errCount++
+			}
+		}
+		out["repos_error"] = errCount
+	} else {
+		out["repos_error"] = 0
+	}
+
 	writeJSON(w, http.StatusOK, out)
 }

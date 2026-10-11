@@ -158,6 +158,9 @@ jobs:
           file: ./${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: true
+          # 构建版本必须可辨识（基础版本 + 提交 SHA），否则不同构建上报相同 version。
+          build-args: |
+            VERSION=0.1.1+${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image }}

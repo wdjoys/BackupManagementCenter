@@ -7,8 +7,11 @@ else
 PNPM := pnpm
 endif
 GOFLAGS ?=
-VERSION ?= 0.1.0
-VERSION := $(if $(VERSION),$(VERSION),0.1.0)
+# 构建版本 = 基础版本 + 构建标识（git describe）。构建必须可辨识：此前恒定 0.1.0，
+# 09-29 与 10-11 两个 agent 镜像上报完全相同的 version，服务端无法区分构建，
+# 也就无法对已知有缺陷的旧构建发升级提示。无 git（导出源码构建）时回落基础版本。
+VERSION ?= $(shell v=0.1.1; d=$$(git describe --tags --always --dirty 2>/dev/null); if [ -n "$$d" ]; then echo "$$v+$$d"; else echo "$$v"; fi)
+VERSION := $(if $(VERSION),$(VERSION),0.1.1)
 GO_LDFLAGS := -s -w -X backupmanagementcenter/internal/version.Version=$(VERSION)
 WEB_DIST := internal/server/webui/dist
 
@@ -42,10 +45,10 @@ build-linux: web-build
 docker-build: docker-build-server docker-build-agent
 
 docker-build-server:
-	docker build -f Dockerfile.server -t backup-management-center-server:latest .
+	docker build -f Dockerfile.server --build-arg VERSION=$(VERSION) -t backup-management-center-server:latest .
 
 docker-build-agent:
-	docker build -f Dockerfile.agent -t backup-management-center-agent:latest .
+	docker build -f Dockerfile.agent --build-arg VERSION=$(VERSION) -t backup-management-center-agent:latest .
 
 docker-up:
 	docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build

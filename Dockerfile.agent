@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1.7
 
 FROM golang:1.27-bookworm AS go-build
-ARG VERSION=0.1.0
+# 构建版本：make docker-build-agent 传 --build-arg VERSION=$(VERSION)（基础版本+git
+# 描述），未传时回落基础版本。0.1.0 是 2026-09-29 遗留构建的版本号：该批构建误报
+# safe_database_restore=true，服务端自 0.1.1 起按版本下限拒绝其破坏性数据库恢复。
+ARG VERSION=0.1.1
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 COPY go.mod go.sum ./

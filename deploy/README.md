@@ -128,6 +128,37 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 - **计划保留策略的执行节奏（重要）**：计划的 `retention`（如 `keep_last`）**不在每次备份后执行**，而是由调度器的日常维护任务派发（`forget` 不带 prune，按仓库排队、与在途备份串行），且**每仓库 24 小时内至多一次**。因此高频计划（例如每分钟）在两次保留之间会持续累积快照：实测 `keep_last=1` 的每分钟计划在 15 分钟窗口内快照由 1 增至 16（零清理），按此节奏一天可达约 1440 份。需要即时清理时可手动删除单份快照（`DELETE /api/v1/repositories/{repo}/snapshots/{snapshotID}`）或清理整个计划的备份（`POST /api/v1/plans/{id}/backups/delete`）。保留被跳过的原因（仓库有在途备份 / 24h 内已执行过保留 / Agent 离线）现在会写入服务端日志，同一仓库同一原因每小时至多一条，便于判断"保留为何没跑"。
 - **孤儿扫描退避（`0015_snapshot_cleanup_backoff.sql`）**：`snapshot_cleanup_state` 新增 `next_attempt_at` 列。此前孤儿扫描失败后状态表没有退避字段，`ClearSnapshotCleanupScan` 传入的退避时间被静默忽略，导致扫描持续失败的仓库在每个 scheduler tick（15 秒）重发一次 `snapshots`，7 天可累积数万 run 与数百万行日志，并最终因 restic/rclone 进程耗尽出现 `fork/exec ... resource temporarily unavailable`。升级后扫描失败按 1 小时退避重试，成功则清除退避并按 24 小时周期扫描。迁移为纯增量加列，可重复启动安全。
 
+### 数据库备份权限前置校验（行为收紧）
+
+数据库备份（MySQL/MariaDB、MongoDB）在导出前先核对账号授权，把此前「静默丢对象/丢数据」的场景改为**明确失败**。失败 run 记为 `backup_failed`、**不产生快照**（不再留下半成品快照），失败原因已并入 run 的 `error_message`（`GET /api/v1/runs/{id}`）。
+
+**MySQL / MariaDB 单库备份**（导出前校验，任一项不满足即拒绝导出）：
+
+- **仅表级 `SELECT`（未覆盖整库）**：账号只被授予库内部分表的表级 `SELECT` 时拒绝导出，消息列出已授权表并给出库级授权建议——此前这类账号会正常退出（rc=0）却静默漏掉未授权表的数据（实测：授权 `db.t1`/`db.t3` 时 `t2` 的行数无声消失）。
+- **缺 `TRIGGER`**：拒绝导出，消息给出 `GRANT TRIGGER ON \`<库>\`.* TO '<账号>';`。实测缺 `TRIGGER` 时 `mysqldump --triggers` 仍以 rc=0 结束且无任何告警，触发器无声消失。
+- **缺 `EVENT`**：拒绝导出，消息给出 `GRANT EVENT ON \`<库>\`.* TO '<账号>';`。缺 `EVENT` 时 `SHOW EVENTS` 本就是响亮失败（1044），提前拒绝只是把报错前移。
+- **库中存在可见视图但缺 `SHOW VIEW`**：拒绝导出，消息给出 `GRANT SHOW VIEW ON \`<库>\`.* TO '<账号>';` 与 `--ignore-table=<库>.<视图>` 的降级写法（`mysqldump` 没有 `--skip-views`，缺权限时视图无法导出）。
+- **例程（routines）无法证明可见性**：**仅 warn、不拒绝**——`information_schema.ROUTINES` 只对拥有全局 `SHOW_ROUTINE`（MySQL 8.0.20+）或全局 `SELECT` 的账号可见，硬拒绝会误伤大量不含例程的库以及没有 `SHOW_ROUTINE` 的 MariaDB。要完整导出例程需授予全局 `SHOW_ROUTINE` 或全局 `SELECT`，或用 `--skip-routines` 显式声明本次不含例程。
+- **整实例（`database=all`）无法枚举各库授权**：**仅 warn、不拒绝**——未授权的库可能静默丢失触发器/视图或导出事件失败，消息给出对应的全局 `GRANT` 建议。
+- **降级/逃生通道（计划 `extra_args`）**：`--skip-triggers`、`--skip-events`、`--skip-routines` 显式声明本次不含该类对象；`--tables=<表名逗号列表>`、`--ignore-table=<库.表>` 显式限定/排除表与视图，此时**不再按权限拒绝**。注意 `--tables=` 不接受空值；`database=all` 与 `--tables=` 不能同时使用。
+
+**MongoDB**：
+
+- `database=all` 在凭据不具备集群级角色时**拒绝导出**，建议授予 `backup` 角色（`db.grantRolesToUser(<账号>, [{role:"backup", db:"admin"}])`）或改用 `root`。注意 `readAnyDatabase`/`readWriteAnyDatabase`/`clusterMonitor` **不足以**完成整实例导出：它们能看到全部库，但读不到 `admin` 系统集合，`mongodump` 会在 `error counting admin.system.roles` 处响亮失败。
+- 单库模式下账号仅被授予**部分集合**权限时是**响亮失败**（不会静默缺集合）。
+- `mongodump`/`mongorestore` 的失败原因已并入 run 的 `error_message`（此前只出现在 run 日志流里）。
+
+**通用**：
+
+- 失败 run 的 `error_message` 已并入 DB 工具 stderr 的关键行（过长的单行会截断），运维可直接从 `GET /api/v1/runs/{id}` 读到失败原因，不必翻日志流。
+- 备份失败不再产生半成品快照。
+
+**升级影响与回滚**：
+
+- 这是**行为收紧**（修复此前的静默数据丢失），**无数据库 schema、密文格式或 API/proto 契约变更，无需迁移**。
+- 升级后若既有数据库计划因上述权限校验开始失败，按错误消息中的 `GRANT` 语句授予权限，或在该计划 `extra_args` 中用 `--skip-*` / `--tables=` / `--ignore-table=` 显式降级后重试。
+- 回滚到上一版本不会损坏数据，但会恢复「静默丢失对象/数据」的旧行为；已按新版本提示授予的权限在旧版本下同样有效，无需回退。
+
 ## 6. 跨 Agent 恢复与数据库恢复安全边界
 
 「快照与恢复」页面支持把来源 Agent 仓库中的快照恢复到**另一个在线 Agent**（目标 Agent），文件与单库数据库均适用。

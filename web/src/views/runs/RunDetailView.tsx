@@ -106,19 +106,24 @@ export const RunDetailView: React.FC = () => {
   const terminalRef = useRef(false)
   const reconnectTimerRef = useRef<number | null>(null)
   const logsAbortControllerRef = useRef<AbortController | null>(null)
+  // 切换 run 时，上一个 run 的慢响应不得覆盖新 run 的详情。
+  const runReqRef = useRef(0)
 
   const loadRun = async () => {
     if (!id) return
+    const reqId = ++runReqRef.current
     setLoading(true)
     setError(null)
     try {
       const data = await apiGet<Run>(`/runs/${id}`)
+      if (reqId !== runReqRef.current) return
       setRun(data)
       terminalRef.current = isTerminal(data.status)
       if (data.operation === 'restore') {
         // 恢复请求携带 phase 与保护快照 ID，用于展示阻塞状态与人工解除入口。
         try {
           const requests = await apiGet<RestoreRequestItem[]>('/restores', { limit: 200 })
+          if (reqId !== runReqRef.current) return
           setRestoreRequest(requests.find((r) => r.run_id === id) ?? null)
         } catch {
           setRestoreRequest(null)
@@ -126,9 +131,12 @@ export const RunDetailView: React.FC = () => {
       }
     } catch (err: unknown) {
       if (isAbortError(err)) return
+      if (reqId !== runReqRef.current) return
       setError(isApiClientError(err) ? err.message : t('runDetail.loadFailed'))
     } finally {
-      setLoading(false)
+      if (reqId === runReqRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -227,6 +235,16 @@ export const RunDetailView: React.FC = () => {
   useEffect(() => {
     if (!id || id === 'undefined' || id === 'null') return
 
+    // 同一个组件实例内切换 run（/runs/A -> /runs/B）：先清掉上一个 run 的
+    // 详情、日志、终态标记与重连计数，避免上一个 run 的日志串台/残留，
+    // 也避免上一个 run 的终态让新 run 断开后不再重连。
+    runReqRef.current += 1
+    setRun(null)
+    setLogs([])
+    setRestoreRequest(null)
+    terminalRef.current = false
+    reconnectCountRef.current = 0
+
     loadRun()
     loadPlansAndAgents()
     loadInitialLogs()
@@ -314,6 +332,7 @@ export const RunDetailView: React.FC = () => {
 
     return () => {
       active = false
+      runReqRef.current += 1
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = null

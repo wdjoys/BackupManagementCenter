@@ -50,9 +50,11 @@ func (OSExecutor) Run(ctx context.Context, cmd backup.Cmd, onStdout func(line st
 	}
 
 	// Start the command
-	if err := c.Start(); err != nil {
+	release, err := StartTracked(c)
+	if err != nil {
 		return -1, err
 	}
+	defer release()
 
 	// Read stdout and stderr concurrently. A read failure must be reported:
 	// silently abandoning the pipe blocks the child on a full pipe forever, so
@@ -116,11 +118,11 @@ func CancelFunc(cmd *exec.Cmd) {
 	if runtime.GOOS == "windows" {
 		// On Windows, kill the process tree
 		kill := exec.Command("taskkill", "/F", "/T", "/PID", itoa(cmd.Process.Pid))
-		_ = kill.Run()
+		_ = RunTracked(kill)
 	} else {
 		// On POSIX, send SIGTERM to the process group
 		sigCmd := exec.Command("kill", "-TERM", itoa(cmd.Process.Pid))
-		_ = sigCmd.Run()
+		_ = RunTracked(sigCmd)
 	}
 }
 

@@ -52,6 +52,10 @@ func main() {
 	log.SetOutput(agentLogSink)
 	log.Printf("[INFO] bmc-agent starting version=%s", version.Version)
 
+	// 容器内 agent 是 PID 1：必须回收 reparent 到自己的孤儿子进程（restic 退出后
+	// 留下的 rclone），否则它们永久滞留为僵尸并最终耗尽 PID 表。
+	agent.StartOrphanReaper()
+
 	cfg, err := config.LoadAgent()
 	if err != nil {
 		log.Fatalf("[FATAL] %v", err)

@@ -110,6 +110,12 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 如需在主机直接作为 systemd 服务运行，可参考 `deploy/systemd/`：
 - `deploy/systemd/bmc-server.service`：默认读取 `/var/lib/bmc/master.key`（缺失时自动生成）；反向代理模式下配置环境变量 `BMC_TLS_MODE=none`。
 - `deploy/systemd/bmc-agent.service`：推荐 `BMC_SERVER_GRPC_URL` 使用带 scheme 的格式（如 `https://...` 或 `http://...`）。
+- **运行前先建好数据目录**：Server 单元以 `User=bmc` 运行且 `WorkingDirectory=/var/lib/bmc`、`ReadWritePaths=/var/lib/bmc`，目录不存在时单元直接启动失败；Agent 单元同理需要 `/var/lib/bmc-agent` 可写：
+  ```sh
+  sudo install -d -o bmc -g bmc -m 0700 /var/lib/bmc
+  sudo install -d -o bmc-agent -g bmc-agent -m 0700 /var/lib/bmc-agent
+  ```
+- 两个单元都通过 `systemctl edit <unit>` 的 drop-in 提供证书/令牌等敏感配置（单元内只内置非敏感默认值），与 Compose 模板的差异仅在于不使用容器卷。
 
 ## 5. 运维与升级
 

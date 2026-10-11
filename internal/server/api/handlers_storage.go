@@ -237,16 +237,19 @@ func (s *Server) repoView(r *http.Request, repo *model.Repository) repositoryVie
 		v.StorageTargetName = t.Name
 	}
 	// 最近一次失败 run 的原因（按 queued_at 倒序取最新一条）。仓库处于 error 时
-	// 这是用户唯一能看到根因的地方。
-	if runs, err := s.ST.ListRuns(r.Context(), store.RunFilter{
-		RepositoryID: repo.ID,
-		Statuses:     []string{model.RunFailed},
-		Limit:        1,
-	}); err == nil && len(runs) > 0 {
-		if msg := strings.TrimSpace(runs[0].ErrorMessage); msg != "" {
-			v.ErrorMessage = msg
-		} else {
-			v.ErrorMessage = runs[0].ErrorCode
+	// 这是用户唯一能看到根因的地方；仓库已恢复 ready 后不得再带上过期原因，
+	// 否则 API 消费者会把历史失败当成当前故障。
+	if repo.Status == "error" {
+		if runs, err := s.ST.ListRuns(r.Context(), store.RunFilter{
+			RepositoryID: repo.ID,
+			Statuses:     []string{model.RunFailed},
+			Limit:        1,
+		}); err == nil && len(runs) > 0 {
+			if msg := strings.TrimSpace(runs[0].ErrorMessage); msg != "" {
+				v.ErrorMessage = msg
+			} else {
+				v.ErrorMessage = runs[0].ErrorCode
+			}
 		}
 	}
 	return v

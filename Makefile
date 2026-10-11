@@ -71,8 +71,10 @@ tidy:
 
 ## dev-server: local Server for the Vite dev proxy；不要设置 BMC_PUBLIC_URL，
 ## 否则 Origin 必须等于代理目标（http://127.0.0.1:8080），默认按 Host 同源校验。
+## BMC_DEV_INSECURE=1 是必需的：本地开发没有 TLS 证书，否则启动即以
+## "BMC_TLS_CERT_FILE and BMC_TLS_KEY_FILE are required" 退出。
 dev-server:
-	BMC_DATA_DIR=./data BMC_GRPC_ADDR=:9091 $(GO) run ./cmd/server
+	BMC_DATA_DIR=./data BMC_GRPC_ADDR=:9091 BMC_DEV_INSECURE=1 $(GO) run ./cmd/server
 
 dev-agent:
 	BMC_SERVER_GRPC_URL=127.0.0.1:9091 BMC_SERVER_TLS=0 $(GO) run ./cmd/agent

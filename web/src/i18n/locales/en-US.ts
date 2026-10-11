@@ -25,6 +25,7 @@ export default {
     "all": "All",
     "load_failed": "Failed to load",
     "preference": "Preference",
+    "server_version": "Server version",
     "removeTag": "Remove {{tag}}",
     "toggle_menu": "Toggle menu",
     "previous": "Previous",

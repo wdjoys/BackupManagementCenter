@@ -42,8 +42,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   login: async (username: string, password: string) => {
     clearBrowseCache()
-    await apiPost<AuthUser>('/auth/login', { username, password })
-    set({ me: { username }, isLoggedIn: true })
+    const user = await apiPost<AuthUser>('/auth/login', { username, password })
+    set({ me: user, isLoggedIn: true })
   },
 
   logout: async () => {

@@ -68,6 +68,8 @@ export const MainLayout: React.FC = () => {
 
   const currentNav = NAV_ITEMS.find((item) => location.pathname.startsWith(item.path))
   const pageTitle = currentNav ? t(currentNav.titleKey) : ''
+  // 服务端构建版本由 /auth/me、/auth/login 返回；缺失时整块不渲染（不显示空白或裸 key）。
+  const version = me?.version?.trim() || ''
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">
@@ -117,7 +119,11 @@ export const MainLayout: React.FC = () => {
         </nav>
 
         <div className="p-3.5 border-t border-border flex items-center justify-between">
-          <span className="text-xs text-muted-foreground font-mono">v0.1.0</span>
+          {version && (
+            <span className="text-xs text-muted-foreground font-mono" title={t('common.server_version')}>
+              {version}
+            </span>
+          )}
           <div className="flex items-center gap-1.5">
             <ThemeToggle compact />
             <LocaleSwitcher compact />

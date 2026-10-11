@@ -9,6 +9,7 @@ import (
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/server/auth"
 	"backupmanagementcenter/internal/server/store"
+	"backupmanagementcenter/internal/version"
 )
 
 // authMiddleware resolves sessions into context.
@@ -138,7 +139,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	csrf := auth.SetCSRFCookie(w, r)
 	auth.SetSessionCookie(w, r, token, time.Now().Add(7*24*time.Hour))
 	s.Jobs.Audit(r.Context(), "admin", admin.ID, "auth.login", "admin", admin.ID, nil)
-	writeJSON(w, http.StatusOK, map[string]string{"username": admin.Username, "csrf": csrf})
+	writeJSON(w, http.StatusOK, map[string]string{"username": admin.Username, "csrf": csrf, "version": version.Version})
 }
 
 // POST /auth/logout
@@ -166,7 +167,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": admin.ID, "username": admin.Username})
+	writeJSON(w, http.StatusOK, map[string]string{"id": admin.ID, "username": admin.Username, "version": version.Version})
 }
 
 // mapStoreErr converts domain errors into HTTP responses; returns true when

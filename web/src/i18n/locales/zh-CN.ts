@@ -25,6 +25,7 @@ export default {
     "all": "全部",
     "load_failed": "加载失败",
     "preference": "首选项",
+    "server_version": "服务端版本",
     "removeTag": "移除 {{tag}}",
     "toggle_menu": "切换菜单",
     "previous": "上一页",

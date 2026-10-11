@@ -249,6 +249,8 @@ export interface SetupStatus {
 
 export interface AuthUser {
   username: string
+  /** 服务端构建版本（后端注入），取不到时省略。 */
+  version?: string
 }
 
 export interface TelegramSettings {

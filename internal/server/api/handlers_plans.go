@@ -413,16 +413,19 @@ func (s *Server) handleDeletePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 仓库不可达（error/离线/远端丢失）时快照列表会直接失败。此时必须仍然允许删除计划：
+	// 否则 error 仓库会锁死「计划→仓库→存储目标」三级删除（计划删不掉 → 仓库仍被引用 →
+	// 目标删不掉）。清理失败只记日志，不阻塞删除。
 	snapshots, _, _, err := s.Jobs.SnapshotsWithOptions(r.Context(), plan.RepositoryID, plan.AgentID, true)
 	if err != nil {
-		s.jobsErr(w, err)
-		return
-	}
-	for _, snapshot := range snapshots {
-		for _, tag := range snapshot.Tags {
-			if tag == "plan:"+id {
-				writeErr(w, http.StatusConflict, "plan_has_snapshots", "plan still has snapshots")
-				return
+		logf("[WARN] plan delete: snapshot cleanup skipped plan=%s repository=%s: %v", id, plan.RepositoryID, err)
+	} else {
+		for _, snapshot := range snapshots {
+			for _, tag := range snapshot.Tags {
+				if tag == "plan:"+id {
+					writeErr(w, http.StatusConflict, "plan_has_snapshots", "plan still has snapshots")
+					return
+				}
 			}
 		}
 	}

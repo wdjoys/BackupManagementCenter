@@ -119,13 +119,17 @@ export const MainLayout: React.FC = () => {
           })}
         </nav>
 
-        <div className="p-3.5 border-t border-border flex items-center justify-between">
+        <div className="p-3.5 border-t border-border flex items-center justify-between gap-2">
           {version && (
-            <span className="text-xs text-muted-foreground font-mono" title={t('common.server_version')}>
+            // 版本含构建标识（0.1.1+<commit>）可能很长：截断显示，完整值走 title。
+            <span
+              className="min-w-0 truncate text-xs text-muted-foreground font-mono"
+              title={`${t('common.server_version')}: ${version}`}
+            >
               {version}
             </span>
           )}
-          <div className="flex items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1.5">
             <ThemeToggle compact />
             <LocaleSwitcher compact />
           </div>

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -26,6 +27,31 @@ const (
 	idleTTL    = 12 * time.Hour
 	absoluteTL = 7 * 24 * time.Hour
 )
+
+type requestPolicyKey struct{}
+type requestPolicy struct{ forceSecure bool; publicOrigin string }
+
+// WithRequestPolicy marks requests received behind a trusted reverse proxy.
+// The public URL is used for Secure cookies and strict Origin validation.
+func WithRequestPolicy(r *http.Request, publicURL string) *http.Request {
+	var policy requestPolicy
+	if u, err := url.Parse(publicURL); err == nil && u.Scheme != "" && u.Host != "" {
+		// Secure cookie 只在公网入口确实是 https 时强制。此前只要 BMC_PUBLIC_URL
+		// 非空就强制 Secure：明文 http 部署（BMC_TLS_MODE=none + 反代/直连）下浏览器
+		// 会丢弃会话 cookie，登录成功后每个请求都 401，形成"登录循环"的配置陷阱。
+		// 保留 http 而不在校验里拒绝：本部署（http://<host>:18080）就是明文入口。
+		policy.forceSecure = u.Scheme == "https"
+		policy.publicOrigin = strings.TrimRight(u.Scheme+"://"+u.Host, "/")
+	}
+	return r.WithContext(context.WithValue(r.Context(), requestPolicyKey{}, policy))
+}
+
+func policyFor(r *http.Request) requestPolicy {
+	if p, ok := r.Context().Value(requestPolicyKey{}).(requestPolicy); ok { return p }
+	return requestPolicy{}
+}
+
+func secureRequest(r *http.Request) bool { return r.TLS != nil || policyFor(r).forceSecure }
 
 // SessionStore is the session-facing slice of store.Store.
 type SessionStore interface {
@@ -133,7 +159,9 @@ var ErrSessionExpired = errors.New("auth: session expired")
 func Login(ctx context.Context, st SessionStore, getAdmin func(ctx context.Context, username string) (*model.Admin, error), updateLogin func(ctx context.Context, id string, at time.Time) error, username, password string) (token string, admin *model.Admin, err error) {
 	admin, err = getAdmin(ctx, username)
 	if err != nil {
-		return "", nil, ErrInvalidCredentials
+		// 调用方负责把“用户不存在”转换为 ErrInvalidCredentials；
+		// 其余错误（数据库/连接故障）必须原样上抛，不能被伪装成凭据错误。
+		return "", nil, err
 	}
 	if !VerifyPassword(password, admin.PasswordHash) {
 		return "", nil, ErrInvalidCredentials
@@ -204,7 +232,7 @@ func SetSessionCookie(w http.ResponseWriter, r *http.Request, token string, expi
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   secureRequest(r),
 		Expires:  expires,
 	})
 }
@@ -216,10 +244,22 @@ func ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   secureRequest(r),
 		MaxAge:   -1,
 	})
 }
+func ClearCSRFCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CSRFCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   secureRequest(r),
+		MaxAge:   -1,
+	})
+}
+
 
 func SetCSRFCookie(w http.ResponseWriter, r *http.Request) (csrf string) {
 	csrf, _ = newToken()
@@ -229,7 +269,7 @@ func SetCSRFCookie(w http.ResponseWriter, r *http.Request) (csrf string) {
 		Path:     "/",
 		HttpOnly: false, // JS must read it to echo X-CSRF-Token
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   secureRequest(r),
 		Expires:  time.Now().Add(absoluteTL),
 	})
 	return csrf
@@ -242,11 +282,11 @@ func CheckCSRF(r *http.Request) bool {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return true
 	}
-	if origin := r.Header.Get("Origin"); origin != "" {
-		host := r.Host
-		if !sameOrigin(origin, host) {
-			return false
-		}
+	origin := r.Header.Get("Origin")
+	if p := policyFor(r); p.publicOrigin != "" {
+		if origin == "" || !strings.EqualFold(strings.TrimRight(origin, "/"), p.publicOrigin) { return false }
+	} else if origin != "" {
+		if !sameOrigin(origin, r.Host) { return false }
 	}
 	c, err := r.Cookie(CSRFCookie)
 	if err != nil || c.Value == "" {

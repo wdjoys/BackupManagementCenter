@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -9,18 +8,16 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/server/webui"
 )
 
 var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
-// nextFireFor computes the next fire time for a plan directly from its
-// schedule expression and timezone (schedule cursors are scheduler-internal).
-func (s *Server) nextFireFor(ctx context.Context, planID string) (time.Time, error) {
-	p, err := s.ST.GetPlan(ctx, planID)
-	if err != nil {
-		return time.Time{}, err
-	}
+// nextFireFromPlan computes the next fire time from the plan's own schedule and
+// timezone. 仪表盘与计划列表/详情共用这一处现算逻辑，避免两处各算一套而互相矛盾
+// （调度游标是调度器内部状态，见 internal/server/scheduler）。
+func nextFireFromPlan(p *model.Plan, now time.Time) (time.Time, error) {
 	loc, err := time.LoadLocation(p.Timezone)
 	if err != nil {
 		return time.Time{}, err
@@ -29,10 +26,10 @@ func (s *Server) nextFireFor(ctx context.Context, planID string) (time.Time, err
 	if err != nil {
 		return time.Time{}, err
 	}
-	return sched.Next(time.Now().In(loc)).UTC(), nil
+	return sched.Next(now.In(loc)).UTC(), nil
 }
 
-// spaHandler serves the embedded Vue app with index.html fallback.
+// spaHandler serves the embedded web UI with index.html fallback.
 func spaHandler() http.Handler {
 	sub, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {

@@ -9,11 +9,20 @@ import (
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/server/auth"
 	"backupmanagementcenter/internal/server/store"
+	"backupmanagementcenter/internal/version"
 )
 
 // authMiddleware resolves sessions into context.
 func authMiddleware(s *Server) func(http.Handler) http.Handler {
-	return auth.Middleware(s.ST)
+	base := auth.Middleware(s.ST)
+	return func(next http.Handler) http.Handler {
+		return base(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if s.PublicURL != "" {
+				r = auth.WithRequestPolicy(r, s.PublicURL)
+			}
+			next.ServeHTTP(w, r)
+		}))
+	}
 }
 
 // requireAuth rejects unauthenticated requests and enforces CSRF.
@@ -45,6 +54,10 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 
 // POST /setup — creates the one and only admin; 404 afterwards forever.
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if ok, retryAfter := s.allowAuthAttempt(r); !ok {
+		writeRateLimited(w, retryAfter)
+		return
+	}
 	has, err := s.ST.HasAdmin(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -81,6 +94,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 
 // POST /auth/login — sets session + csrf cookies.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if ok, retryAfter := s.allowAuthAttempt(r); !ok {
+		writeRateLimited(w, retryAfter)
+		return
+	}
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -95,26 +112,41 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	token, admin, err := auth.Login(
 		r.Context(),
 		s.ST,
-		s.ST.GetAdminByUsername,
+		func(ctx context.Context, username string) (*model.Admin, error) {
+			admin, err := s.ST.GetAdminByUsername(ctx, username)
+			// 用户不存在等同于凭据错误（不泄露账号是否存在）；
+			// 其他错误（数据库故障等）原样上抛，由下方映射为 500。
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, auth.ErrInvalidCredentials
+			}
+			return admin, err
+		},
 		func(ctx context.Context, id string, at time.Time) error {
 			return s.ST.UpdateAdminLastLogin(ctx, id, at)
 		},
 		body.Username, body.Password,
 	)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "invalid_credentials", "wrong username or password")
+		// 凭据错误返回 401；会话/数据库等基础设施错误必须暴露为 500，
+		// 否则数据库故障会被伪装成“用户名或密码错误”，误导排障。
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			writeErr(w, http.StatusUnauthorized, "invalid_credentials", "wrong username or password")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	csrf := auth.SetCSRFCookie(w, r)
 	auth.SetSessionCookie(w, r, token, time.Now().Add(7*24*time.Hour))
 	s.Jobs.Audit(r.Context(), "admin", admin.ID, "auth.login", "admin", admin.ID, nil)
-	writeJSON(w, http.StatusOK, map[string]string{"username": admin.Username, "csrf": csrf})
+	writeJSON(w, http.StatusOK, map[string]string{"username": admin.Username, "csrf": csrf, "version": version.Version})
 }
 
 // POST /auth/logout
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	auth.Logout(r.Context(), s.ST, r)
 	auth.ClearSessionCookie(w, r)
+	auth.ClearCSRFCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -135,7 +167,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": admin.ID, "username": admin.Username})
+	writeJSON(w, http.StatusOK, map[string]string{"id": admin.ID, "username": admin.Username, "version": version.Version})
 }
 
 // mapStoreErr converts domain errors into HTTP responses; returns true when
@@ -144,8 +176,12 @@ func mapStoreErr(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, store.ErrPlanHasSnapshots):
+		writeErr(w, http.StatusConflict, "plan_has_snapshots", "plan still has snapshots")
 	case errors.Is(err, store.ErrInUse):
 		writeErr(w, http.StatusConflict, "conflict", "resource still referenced")
+	case errors.Is(err, store.ErrDuplicateStorageTarget):
+		writeErr(w, http.StatusConflict, "duplicate_storage_target", "a storage target with this name already exists")
 	case errors.Is(err, store.ErrDuplicateRun):
 		writeErr(w, http.StatusConflict, "duplicate_slot", "run already queued for this slot")
 	case errors.Is(err, store.ErrInvalidTransition):

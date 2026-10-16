@@ -1,21 +1,12 @@
 import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
-import AutoImport from 'unplugin-auto-import/vite'
-import Components from 'unplugin-vue-components/vite'
-import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
 
 export default defineConfig({
   plugins: [
-    vue(),
-    AutoImport({
-      resolvers: [ElementPlusResolver()],
-      dts: resolve(__dirname, 'src/auto-imports.d.ts'),
-    }),
-    Components({
-      resolvers: [ElementPlusResolver()],
-      dts: resolve(__dirname, 'src/components.d.ts'),
-    }),
+    react(),
+    tailwindcss(),
   ],
   resolve: {
     alias: {
@@ -23,16 +14,31 @@ export default defineConfig({
     },
   },
   server: {
+    port: 5178,
+    host: '127.0.0.1',
     proxy: {
       '/api/v1': {
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
+        // 浏览器 Origin 是 127.0.0.1:5178；后端 CSRF 要求它与代理目标一致。
+        // 因此开发 Server 不要设置 BMC_PUBLIC_URL，让校验退回 Host 同源。
+        configure: (proxy) => {
+          proxy.on('proxyReq', (request) => {
+            request.setHeader('Origin', 'http://127.0.0.1:8080')
+          })
+        },
       },
       '/ws': {
         target: 'ws://127.0.0.1:8080',
         ws: true,
         changeOrigin: true,
-      },
+        // 后端 WebSocket 同样执行 host-based Origin 校验。
+        configure: (proxy) => {
+          proxy.on('proxyReqWs', (request) => {
+            request.setHeader('Origin', 'http://127.0.0.1:8080')
+          })
+        },
+      }
     },
   },
   build: {

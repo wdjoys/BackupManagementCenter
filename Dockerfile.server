@@ -3,31 +3,42 @@
 FROM node:22-bookworm-slim AS web-build
 ENV CI=true COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /src/web
-COPY web/ ./
-RUN corepack enable && \
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    corepack enable && \
     pnpm config set registry https://registry.npmmirror.com && \
     pnpm config set minimum-release-age 0 && \
     pnpm install --frozen-lockfile --ignore-scripts && \
-    pnpm rebuild esbuild && \
-    pnpm run build
+    pnpm rebuild esbuild
+COPY web/ ./
+RUN pnpm run build
 
 FROM golang:1.27-bookworm AS go-build
+# 构建版本：make docker-build-server 传 --build-arg VERSION=$(VERSION)（基础版本+git
+# 描述），未传时回落基础版本。0.1.0 是 2026-09-29 遗留构建的版本号，不可辨识，
+# 服务端对低于 0.1.1 的 Agent 拒绝破坏性数据库恢复。
+ARG VERSION=0.1.1
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY . .
 COPY --from=web-build /src/web/dist /src/web/dist
-RUN rm -rf internal/server/webui/dist && \
-    mkdir -p internal/server/webui/dist /out/acme-webroot/.well-known/acme-challenge && \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    rm -rf internal/server/webui/dist && \
+    mkdir -p internal/server/webui/dist && \
     cp -a /src/web/dist/. internal/server/webui/dist/ && \
-    chmod -R 0755 /out/acme-webroot && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags='-s -w' -o /out/backup-center-server ./cmd/server
+    go build -trimpath -ldflags="-s -w -X backupmanagementcenter/internal/version.Version=$VERSION" -o /out/backup-center-server ./cmd/server && \
+    mkdir -p /out/data-home && chmod 0750 /out/data-home
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=go-build /out/backup-center-server /usr/local/bin/backup-center-server
-COPY --from=go-build --chown=65532:65532 /out/acme-webroot /var/lib/bmc/acme-webroot
-EXPOSE 80 8080 9090
+# Pre-create the data dir owned by the runtime user so a fresh named volume
+# (bmc-data) is initialized with writable ownership.
+COPY --from=go-build --chown=65532:65532 /out/data-home /var/lib/bmc
+EXPOSE 8080 9090
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/backup-center-server"]

@@ -6,18 +6,17 @@ import (
 	"net/http"
 	"time"
 
+	"backupmanagementcenter/internal/server/events"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Metrics struct {
-	runsTotal       *prometheus.CounterVec
-	runDuration     *prometheus.HistogramVec
-	agentsOnline    prometheus.Gauge
-	queueDepth      prometheus.Gauge
-	repoLastCheck   *prometheus.GaugeVec
-	grpcReconnects  prometheus.Counter
-	registry        *prometheus.Registry
+	runsTotal      *prometheus.CounterVec
+	runDuration    *prometheus.HistogramVec
+	repoLastCheck  *prometheus.GaugeVec
+	grpcReconnects prometheus.Counter
+	registry       *prometheus.Registry
 }
 
 func New() *Metrics {
@@ -31,12 +30,6 @@ func New() *Metrics {
 			Help:    "Wall-clock duration of terminal runs.",
 			Buckets: []float64{1, 5, 15, 30, 60, 300, 900, 3600, 14400},
 		}, []string{"operation", "status"}),
-		agentsOnline: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "bmc_agents_online", Help: "Agents with a live control stream.",
-		}),
-		queueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "bmc_dispatch_queue_depth", Help: "Runs waiting for dispatch.",
-		}),
 		repoLastCheck: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "bmc_repository_last_check_timestamp", Help: "Last successful restic check per repository (unix seconds).",
 		}, []string{"repository_id"}),
@@ -45,7 +38,12 @@ func New() *Metrics {
 		}),
 		registry: reg,
 	}
-	reg.MustRegister(m.runsTotal, m.runDuration, m.agentsOnline, m.queueDepth, m.repoLastCheck, m.grpcReconnects)
+	// 慢订阅者被丢弃的次数：丢弃是静默的数据丢失（该 WS 客户端后续不再收到进度/日志），
+	// 必须有可观测信号才能发现"界面不再更新"的根因。
+	reg.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
+		Name: "bmc_events_subscribers_dropped_total", Help: "Event bus subscribers dropped for being too slow.",
+	}, func() float64 { return float64(events.DroppedSubscribers()) }))
+	reg.MustRegister(m.runsTotal, m.runDuration, m.repoLastCheck, m.grpcReconnects)
 	return m
 }
 
@@ -55,9 +53,28 @@ func (m *Metrics) ObserveRun(operation, status string, d time.Duration) {
 	m.runDuration.WithLabelValues(operation, status).Observe(d.Seconds())
 }
 
-func (m *Metrics) SetAgentsOnline(n int)      { m.agentsOnline.Set(float64(n)) }
-func (m *Metrics) SetQueueDepth(n int)        { m.queueDepth.Set(float64(n)) }
-func (m *Metrics) IncReconnects()             { m.grpcReconnects.Inc() }
+// SetAgentsOnlineFunc 用回调在抓取时计算在线 Agent 数。此前 bmc_agents_online 是一个
+// 从未被赋值的普通 Gauge，导出值恒为 0（与实际在线数无关），监控据此会误判全部 Agent 离线。
+func (m *Metrics) SetAgentsOnlineFunc(fn func() float64) {
+	if fn == nil {
+		return
+	}
+	m.registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "bmc_agents_online", Help: "Agents with a live control stream.",
+	}, fn))
+}
+// SetQueueDepthFunc 用回调在抓取时计算派发队列深度。此前 bmc_dispatch_queue_depth 只在
+// 手动触发运行时被写入 queueDepthHint() 的恒 0 占位值，与真实队列无关，导出恒为 0。
+func (m *Metrics) SetQueueDepthFunc(fn func() float64) {
+	if fn == nil {
+		return
+	}
+	m.registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "bmc_dispatch_queue_depth", Help: "Runs waiting for dispatch.",
+	}, fn))
+}
+
+func (m *Metrics) IncReconnects() { m.grpcReconnects.Inc() }
 func (m *Metrics) SetRepoCheck(id string, t time.Time) {
 	m.repoLastCheck.WithLabelValues(id).Set(float64(t.Unix()))
 }

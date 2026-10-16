@@ -14,6 +14,7 @@ export interface PlanFormSource {
   username?: string
   password?: string
   database?: string
+  auth_source?: string
   extra_args?: string[]
   estimated_dump_bytes?: number | null
   path?: string
@@ -30,7 +31,8 @@ export interface PlanFormModel {
   enabled: boolean
   source: PlanFormSource
   repository_id: string
-  retention: Retention
+  /** 表单里的保留规则必须是确定数值（后端会省略为 0 的字段，进入表单前已归一化）。 */
+  retention: Required<Retention>
   timeout_seconds: number
 }
 
@@ -39,6 +41,15 @@ export interface ValidateResult {
   code?: string
   message?: string
   tools?: string[]
+}
+
+/** 界面不再提供 capture_oplog 开关（服务端对任何 capture_oplog 计划一律 422：
+    mongodump --oplog 只支持整实例 dump，而整实例快照本平台不可恢复）。历史计划带着
+    它会让"编辑/启停"必然失败且界面无法清除，因此任何写回都丢弃该字段。 */
+export function withoutCaptureOplog(source: PlanSource): PlanSource {
+  const copy = { ...source }
+  delete copy.capture_oplog
+  return copy
 }
 
 /** Builds the edit/create payload from the form model. Arrays are trimmed and
@@ -50,7 +61,9 @@ export function buildPayload(model: PlanFormModel): Record<string, unknown> {
   if (source.extra_args) source.extra_args = filterTrimmed(source.extra_args)
   if (source.port == null) delete source.port
   if (source.estimated_dump_bytes == null) delete source.estimated_dump_bytes
-  if (!source.password) delete source.password
+	delete source.capture_oplog
+	const password = source.password
+	delete source.password
 
   const payload: Record<string, unknown> = {
     name: model.name.trim(),
@@ -60,11 +73,21 @@ export function buildPayload(model: PlanFormModel): Record<string, unknown> {
     timezone: model.timezone.trim(),
     source: source as PlanSource,
     repository_id: model.repository_id,
-    retention: { ...model.retention },
+    retention: normalizeRetention(model.retention),
     timeout_seconds: model.timeout_seconds,
   }
-  if (model.id) payload.enabled = model.enabled
-  return payload
+	if (model.id) payload.enabled = model.enabled
+	if (password) payload.credentials = { password }
+	return payload
+}
+
+function normalizeRetention(retention: Retention): Retention {
+  return {
+    keep_last: retention.keep_last ?? 0,
+    keep_daily: retention.keep_daily ?? 0,
+    keep_weekly: retention.keep_weekly ?? 0,
+    keep_monthly: retention.keep_monthly ?? 0,
+  }
 }
 
 /** Payload for POST /plans/validate — never includes the password. */
@@ -75,6 +98,7 @@ export function buildValidatePayload(model: PlanFormModel): Record<string, unkno
   if (source.extra_args) source.extra_args = filterTrimmed(source.extra_args)
   if (source.port == null) delete source.port
   if (source.estimated_dump_bytes == null) delete source.estimated_dump_bytes
+  delete source.capture_oplog
   delete source.password
   return { kind: model.kind, source: source as PlanSource, agent_id: model.agent_id }
 }

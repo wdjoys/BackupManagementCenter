@@ -9,6 +9,7 @@ package secrets
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -17,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -28,11 +30,20 @@ var ErrTooShort = errors.New("secrets: ciphertext too short")
 type Sealer interface {
 	Seal(table, rowID, column, plaintext string) ([]byte, error)
 	Open(table, rowID, column string, data []byte) (string, error)
+	// Fingerprint returns a deterministic, non-reversible fingerprint of value
+	// scoped by name. Callers use it to distinguish credentials without
+	// persisting them (e.g. 队列去重时判断两次恢复是否使用同一目标口令）:
+	// equal values give equal fingerprints, different values do not, and the
+	// fingerprint is keyed so a stolen database alone cannot be dictionary
+	// attacked. AESGCMSealer keys it with the master key; NoopSealer cannot and
+	// degrades to a bare hash (dev only).
+	Fingerprint(scope, value string) string
 }
 
 // AESGCMSealer seals with AES-256-GCM and AAD "<table>:<row-id>:<column>".
 type AESGCMSealer struct {
 	aead cipher.AEAD
+	key  []byte
 }
 
 // LoadKey reads exactly 32 bytes from path.
@@ -49,6 +60,48 @@ func LoadKey(path string) ([]byte, error) {
 	return key, nil
 }
 
+// LoadOrCreateKey loads an existing 32-byte key or atomically creates one.
+func LoadOrCreateKey(path string) ([]byte, bool, error) {
+	key, err := LoadKey(path)
+	if err == nil {
+		return key, false, nil
+	}
+	if !os.IsNotExist(errors.Unwrap(err)) {
+		return nil, false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, false, fmt.Errorf("secrets: create master key directory: %w", err)
+	}
+	key = make([]byte, KeyLen)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, false, fmt.Errorf("secrets: generate master key: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		if err := f.Chmod(0o600); err != nil {
+			_ = f.Close()
+			return nil, false, fmt.Errorf("secrets: set master key permissions: %w", err)
+		}
+		_, writeErr := f.Write(key)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return nil, false, fmt.Errorf("secrets: write master key: %w", writeErr)
+		}
+		if closeErr != nil {
+			return nil, false, fmt.Errorf("secrets: close master key: %w", closeErr)
+		}
+		return key, true, nil
+	}
+	if !os.IsExist(err) {
+		return nil, false, fmt.Errorf("secrets: create master key: %w", err)
+	}
+	key, err = LoadKey(path)
+	if err != nil {
+		return nil, false, err
+	}
+	return key, false, nil
+}
+
 func NewSealer(key []byte) (Sealer, error) {
 	if len(key) != KeyLen {
 		return nil, fmt.Errorf("secrets: key must be %d bytes", KeyLen)
@@ -61,7 +114,16 @@ func NewSealer(key []byte) (Sealer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AESGCMSealer{aead: aead}, nil
+	return &AESGCMSealer{aead: aead, key: append([]byte(nil), key...)}, nil
+}
+
+// Fingerprint returns hex HMAC-SHA256(master key, scope || 0x00 || value).
+func (s *AESGCMSealer) Fingerprint(scope, value string) string {
+	mac := hmac.New(sha256.New, s.key)
+	mac.Write([]byte(scope))
+	mac.Write([]byte{0})
+	mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func aad(table, rowID, column string) []byte {
@@ -102,6 +164,7 @@ func (s *AESGCMSealer) Open(table, rowID, column string, data []byte) (string, e
 	}
 	return string(pt), nil
 }
+
 // HashToken returns lowercase hex SHA-256; used for session tokens, agent
 // secrets and enrollment tokens (only hashes are persisted).
 func HashToken(token string) string {

@@ -3,14 +3,19 @@ package backup
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"backupmanagementcenter/internal/model"
 )
 
 // PostgreSQLAdapter implements Adapter for PostgreSQL plans.
@@ -37,6 +42,9 @@ func (a *PostgreSQLAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
 	}
+	if err := model.ValidateExtraArgs(model.KindPostgreSQL, s.ExtraArgs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -49,7 +57,7 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 	}
 
 	// Write PGPASSFILE
-	pgpassContent := fmt.Sprintf("%s:%d:*:%s:%s\n", source.Host, source.Port, source.Username, rc.Secrets.DBPassword)
+	pgpassContent := fmt.Sprintf("%s:%d:*:%s:%s\n", pgpassField(source.Host), source.Port, pgpassField(source.Username), pgpassField(rc.Secrets.DBPassword))
 	pgpassFile, err := writeSecretFile(rc.TempDir, "pgpass", pgpassContent)
 	if err != nil {
 		return nil, fmt.Errorf("write pgpass: %w", err)
@@ -75,11 +83,28 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 	if source.Database == "all" {
 		// globals dump
 		globalsFile := filepath.Join(stagingDir, "globals.sql")
-		args := []string{"--globals-only", "--file=" + globalsFile}
-		args = append(args, source.ExtraArgs...)
-		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dumpall"), Args: args, Env: env}, logLine, logLine)
+		// extra_args 不传给 pg_dumpall：白名单里的选项是 pg_dump 的导出选项，
+		// 而 pg_dumpall 的选项集不同——实测整实例计划带 --blobs 时备份必然失败
+		// （pg_dumpall: unrecognized option '--blobs'）。globals 只含角色/表空间等
+		// 全局对象，这些导出选项在那里没有意义；它们仍作用于下面的逐库 pg_dump。
+		if len(source.ExtraArgs) > 0 {
+			rc.Logf("warn", "extra_args %v 不适用于整实例的 globals 导出（pg_dumpall 选项集与 pg_dump 不同），仅作用于各数据库导出", source.ExtraArgs)
+		}
+		args := []string{
+			"--globals-only", "--file=" + globalsFile,
+			"--host", source.Host, "--port", strconv.Itoa(source.Port), "--username", source.Username,
+		}
+		cap := &stderrCapture{logf: logLine}
+		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dumpall"), Args: args, Env: env}, logLine, cap.line)
 		if err != nil || exitCode != 0 {
-			return nil, fmt.Errorf("pg_dumpall globals failed (exit %d): %w", exitCode, err)
+			// 失败本身是响亮的（不会静默漏库），但 pg_dumpall 的报错对运维不可操作：
+			// 实测非超管角色报 "permission denied for table pg_authid"。把处置建议并进
+			// error_message（run 列表/详情页只显示它，日志里的 warn 看不到）。
+			if hint := pgDumpallGlobalsHint(cap.tail); hint != "" {
+				rc.Logf("warn", "%s", hint)
+				return nil, fmt.Errorf("%w；%s", exitErrorWithStderr("pg_dumpall globals", exitCode, err, cap.tail), hint)
+			}
+			return nil, exitErrorWithStderr("pg_dumpall globals", exitCode, err, cap.tail)
 		}
 		dbExports = append(dbExports, DbExport{Database: "globals", File: "globals.sql", Format: "sql"})
 		toolVersions["pg_dumpall"] = getToolVersion(ctx, rc.Exec, toolPath("pg_dumpall"), env)
@@ -87,7 +112,7 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 		// list databases
 		listArgs := []string{"-h", source.Host, "-p", strconv.Itoa(source.Port), "-U", source.Username, "-d", "postgres", "-t", "-c", "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn"}
 		var dbNames []string
-		_, err = rc.Exec.Run(ctx, Cmd{Exe: toolPath("psql"), Args: listArgs, Env: env},
+		listExit, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("psql"), Args: listArgs, Env: env},
 			func(line string) {
 				name := strings.TrimSpace(line)
 				if name != "" {
@@ -97,23 +122,37 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 		if err != nil {
 			return nil, fmt.Errorf("list databases: %w", err)
 		}
+		// Executor 对非零退出返回 (exitCode, nil)，所以只看 err 会把"列库失败"
+		// 退化成"零个库"：循环不执行、manifest 只剩 globals、Backup 仍返回成功，
+		// 快照里一个业务库都没有却报 succeeded。退出码必须显式检查。
+		if listExit != 0 {
+			return nil, exitError("psql list databases", listExit, nil)
+		}
+		if len(dbNames) == 0 {
+			return nil, errors.New("no connectable databases were listed; refusing to upload an instance backup with no database export")
+		}
 
 		for _, db := range dbNames {
-			dumpFile := filepath.Join(stagingDir, fmt.Sprintf("db-%s.pgdump", db))
+			dumpFile := filepath.Join(stagingDir, postgresDumpFilename(db))
 			args := []string{
 				"--format=custom",
 				"--file=" + dumpFile,
 				"--host", source.Host,
 				"--port", strconv.Itoa(source.Port),
 				"--username", source.Username,
-				db,
 			}
 			args = append(args, source.ExtraArgs...)
-			exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, logLine)
+			// 与单库分支同理：库名是位置参数，而合法库名可以以 '-' 开头，
+			// 必须以 -- 结束选项，否则 pg_dump 会把库名当选项解析
+			// （实测 "no matching extensions were found"），一个这种库就会让
+			// 整实例备份整体失败。
+			args = append(args, "--", db)
+			cap := &stderrCapture{logf: logLine}
+			exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, cap.line)
 			if err != nil || exitCode != 0 {
-				return nil, fmt.Errorf("pg_dump %s failed (exit %d): %w", db, exitCode, err)
+				return nil, exitErrorWithStderr(fmt.Sprintf("pg_dump %s", db), exitCode, err, cap.tail)
 			}
-			dbExports = append(dbExports, DbExport{Database: db, File: fmt.Sprintf("db-%s.pgdump", db), Format: "pgdump"})
+			dbExports = append(dbExports, DbExport{Database: db, File: filepath.Base(dumpFile), Format: "pgdump"})
 		}
 		toolVersions["pg_dump"] = getToolVersion(ctx, rc.Exec, toolPath("pg_dump"), env)
 		toolVersions["psql"] = getToolVersion(ctx, rc.Exec, toolPath("psql"), env)
@@ -126,12 +165,15 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 			"--host", source.Host,
 			"--port", strconv.Itoa(source.Port),
 			"--username", source.Username,
-			source.Database,
 		}
 		args = append(args, source.ExtraArgs...)
-		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, logLine)
+		// 以 -- 结束选项：库名是位置参数，且合法库名可以以 '-' 开头，否则 pg_dump
+		// 会把库名当选项解析（实测报 "no matching extensions were found"）。
+		args = append(args, "--", source.Database)
+		cap := &stderrCapture{logf: logLine}
+		exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("pg_dump"), Args: args, Env: env}, logLine, cap.line)
 		if err != nil || exitCode != 0 {
-			return nil, fmt.Errorf("pg_dump failed (exit %d): %w", exitCode, err)
+			return nil, exitErrorWithStderr("pg_dump", exitCode, err, cap.tail)
 		}
 		dbExports = append(dbExports, DbExport{Database: source.Database, File: filepath.Base(dumpFile), Format: "pgdump"})
 		toolVersions["pg_dump"] = getToolVersion(ctx, rc.Exec, toolPath("pg_dump"), env)
@@ -163,93 +205,453 @@ func (a *PostgreSQLAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 	}, nil
 }
 
-// Restore imports restored snapshot data into target PostgreSQL.
-func (a *PostgreSQLAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
+// pgDumpallGlobalsHint 在 pg_dumpall --globals-only 因权限不足失败时给出可执行的处置。
+//
+// 实测（postgres:16）：非超管角色跑整实例备份时 globals 导出失败并报
+//
+//	pg_dumpall: error: query failed: ERROR:  permission denied for table pg_authid
+//
+// 失败本身是响亮的（不会静默漏库），但 "permission denied for table pg_authid" 对
+// 运维不可操作：globals 要读角色定义，因此整实例备份需要超级用户，或具备
+// pg_read_all_data 角色（PG 14+）的账号。
+func pgDumpallGlobalsHint(stderrTail []string) string {
+	for _, line := range stderrTail {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "permission denied") || strings.Contains(lower, "pg_authid") || strings.Contains(lower, "superuser") {
+			return "整实例备份（database=\"all\"）的 globals 导出需要超级用户，或具备 pg_read_all_data 角色（PG 14+）的账号——" +
+				"globals 要读取角色定义（pg_authid），普通角色无权访问；" +
+				"请改用超级用户，或 GRANT pg_read_all_data TO <账号>，或把整实例拆成多个单库计划（单库 pg_dump 不需要该权限）"
+		}
+	}
+	return ""
+}
+
+// postgresDumpFilename never incorporates a database name directly into a
+// path. PostgreSQL identifiers may contain slashes and other path separators;
+// a stable digest keeps artifacts inside the staging directory and avoids
+// collisions between unusual names.
+func postgresDumpFilename(database string) string {
+	sum := sha256.Sum256([]byte(database))
+	return "db-" + hex.EncodeToString(sum[:8]) + ".pgdump"
+}
+
+func pgpassField(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, ":", `\:`)
+	v = strings.ReplaceAll(v, "\n", `\n`)
+	return strings.ReplaceAll(v, "\r", `\r`)
+}
+
+// pgRestoreCtx groups the target connection details a restore needs.
+type pgRestoreCtx struct {
+	db     *model.DatabaseRestore
+	env    []string
+	psql   string
+	pgRest string
+	logf   func(string)
+}
+
+// pgPrepare writes the target PGPASSFILE into the (private) staging dir and
+// resolves the client binaries. Credentials never appear in argv.
+func pgPrepare(spec *RestoreSpec) (*pgRestoreCtx, error) {
 	db := spec.Database
 	if db == nil {
-		return errors.New("database restore spec missing")
+		return nil, errors.New("database restore spec missing")
 	}
-	stagingDir := spec.StagingDir
-
-	// Read manifest
-	manifestPath := filepath.Join(stagingDir, "manifest.json")
-	data, err := os.ReadFile(manifestPath)
+	if db.TargetDatabase == "" || db.TargetDatabase == "all" {
+		return nil, errors.New("postgresql restore requires a single target database")
+	}
+	pgpassContent := fmt.Sprintf("%s:%d:*:%s:%s\n", pgpassField(db.TargetHost), db.TargetPort, pgpassField(db.TargetUsername), pgpassField(spec.Secrets.DBPassword))
+	pgpassFile, err := writeSecretFile(spec.StagingDir, "pgpass_restore", pgpassContent)
 	if err != nil {
-		return fmt.Errorf("read manifest: %w", err)
+		return nil, fmt.Errorf("write pgpass: %w", err)
 	}
-	var manifest Manifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return fmt.Errorf("unmarshal manifest: %w", err)
-	}
-	if manifest.Adapter != KindPostgreSQL {
-		return fmt.Errorf("manifest adapter mismatch: %s", manifest.Adapter)
-	}
+	return &pgRestoreCtx{
+		db:     db,
+		env:    []string{"PGPASSFILE=" + pgpassFile},
+		psql:   toolPath("psql"),
+		pgRest: toolPath("pg_restore"),
+		logf:   func(l string) { spec.Logf("info", "%s", l) },
+	}, nil
+}
 
-	// Write PGPASSFILE for target in stagingDir (the only writable temp dir we have)
-	pgpassContent := fmt.Sprintf("%s:%d:*:%s:%s\n", db.TargetHost, db.TargetPort, db.TargetUsername, spec.Secrets.DBPassword)
-	pgpassFile, err := writeSecretFile(stagingDir, "pgpass_restore", pgpassContent)
+// pgMaintenanceArgs 返回以维护库 postgres 为目标的 psql 参数。
+func (c *pgRestoreCtx) maintenanceQuery(sql string) []string {
+	return []string{"-h", c.db.TargetHost, "-p", strconv.Itoa(c.db.TargetPort), "-U", c.db.TargetUsername,
+		"-d", "postgres", "-v", "ON_ERROR_STOP=1", "-tAc", sql}
+}
+
+// targetQuery 返回以目标库为目标的 psql 参数。
+func (c *pgRestoreCtx) targetQuery(sql string) []string {
+	return []string{"-h", c.db.TargetHost, "-p", strconv.Itoa(c.db.TargetPort), "-U", c.db.TargetUsername,
+		"-d", c.db.TargetDatabase, "-v", "ON_ERROR_STOP=1", "-tAc", sql}
+}
+
+// TargetExists reports whether the target database exists. A failed query
+// (auth, connection, permission) is an error, never "absent".
+func (a *PostgreSQLAdapter) TargetExists(ctx context.Context, spec *RestoreSpec) (bool, error) {
+	c, err := pgPrepare(spec)
 	if err != nil {
-		return fmt.Errorf("write pgpass: %w", err)
+		return false, err
 	}
-	env := []string{"PGPASSFILE=" + pgpassFile}
+	var out string
+	// stderr 必须并入错误：连接被拒/口令错误时 psql 的原因行只出现在 stderr，
+	// 此前只写进日志流，运行详情页只剩 "check postgres target database failed (exit 2)"，
+	// 无法区分"目标不可达"与"凭据错误"（实测：连接被拒与 password authentication
+	// failed 给出完全相同的 error_message）。
+	cap := &stderrCapture{logf: c.logf}
+	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(
+		"SELECT 1 FROM pg_database WHERE datname = '" + strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "'"),
+		Env: c.env}, func(line string) { out = strings.TrimSpace(line) }, cap.line)
+	if err != nil || exit != 0 {
+		return false, exitErrorWithStderr("check postgres target database", exit, err, cap.tail)
+	}
+	return out != "", nil
+}
 
-	pgRestorePath := toolPath("pg_restore")
-	psqlPath := toolPath("psql")
-	logLine := func(l string) { spec.Logf("info", "%s", l) }
+// Import creates (TargetIsNew) or fully rebuilds (overwrite) the target database
+// and loads the dump. It refuses system databases and clusters where the
+// current role cannot drop/recreate the database, before any destructive step.
+func (a *PostgreSQLAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
+	c, err := pgPrepare(spec)
+	if err != nil {
+		return err
+	}
+	if model.IsSystemDatabase(model.KindPostgreSQL, c.db.TargetDatabase) {
+		return fmt.Errorf("refusing to restore into system database %q", c.db.TargetDatabase)
+	}
+	quoted := `"` + strings.ReplaceAll(c.db.TargetDatabase, `"`, `""`) + `"`
+	// 与 TargetExists 同理：重建权限/终止连接/DROP/CREATE 的失败原因都在 psql stderr，
+	// 不并入错误时运行详情只剩 "... failed (exit 1)"，看不出是权限不足、库被占用
+	// 还是目标不可达。
+	cap := &stderrCapture{logf: c.logf}
 
-	if db.TargetDatabase == "all" {
-		globalsFile := filepath.Join(stagingDir, "globals.sql")
-		if _, err := os.Stat(globalsFile); err == nil {
-			args := []string{"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername, "-d", "postgres", "-f", globalsFile}
-			exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: psqlPath, Args: args, Env: env}, logLine, logLine)
-			if err != nil || exitCode != 0 {
-				return fmt.Errorf("restore globals failed (exit %d): %w", exitCode, err)
-			}
+	if !spec.TargetIsNew {
+		// 覆盖前确认具备重建权限：非 owner 且非 superuser 时必须拒绝，不能依赖
+		// --clean 之类的不完整替换。
+		var ability string
+		exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(
+			"SELECT CASE WHEN (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) OR EXISTS (SELECT 1 FROM pg_database d WHERE d.datname = '" +
+				strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "' AND d.datdba = (SELECT oid FROM pg_roles WHERE rolname = current_user)) THEN 'ok' ELSE 'denied' END"),
+			Env: c.env}, func(line string) { ability = strings.TrimSpace(line) }, cap.line)
+		if err != nil || exit != 0 {
+			return exitErrorWithStderr("check postgres rebuild permission", exit, err, cap.tail)
 		}
-		for _, dbe := range manifest.Databases {
-			if dbe.Database == "globals" {
+		if ability != "ok" {
+			return fmt.Errorf("current role cannot drop and recreate database %q; refusing a partial overwrite", c.db.TargetDatabase)
+		}
+		// 断开其他连接后才能 DROP DATABASE。
+		termSQL := "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '" +
+			strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "' AND pid <> pg_backend_pid()"
+		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(termSQL), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+			return exitErrorWithStderr("terminate postgres target connections", exit, err, cap.tail)
+		}
+		// DROP DATABASE 必须带 IF EXISTS：第一次尝试的 DROP 可能已被服务端执行完毕，
+		// 但 psql 客户端因取消/超时被杀（exit -1）而报错退出——此时库已不存在，回滚
+		// 重建时会再执行同一条 DROP 并因 "database does not exist" 失败，于是回滚在
+		// 用到保护快照之前就中止（实测：取消命中该步骤 → rollback_failed、目标库数据
+		// 丢失、全局数据库恢复互斥被占住直到人工 resolve）。下面的 CREATE DATABASE
+		// 仍不带 IF NOT EXISTS，并发创建者冲突失败的保护不变。
+		if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE IF EXISTS " + quoted), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+			return exitErrorWithStderr("drop postgres target database", exit, err, cap.tail)
+		}
+	}
+	// CREATE DATABASE 不带 IF NOT EXISTS：并发的其他执行者创建的库必须冲突失败。
+	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("CREATE DATABASE " + quoted), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+		return exitErrorWithStderr("create postgres target database", exit, err, cap.tail)
+	}
+
+	if spec.ArtifactFile == "" {
+		return errors.New("postgresql restore artifact is missing")
+	}
+	// 不加 --exit-on-error：pg_restore ≥17 生成的归档前置语句
+	// "SET transaction_timeout = 0;" 在 PG ≤16 上是未知 GUC，属于版本偏斜
+	// 噪声。pg_restore 只要忽略过任何错误就以 exit 1 结束，因此这里显式收集
+	// stderr，仅在"全部错误都是已知版本偏斜语句"时放行；其余错误照旧失败。
+	// 真正的正确性仍由 VerifyRestored 对比关系集合兜底。
+	args := []string{
+		"--no-owner",
+		"--dbname=" + c.db.TargetDatabase,
+		"-h", c.db.TargetHost, "-p", strconv.Itoa(c.db.TargetPort), "-U", c.db.TargetUsername,
+		spec.ArtifactFile,
+	}
+	var stderrLines []string
+	onStderr := func(line string) {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			stderrLines = append(stderrLines, trimmed)
+		}
+		c.logf(line)
+	}
+	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.pgRest, Args: args, Env: c.env}, c.logf, onStderr)
+	if err != nil {
+		return exitErrorWithStderr("pg_restore", exit, err, stderrLines)
+	}
+	if exit != 0 {
+		// 放行版本偏斜的前提是"正常退出但忽略过错误"：pg_restore 的约定是 exit 1。
+		// 被信号杀死的子进程 ExitCode() = -1 且 err 为 nil，stderr 里可能恰好只有那条
+		// 已知偏斜行——实测被 ctx 取消杀死的 pg_restore 曾被判成"导入完成，开始校验"
+		// （同 run 里随后被杀的 VerifyRestored 把结果兜到 cancelled，故取消场景仍安全；
+		// 但换成外部 SIGKILL/OOM 就会静默产出不完整数据：VerifyRestored 只比对关系集合、
+		// 不比对行数）。因此只在 exit == 1 时才走偏斜放行。
+		if nurr := pgIgnorableRestoreErrors(stderrLines); exit == 1 && nurr > 0 && pgOnlyIgnorableRestoreErrors(stderrLines) {
+			spec.Logf("warn", "pg_restore 报告 %d 处版本偏斜错误（目标服务端低于归档客户端），已忽略；由恢复校验兜底", nurr)
+		} else {
+			return exitErrorWithStderr("pg_restore", exit, nil, stderrLines)
+		}
+	}
+	return nil
+}
+
+// VerifyRestored compares the relation set listed in the dump with the target's
+// relation set. A rebuilt database must contain exactly the dumped relations;
+// anything else means objects were left over from a failed import.
+func (a *PostgreSQLAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) error {
+	c, err := pgPrepare(spec)
+	if err != nil {
+		return err
+	}
+	dumpObjects := map[string]struct{}{}
+	var listOut strings.Builder
+	cap := &stderrCapture{logf: c.logf}
+	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.pgRest, Args: []string{"-l", spec.ArtifactFile}},
+		func(line string) { listOut.WriteString(line); listOut.WriteString("\n") }, cap.line)
+	if err != nil || exit != 0 {
+		return exitErrorWithStderr("pg_restore -l", exit, err, cap.tail)
+	}
+	for name := range pgDumpRelationNames(listOut.String()) {
+		dumpObjects[name] = struct{}{}
+	}
+	targetObjects := map[string]struct{}{}
+	var got strings.Builder
+	// relkind 必须覆盖索引（'i'/'I'）：pg_restore -l 会列出 INDEX 条目，
+	// 而这里若不统计索引，每次带索引的恢复都会被判成 missing。
+	// 但约束（PK/UNIQUE/FK）背后的隐式索引在归档里以 CONSTRAINT 行出现，
+	// 不在 INDEX 条目里，因此要把它们排除，只比较显式索引。
+	// pg_toast* 是服务端自动创建的存储结构，pg_dump 同样不列出。
+	query := "SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
+		"WHERE c.relkind IN ('r','p','v','m','S','i','I') " +
+		"AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = c.oid) " +
+		"AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' ORDER BY 1"
+	exit, err = spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.targetQuery(query), Env: c.env},
+		func(line string) { got.WriteString(strings.TrimSpace(line)); got.WriteString("\n") }, cap.line)
+	if err != nil || exit != 0 {
+		return exitErrorWithStderr("postgresql verification query", exit, err, cap.tail)
+	}
+	for _, line := range strings.Split(got.String(), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			targetObjects[line] = struct{}{}
+		}
+	}
+	missing, extra := setDiff(dumpObjects, targetObjects), setDiff(targetObjects, dumpObjects)
+	if len(missing) > 0 || len(extra) > 0 {
+		return fmt.Errorf("postgresql restore verification failed: missing=%v unexpected=%v", missing, extra)
+	}
+	spec.Logf("info", "postgresql verification: %d relations match the snapshot", len(dumpObjects))
+	return nil
+}
+
+// RemoveTarget drops the database created by this run.
+func (a *PostgreSQLAdapter) RemoveTarget(ctx context.Context, spec *RestoreSpec) error {
+	if !spec.TargetIsNew {
+		return errors.New("refusing to remove a target this run did not create")
+	}
+	c, err := pgPrepare(spec)
+	if err != nil {
+		return err
+	}
+	termSQL := "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '" +
+		strings.ReplaceAll(c.db.TargetDatabase, "'", "''") + "' AND pid <> pg_backend_pid()"
+	cap := &stderrCapture{logf: c.logf}
+	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery(termSQL), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+		return exitErrorWithStderr("terminate postgres target connections", exit, err, cap.tail)
+	}
+	quoted := `"` + strings.ReplaceAll(c.db.TargetDatabase, `"`, `""`) + `"`
+	if exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.psql, Args: c.maintenanceQuery("DROP DATABASE IF EXISTS " + quoted), Env: c.env}, c.logf, cap.line); err != nil || exit != 0 {
+		return exitErrorWithStderr("drop postgres target database", exit, err, cap.tail)
+	}
+	return nil
+}
+
+// pgVersionSkewStatements 列出"归档由更高版本客户端生成、目标服务端不认识"的
+// 无害前置语句。只放行这些，其他错误一律视为真实失败。
+var pgVersionSkewStatements = []string{
+	"SET transaction_timeout = 0;",
+}
+
+// pgIgnorableRestoreErrors 统计 stderr 中属于已知版本偏斜的错误数。
+func pgIgnorableRestoreErrors(lines []string) int {
+	n := 0
+	for _, line := range lines {
+		if isPgVersionSkewCommand(line) {
+			n++
+		}
+	}
+	return n
+}
+
+// pgOnlyIgnorableRestoreErrors 判断 stderr 里的错误是否**只有**已知版本偏斜。
+// 任意一条非版本偏斜的 error/fatal 行都会让它返回 false，交由调用方报错。
+func pgOnlyIgnorableRestoreErrors(lines []string) bool {
+	sawSkew := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "pg_restore: error:") && !strings.HasPrefix(trimmed, "pg_restore: fatal:") {
+			continue
+		}
+		if !strings.Contains(trimmed, "unrecognized configuration parameter") {
+			return false
+		}
+		// pg_restore 在该 error 行之后输出 "Command was: <stmt>"；仅当该语句
+		// 属于已知版本偏斜语句时才认定为无害。
+		if i+1 >= len(lines) || !isPgVersionSkewCommand(lines[i+1]) {
+			return false
+		}
+		sawSkew = true
+	}
+	return sawSkew
+}
+
+// isPgVersionSkewCommand 判断一行 stderr 是否为已知版本偏斜语句。
+func isPgVersionSkewCommand(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "Command was:"))
+	for _, stmt := range pgVersionSkewStatements {
+		if strings.EqualFold(trimmed, stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+// pgRelationEntryTypes 列出 pg_restore -l 中形如
+// "<id>; <oid> <oid> <TYPE> <schema> <name> <owner>" 的条目类型，**按最长匹配优先**。
+// 必须把多词附属类型（TABLE DATA / SEQUENCE OWNED BY / SEQUENCE SET …）也列全：
+// 否则 "SEQUENCE OWNED BY" 会被当成 "SEQUENCE"，把 OWNED.BY 之类解析成关系名。
+// 其中的附属类型本身不计入关系集合（见 pgRelationKind）。
+var pgRelationEntryTypes = []string{
+	"MATERIALIZED VIEW DATA", "MATERIALIZED VIEW", "TABLE DATA ATTACH", "TABLE DATA",
+	"TABLE ATTACH", "FOREIGN TABLE", "SEQUENCE OWNED BY", "SEQUENCE SET",
+	"INDEX ATTACH", "TABLE", "SEQUENCE", "VIEW", "INDEX",
+}
+
+// pgRelationKind 判断类型名是否是要纳入关系集合的类型。
+func pgRelationKind(typ string) bool {
+	switch typ {
+	case "TABLE", "SEQUENCE", "VIEW", "INDEX", "MATERIALIZED VIEW", "FOREIGN TABLE":
+		return true
+	default:
+		return false
+	}
+}
+
+// pgDumpRelationNames extracts relation identifiers from `pg_restore -l` output.
+// 每行形如 "<dumpId>; <oid> <oid> <TYPE...> <schema> <name> <owner>"。
+//
+// 名字可以**包含空格**（"It's W"）甚至与类型名同形，TYPE 本身也可能是多个词
+// （"TABLE DATA"、"MATERIALIZED VIEW"），因此不能按固定下标取字段：先按最长
+// 匹配确定类型，再把类型之后的 <schema> 与末尾 <owner> 之间整体作为名字。
+// 只保留真正代表关系对象的类型，跳过 DATA/OWNED BY/SET 这类附属条目
+// （它们指向的关系已由对应的 TABLE/SEQUENCE 行覆盖）。
+func pgDumpRelationNames(list string) map[string]struct{} {
+	lines := strings.Split(list, "\n")
+
+	// 第一遍：收集 SCHEMA 条目里的 schema 名。SCHEMA 条目形如
+	//   <id>; <oid> <oid> SCHEMA - <schema...> <owner>
+	// schema 名可以含空格（"app schema"），但 owner 恒为最后一段，所以
+	// "-" 与 owner 之间的整体就是 schema 名，可无歧义解析。
+	// public 是 PostgreSQL 的默认 schema，dump 中不一定出现 SCHEMA 条目，固定补上。
+	schemas := map[string]struct{}{"public": {}}
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || !strings.HasSuffix(fields[0], ";") || fields[3] != "SCHEMA" || fields[4] != "-" {
+			continue
+		}
+		schemas[strings.Join(fields[5:len(fields)-1], " ")] = struct{}{}
+	}
+	// 按 token 数降序，保证用最长的 schema 前缀去切分，避免 "app" 抢走 "app schema"。
+	ordered := make([]string, 0, len(schemas))
+	for sc := range schemas {
+		ordered = append(ordered, sc)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		ti, tj := len(strings.Fields(ordered[i])), len(strings.Fields(ordered[j]))
+		if ti != tj {
+			return ti > tj
+		}
+		return ordered[i] < ordered[j]
+	})
+
+	names := map[string]struct{}{}
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || !strings.HasSuffix(fields[0], ";") {
+			continue
+		}
+		rest := fields[3:] // 跳过 "<id>;" 与两个 oid
+		typ, width := "", 0
+		for _, cand := range pgRelationEntryTypes {
+			parts := strings.Fields(cand)
+			if len(rest) < len(parts) {
 				continue
 			}
-			dumpFile := filepath.Join(stagingDir, dbe.File)
-			args := []string{
-				"--exit-on-error", "--clean", "--if-exists", "--no-owner",
-				"--dbname=" + dbe.Database,
-				"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername,
-				dumpFile,
-			}
-			exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: pgRestorePath, Args: args, Env: env}, logLine, logLine)
-			if err != nil || exitCode != 0 {
-				return fmt.Errorf("pg_restore %s failed (exit %d): %w", dbe.Database, exitCode, err)
-			}
-		}
-	} else {
-		for _, dbe := range manifest.Databases {
-			if dbe.Database != "globals" {
-				dumpFile := filepath.Join(stagingDir, dbe.File)
-				args := []string{
-					"--exit-on-error", "--clean", "--if-exists", "--no-owner",
-					"--dbname=" + db.TargetDatabase,
-					"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername,
-					dumpFile,
+			match := true
+			for i, p := range parts {
+				if rest[i] != p {
+					match = false
+					break
 				}
-				exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: pgRestorePath, Args: args, Env: env}, logLine, logLine)
-				if err != nil || exitCode != 0 {
-					return fmt.Errorf("pg_restore failed (exit %d): %w", exitCode, err)
-				}
+			}
+			if match {
+				typ, width = cand, len(parts)
 				break
 			}
 		}
+		if !pgRelationKind(typ) {
+			continue
+		}
+		mid := rest[width:] // <schema...> <name...> <owner>
+		if len(mid) < 3 {
+			continue
+		}
+		body := mid[:len(mid)-1] // 去掉末尾 owner
+		schema, name := "", ""
+		for _, cand := range ordered {
+			parts := strings.Fields(cand)
+			if len(parts) >= len(body) {
+				continue
+			}
+			match := true
+			for i, p := range parts {
+				if body[i] != p {
+					match = false
+					break
+				}
+			}
+			if match {
+				schema = cand
+				name = strings.Join(body[len(parts):], " ")
+				break
+			}
+		}
+		if schema == "" {
+			// 未知 schema（例如 dump 里没有对应的 SCHEMA 条目）：退回按首个 token 切分。
+			schema, name = body[0], strings.Join(body[1:], " ")
+		}
+		if name == "" {
+			continue
+		}
+		names[schema+"."+name] = struct{}{}
 	}
+	return names
+}
 
-	// Verification: count user schemas
-	verifyArgs := []string{"-h", db.TargetHost, "-p", strconv.Itoa(db.TargetPort), "-U", db.TargetUsername, "-d", db.TargetDatabase, "-t", "-c", "SELECT count(*) FROM pg_namespace WHERE nspname NOT IN ('pg_catalog','information_schema')"}
-	var countStr string
-	_, err = spec.Exec.Run(ctx, Cmd{Exe: psqlPath, Args: verifyArgs, Env: env},
-		func(line string) { countStr = strings.TrimSpace(line) }, logLine)
-	if err != nil {
-		spec.Logf("warn", "postgresql verification query failed: %v", err)
-	} else {
-		spec.Logf("info", "postgresql verification: %s user schemas", countStr)
+// setDiff 返回 a 中不属于 b 的元素（升序，便于稳定报错）。
+func setDiff(a, b map[string]struct{}) []string {
+	var out []string
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			out = append(out, k)
+		}
 	}
-	return nil
+	sort.Strings(out)
+	return out
 }

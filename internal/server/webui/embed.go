@@ -1,4 +1,4 @@
-// Package webui embeds the production build of the Vue app.
+// Package webui embeds the production build of the web UI.
 // `make web-build` copies web/dist into this directory before compilation.
 package webui
 

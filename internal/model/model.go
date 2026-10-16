@@ -3,7 +3,11 @@
 // shapes exchanged inside ExecuteCommand.params_json and REST APIs.
 package model
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Plan kinds.
 const (
@@ -16,16 +20,16 @@ const (
 
 // Run operations.
 const (
-	OpBackup         = "backup"
-	OpRestore        = "restore"
-	OpRestoreDryRun  = "restore_dry_run"
-	OpCheck          = "check"
-	OpForget         = "forget"
-	OpSnapshots      = "snapshots"
-	OpSnapshotLs     = "snapshot_ls"
-	OpVerifyRemote   = "verify_storage_remote"
-	OpValidatePaths  = "validate_paths"
-	OpProbeCaps      = "probe_capabilities"
+	OpBackup        = "backup"
+	OpRestore       = "restore"
+	OpRestoreDryRun = "restore_dry_run"
+	OpCheck         = "check"
+	OpForget        = "forget"
+	OpSnapshots     = "snapshots"
+	OpSnapshotLs    = "snapshot_ls"
+	OpVerifyRemote  = "verify_storage_remote"
+	OpValidatePaths = "validate_paths"
+	OpProbeCaps     = "probe_capabilities"
 )
 
 // Run statuses, in state-machine order. Terminal: succeeded|failed|cancelled.
@@ -38,23 +42,139 @@ const (
 	RunCancelled  = "cancelled"
 )
 
+// SystemDatabases 是各数据库类型中绝不允许作为恢复目标的系统库。服务端在受理
+// 恢复请求时即拒绝（避免把一个安全的策略拒绝变成"回滚失败/需人工确认"的运行），
+// 各 adapter 在准备目标时同样拒绝，形成纵深防御。
+var SystemDatabases = map[string]map[string]bool{
+	KindMySQL:      {"mysql": true, "information_schema": true, "performance_schema": true, "sys": true},
+	KindPostgreSQL: {"postgres": true, "template0": true, "template1": true},
+	KindMongoDB:    {"admin": true, "local": true, "config": true},
+}
+
+// AllowedExtraArgs 是各数据库类型允许的额外导出参数：只允许非路由、非认证、
+// 不改写输出的开关。服务端在建计划时校验，agent 在备份/恢复前再次校验
+// （纵深防御）。两份实现曾各自维护同一清单，加入 --skip-routines 时漏改服务端
+// 就会让该参数永远被拒，因此统一放在这里。
+var AllowedExtraArgs = map[string]map[string]bool{
+	KindPostgreSQL: {"--no-owner": true, "--no-privileges": true, "--no-acl": true, "--blobs": true, "--no-comments": true, "--no-publications": true, "--no-subscriptions": true, "--no-security-labels": true, "--inserts": true},
+	KindMySQL:      {"--single-transaction": true, "--quick": true, "--routines": true, "--skip-routines": true, "--events": true, "--skip-events": true, "--triggers": true, "--skip-triggers": true, "--hex-blob": true, "--skip-lock-tables": true},
+	KindMongoDB:    {},
+	KindSQLite:     {},
+}
+
+// AllowedExtraArgPrefixes 是允许的「带值开关」前缀（形如 --tables=t1,t3）。
+// 这类参数的取值无法穷举，只校验前缀，值交给 mysqldump 自己校验。
+// 子集备份此前完全无路可走：既没有 --tables/--ignore-table，也没有授权不足时的
+// 降级开关（--skip-events/--skip-triggers 与既有的 --skip-routines 同类）。
+var AllowedExtraArgPrefixes = map[string][]string{
+	KindMySQL: {"--tables=", "--ignore-table="},
+}
+
+// ValidateExtraArgs 拒绝不在白名单中的额外参数，并指出具体选项名。
+func ValidateExtraArgs(kind string, args []string) error {
+	allowed := AllowedExtraArgs[kind]
+	prefixes := AllowedExtraArgPrefixes[kind]
+	for _, arg := range args {
+		if strings.TrimSpace(arg) == "" {
+			return fmt.Errorf("extra_args contains disallowed option %q", arg)
+		}
+		if allowed[arg] {
+			continue
+		}
+		matched := false
+		for _, p := range prefixes {
+			// 前缀之后必须还有内容，否则 --tables= 这种空值会被放行。
+			if strings.HasPrefix(arg, p) && len(arg) > len(p) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("extra_args contains disallowed option %q", arg)
+		}
+	}
+	return nil
+}
+
+// RestorePhaseNeedsManualResolution 报告该相位是否在等人工处理（占用型终态）：
+// 这类相位只能由 POST /restores/{id}/resolve 推进，既不能被 Agent 的迟到/冲突结果
+// 覆盖，也不能被等价参数的请求复用。
+func RestorePhaseNeedsManualResolution(phase string) bool {
+	return phase == RestorePhaseManualRecoveryNeeded || phase == RestorePhaseRollbackFailed
+}
+
+// IsSystemDatabase 判断 name 是否是该类型的系统库。MySQL 库名大小写不敏感，
+// 其余类型按原样比较。
+func IsSystemDatabase(kind, name string) bool {
+	list := SystemDatabases[kind]
+	if len(list) == 0 {
+		return false
+	}
+	if kind == KindMySQL {
+		name = strings.ToLower(name)
+	}
+	return list[name]
+}
+
 // Stable error codes surfaced to the UI and audit log.
 const (
-	ErrServerRestarted          = "server_restarted"
-	ErrAgentUnavailable         = "agent_unavailable"
-	ErrRepositoryLocked         = "repository_locked"
-	ErrRepositoryMissing        = "repository_missing"
-	ErrPartialSourceRead        = "partial_source_read"
-	ErrWrongRepositoryPassword  = "wrong_repository_password"
-	ErrCancelled                = "cancelled"
-	ErrInsufficientTempSpace    = "insufficient_temp_space"
-	ErrMissingTools             = "missing_tools"
-	ErrInvalidPlan              = "invalid_plan"
-	ErrPathValidation           = "path_validation_failed"
-	ErrRestoreTargetNotEmpty    = "restore_target_not_empty"
-	ErrRestoreVerification      = "restore_verification_failed"
+	ErrServerRestarted         = "server_restarted"
+	ErrAgentUnavailable        = "agent_unavailable"
+	ErrAgentOnline             = "agent_online"
+	ErrAgentRevoked            = "agent_revoked"
+	ErrRepositoryMissing       = "repository_missing"
+	ErrRepositoryLocked        = "repository_locked"
+	ErrPartialSourceRead       = "partial_source_read"
+	ErrWrongRepositoryPassword = "wrong_repository_password"
+	ErrCancelled               = "cancelled"
+	ErrInsufficientTempSpace   = "insufficient_temp_space"
+	ErrMissingTools            = "missing_tools"
+	ErrInvalidPlan             = "invalid_plan"
+	ErrPathValidation          = "path_validation_failed"
+	// ErrForbidden 表示被刻意拒绝的请求（如数据库覆盖恢复的确认值不匹配）。
+	// 响应文案保持简短：调用方不应据其区分是哪个目标字段有问题。
+	ErrForbidden = "forbidden"
+	// ErrStorageRemoteNotFound 表示 rclone 配置里没有该 remote（配置问题，与
+	// "远程不可达"区分）。
+	ErrStorageRemoteNotFound = "storage_remote_not_found"
+	ErrRestoreTargetNotEmpty = "restore_target_not_empty"
+	// ErrRestoreTargetExists 表示数据库目标已存在且未开启覆盖（与"目标非空"区分：
+	// 数据库恢复对已存在目标会 DROP+CREATE，空库同样需要显式覆盖）。
+	ErrRestoreTargetExists = "restore_target_exists"
+	ErrRestoreVerification = "restore_verification_failed"
+	// ErrRestorePreflightFailed 表示恢复预检本身失败（连接/认证/参数等），
+	// 与"目标被占用"的 ErrRestoreTargetBusy 区分：真实原因在 error_message 中回显。
+	ErrRestorePreflightFailed = "restore_preflight_failed"
+	// ErrRestoreImportFailed 表示恢复的导入步骤本身失败（如权限不足无法建库、
+	// 导入语句报错），与"导入完成但校验不一致"的 ErrRestoreVerification 区分。
+	ErrRestoreImportFailed      = "restore_import_failed"
 	ErrStorageRemoteUnreachable = "storage_remote_unreachable"
 	ErrTimeout                  = "run_timeout"
+	ErrAgentDisconnected        = "agent_disconnected"
+	ErrPreRestoreBackupFailed   = "pre_restore_backup_failed"
+	ErrRollbackFailed           = "rollback_failed"
+	ErrPhysicalBackupRequired   = "physical_backup_required"
+	// ErrDatabaseRestoreBusy 表示已有未安全终结的数据库恢复占用全局互斥。
+	ErrDatabaseRestoreBusy = "database_restore_busy"
+	// ErrAgentCapabilitiesPending 表示目标 Agent 的当前连接尚未完成能力上报。
+	ErrAgentCapabilitiesPending = "agent_capabilities_pending"
+	// ErrRestoreTargetBusy 表示同一目标路径上已有未终结的文件系统恢复：两个恢复
+	// 同时写入同一目录会产生非确定结果，并可能绕过 overwrite_mode=never 的前置检查。
+	ErrRestoreTargetBusy = "restore_target_busy"
+	// ErrSnapshotListRefreshRequired 表示缺少可用的已验证快照列表缓存。
+	ErrSnapshotListRefreshRequired = "snapshot_list_refresh_required"
+	// ErrUnsupportedRestoreManifest 表示来源快照的 manifest 不满足单库恢复范围。
+	ErrUnsupportedRestoreManifest = "unsupported_restore_manifest"
+	// ErrSnapshotRestoreProtected 表示快照被未终结恢复的保护标记引用，拒绝删除。
+	ErrSnapshotRestoreProtected = "snapshot_restore_protected"
+	// ErrAgentUpgradeRequired 表示目标 Agent 明确不支持受保护的数据库恢复。
+	ErrAgentUpgradeRequired = "agent_upgrade_required"
+	// ErrDatabaseRestoreDisabled 表示该部署尚未启用这个 kind 的数据库恢复。
+	ErrDatabaseRestoreDisabled = "database_restore_disabled"
+	// ErrRepositoryUnavailable 表示仓库当前不可用：状态未就绪，或 Agent 侧无法
+	// 打开/初始化/浏览远端仓库（远端不可达、配置错误等）。属操作者可自行纠正的
+	// 前置条件问题，不得折成 500 internal。
+	ErrRepositoryUnavailable = "repository_unavailable"
 )
 
 func nowUTC() time.Time { return time.Now().UTC() }
@@ -68,7 +188,7 @@ type Admin struct {
 }
 
 type Session struct {
-	IDHash     string    // SHA-256 hex of the bearer token; never the token itself
+	IDHash     string // SHA-256 hex of the bearer token; never the token itself
 	AdminID    string
 	ExpiresAt  time.Time
 	CreatedAt  time.Time
@@ -83,19 +203,31 @@ const (
 )
 
 type Agent struct {
-	ID               string            `json:"id"`
-	Name             string            `json:"name"`
-	Hostname         string            `json:"hostname"`
-	OS               string            `json:"os"`
-	Arch             string            `json:"arch"`
-	Version          string            `json:"version"`
-	Status           AgentStatus       `json:"status"`
-	LastSeenAt       *time.Time        `json:"last_seen_at,omitempty"`
-	EnrolledAt       time.Time         `json:"enrolled_at"`
-	TokenHash        string            `json:"-"` // SHA-256 hex of the agent secret
-	Capabilities     []ToolInfo        `json:"capabilities"`
-	CapabilitiesJSON string            `json:"-"`
-	Revoked          bool              `json:"revoked"`
+	ID                  string        `json:"id"`
+	Name                string        `json:"name"`
+	Hostname            string        `json:"hostname"`
+	OS                  string        `json:"os"`
+	Arch                string        `json:"arch"`
+	Version             string        `json:"version"`
+	Status              AgentStatus   `json:"status"`
+	LastSeenAt          *time.Time    `json:"last_seen_at,omitempty"`
+	EnrolledAt          time.Time     `json:"enrolled_at"`
+	TokenHash           string        `json:"-"` // SHA-256 hex of the agent secret
+	Capabilities        []ToolInfo    `json:"capabilities"`
+	SourcePathMappings  []PathMapping `json:"source_path_mappings"`
+	RestorePathMappings []PathMapping `json:"restore_path_mappings"`
+	CapabilitiesJSON    string        `json:"-"`
+	Revoked             bool          `json:"revoked"`
+	// SafeDatabaseRestore 表示该 Agent 实现了预备份/回滚保护的数据库恢复。
+	// 持久化值仅用于展示；执行授权只认当前连接上报的值。
+	SafeDatabaseRestore bool `json:"safe_database_restore"`
+}
+
+// PathMapping 描述宿主机路径到 Agent 运行环境路径的映射。
+type PathMapping struct {
+	HostPath    string `json:"host_path"`
+	RuntimePath string `json:"runtime_path"`
+	ReadOnly    bool   `json:"read_only"`
 }
 
 // ToolInfo mirrors the proto message for REST exposure.
@@ -104,25 +236,25 @@ type ToolInfo struct {
 	Path    string `json:"path,omitempty"`
 	Version string `json:"version,omitempty"`
 }
-
 type EnrollmentToken struct {
-	ID        string
-	TokenHash string // SHA-256 hex
-	ExpiresAt time.Time
-	UsedAt    *time.Time
+	ID            string
+	TokenHash     string // SHA-256 hex
+	ExpiresAt     time.Time
+	UsedAt        *time.Time
+	TargetAgentID string
 }
 
 // StorageTarget is a cloud drive destination accessed via rclone. Config is
 // stored AES-256-GCM sealed; never returned in plaintext by any API.
 type StorageTarget struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	Type             string    `json:"type"` // only "rclone" in phase 1
-	RemoteName       string    `json:"remote_name"`
-	RemotePath       string    `json:"remote_path"`
-	EncryptedConfig  []byte    `json:"-"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Type            string    `json:"type"` // only "rclone" in phase 1
+	RemoteName      string    `json:"remote_name"`
+	RemotePath      string    `json:"remote_path"`
+	EncryptedConfig []byte    `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type Repository struct {
@@ -133,8 +265,11 @@ type Repository struct {
 	EncryptedPassword []byte     `json:"-"`
 	Status            string     `json:"status"` // pending|ready|error
 	LastCheckAt       *time.Time `json:"last_check_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	// DetachedAt marks a logical unbind. The row and encrypted repository
+	// password are retained so a later bind can safely re-adopt remote data.
+	DetachedAt *time.Time `json:"-"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // Retention maps 1:1 to restic forget flags.
@@ -149,7 +284,7 @@ type Plan struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
 	AgentID        string     `json:"agent_id"`
-	Kind           string     `json:"kind"` // filesystem|postgresql|mysql|mongodb|sqlite
+	Kind           string     `json:"kind"`     // filesystem|postgresql|mysql|mongodb|sqlite
 	Schedule       string     `json:"schedule"` // five-field cron
 	Timezone       string     `json:"timezone"` // IANA name
 	Enabled        bool       `json:"enabled"`
@@ -175,10 +310,11 @@ type PlanSource struct {
 	Host       string   `json:"host,omitempty"`
 	Port       int      `json:"port,omitempty"`
 	Username   string   `json:"username,omitempty"`
-	Database   string   `json:"database,omitempty"` // single db or literal "all"
+	Database   string   `json:"database,omitempty"`    // single db or literal "all"
+	AuthSource string   `json:"auth_source,omitempty"` // mongodb authentication database
 	ExtraArgs  []string `json:"extra_args,omitempty"`
 	// Estimated dump size in bytes; required for database plans to guard temp
-	// space (run fails insufficient_temp_space when free < 1.2x).
+	// space (the agent requires at least 1.3x free space).
 	EstimatedDumpBytes int64 `json:"estimated_dump_bytes,omitempty"`
 
 	// mongodb only
@@ -189,7 +325,7 @@ type PlanSource struct {
 }
 
 type Run struct {
-	ID           string     `json:"id"`
+	ID string `json:"id"`
 	// PlanID empty => system-initiated run not bound to a plan (stored NULL).
 	PlanID       string     `json:"plan_id,omitempty"`
 	AgentID      string     `json:"agent_id"`
@@ -204,38 +340,144 @@ type Run struct {
 	ErrorCode    string     `json:"error_code,omitempty"`
 	ErrorMessage string     `json:"error_message,omitempty"`
 	RepositoryID string     `json:"repository_id,omitempty"`
+	// Attempt increments whenever a queued run is claimed for delivery. It is
+	// persisted so a server restart can distinguish an old lease from a new
+	// dispatch attempt.
+	Attempt        int        `json:"attempt"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
 	// ScheduledAt is the cron slot this run fulfils; (plan_id, scheduled_at)
 	// is unique to prevent double-queueing. Empty for manual runs.
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	// DedupKey identifies runs with equivalent task parameters. While a run
+	// carrying the key is queued/dispatched/running the store rejects another
+	// run with the same key (ErrDuplicateRun); terminal runs release it.
+	// Empty means the run does not participate in queue dedup.
+	DedupKey string `json:"-"`
 }
 
 type Progress struct {
-	Phase      string `json:"phase,omitempty"`
+	Phase      string  `json:"phase,omitempty"`
 	Percent    float64 `json:"percent,omitempty"`
-	BytesDone  int64  `json:"bytes_done,omitempty"`
-	BytesTotal int64  `json:"bytes_total,omitempty"`
-	FilesDone  int64  `json:"files_done,omitempty"`
-	FilesTotal int64  `json:"files_total,omitempty"`
+	BytesDone  int64   `json:"bytes_done,omitempty"`
+	BytesTotal int64   `json:"bytes_total,omitempty"`
+	FilesDone  int64   `json:"files_done,omitempty"`
+	FilesTotal int64   `json:"files_total,omitempty"`
+	// Restore dry-run details. These remain in the JSON result even though the
+	// streaming protobuf only carries the aggregate files counters.
+	FilesAdded   int64    `json:"files_added,omitempty"`
+	FilesChanged int64    `json:"files_changed,omitempty"`
+	FilesSkipped int64    `json:"files_skipped,omitempty"`
+	FilesDeleted int64    `json:"files_deleted,omitempty"`
+	Sample       []string `json:"sample,omitempty"`
+	// DetailJSON 携带阶段相关的非秘密细节（如恢复的保护快照 ID），
+	// 经 RunProgress.detail_json 传回服务端。
+	DetailJSON string `json:"detail_json,omitempty"`
 }
 
+// 备份运行阶段（Progress.Phase）；前端按 runDetail.phases.<phase> 翻译。
+const (
+	BackupPhasePreparing = "preparing"
+	BackupPhaseDumping   = "dumping"
+	BackupPhaseUploading = "backup"
+	BackupPhaseDone      = "done"
+)
+
+// RunLog 的稳定标识是 Server 落库时分配的 ID（也是分页游标）；
+// SourceSeq 保留产生方的本地序号，仅用于幂等去重，不作为标识展示。
 type RunLog struct {
+	// Source 取值见 RunLogSourceAgent / RunLogSourceServer。
+	Source    string    `json:"source"`
+	SourceSeq uint64    `json:"source_seq"`
+	ID        int64     `json:"id"`
 	RunID     string    `json:"run_id"`
-	Seq       uint64    `json:"seq"`
 	Timestamp time.Time `json:"timestamp"`
 	Level     string    `json:"level"` // debug|info|warn|error
 	Message   string    `json:"message"`
 }
 
+// run 日志来源：Agent 执行过程上报，或 Server 自身的派发/诊断。
+const (
+	RunLogSourceAgent  = "agent"
+	RunLogSourceServer = "server"
+)
+
+// SystemLog 是Server和Agent进程日志的统一API/存储形状。
+// ID由Server落库时分配；SourceSeq保留Agent本地序号，便于定位断线与重连。
+type SystemLog struct {
+	ID        int64     `json:"id"`
+	AgentID   string    `json:"agent_id,omitempty"`
+	SourceSeq uint64    `json:"source_seq,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`  // system|http|agent|run|scheduler|dispatcher|connection|command|notification
+	Level     string    `json:"level"` // debug|info|warn|error
+	Message   string    `json:"message"`
+}
+
+// Restore request phases. Intermediate phases describe a restore that may still
+// modify the target; the safe terminal phases release the global database
+// restore occupancy, while the unsafe ones keep it until an operator resolves
+// the restore explicitly.
+const (
+	RestorePhaseQueued      = "queued"
+	// RestorePhaseRunning 表示 run 已分发、Agent 已接单，尚未进入恢复各阶段。
+	RestorePhaseRunning     = "running"
+	RestorePhasePreBackup   = "pre_backup"
+	RestorePhaseRestoring   = "restoring"
+	RestorePhaseRollingBack = "rolling_back"
+	RestorePhaseCancelling  = "cancelling"
+	RestorePhaseSucceeded   = "succeeded"
+	// RestorePhaseFailed 表示执行失败且已确认目标未被修改。
+	RestorePhaseFailed               = "failed"
+	RestorePhasePreBackupFailed      = "pre_backup_failed"
+	RestorePhaseRolledBack           = "rolled_back"
+	RestorePhaseNewTargetCleaned     = "new_target_cleaned"
+	RestorePhaseRollbackFailed       = "rollback_failed"
+	RestorePhaseManualRecoveryNeeded = "manual_recovery_required"
+	RestorePhaseManualRecoveryDone   = "manual_recovery_resolved"
+)
+
+// RestorePhaseReleasesOccupancy reports whether a restore request phase is
+// safe: the target is either restored to its original content, or provably
+// untouched.
+func RestorePhaseReleasesOccupancy(phase string) bool {
+	switch phase {
+	case RestorePhaseSucceeded, RestorePhaseFailed, RestorePhasePreBackupFailed,
+		RestorePhaseRolledBack, RestorePhaseNewTargetCleaned, RestorePhaseManualRecoveryDone:
+		return true
+	default:
+		return false
+	}
+}
+
+// RestoreSafePhases 返回释放数据库恢复全局占用与仓库阻塞的安全终态 phase。
+func RestoreSafePhases() []string {
+	return []string{
+		RestorePhaseSucceeded, RestorePhaseFailed, RestorePhasePreBackupFailed,
+		RestorePhaseRolledBack, RestorePhaseNewTargetCleaned, RestorePhaseManualRecoveryDone,
+	}
+}
+
+// RestorePhaseIsTerminal reports whether no further agent work is expected for
+// the phase. rollback_failed and manual_recovery_required are terminal for the
+// request yet keep blocking the repository and the occupancy until resolved.
+func RestorePhaseIsTerminal(phase string) bool {
+	return RestorePhaseReleasesOccupancy(phase) ||
+		phase == RestorePhaseRollbackFailed || phase == RestorePhaseManualRecoveryNeeded
+}
+
 type RestoreRequest struct {
-	ID                string     `json:"id"`
-	RunID             string     `json:"run_id"` // the restore run created for it
-	SnapshotID        string     `json:"snapshot_id"`
-	RestoreKind       string     `json:"restore_kind"` // filesystem|postgresql|mysql|mongodb|sqlite
-	Target            RestoreTarget `json:"target"`
-	TargetJSON        string     `json:"-"`
-	Overwrite         bool       `json:"overwrite"`
-	ConfirmationHash  string     `json:"-"` // SHA-256 of typed db name when overwriting
-	CreatedAt         time.Time  `json:"created_at"`
+	ID                 string        `json:"id"`
+	RunID              string        `json:"run_id"` // the restore run created for it
+	SnapshotID         string        `json:"snapshot_id"`
+	RestoreKind        string        `json:"restore_kind"` // filesystem|postgresql|mysql|mongodb|sqlite
+	Target             RestoreTarget `json:"target"`
+	TargetJSON         string        `json:"-"`
+	Overwrite          bool          `json:"overwrite"`
+	ConfirmationHash   string        `json:"-"` // SHA-256 of typed db name when overwriting
+	PreRestoreRunID    string        `json:"pre_restore_run_id,omitempty"`
+	RollbackSnapshotID string        `json:"rollback_snapshot_id,omitempty"`
+	Phase              string        `json:"phase,omitempty"`
+	CreatedAt          time.Time     `json:"created_at"`
 }
 
 type RestoreTarget struct {
@@ -245,10 +487,11 @@ type RestoreTarget struct {
 	OverwriteMode string   `json:"overwrite_mode,omitempty"` // never|if-changed|always
 
 	// databases
-	Host     string `json:"host,omitempty"`
-	Port     int    `json:"port,omitempty"`
-	Username string `json:"username,omitempty"`
-	Database string `json:"database,omitempty"`
+	Host       string `json:"host,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	Username   string `json:"username,omitempty"`
+	Database   string `json:"database,omitempty"`
+	AuthSource string `json:"auth_source,omitempty"`
 }
 
 type AuditEvent struct {
@@ -262,20 +505,90 @@ type AuditEvent struct {
 	DetailJSON   string    `json:"detail,omitempty"`
 }
 
-// Snapshot is a read model assembled from `restic snapshots --json` on the
-// agent; not persisted server-side.
+// TelegramSettings is the web-configured Telegram failure-notification
+// target. BotToken is plaintext only in transit/at the edges; at rest it is
+// sealed with AAD TelegramTokenAAD. A missing row means notifications are
+// disabled.
+type TelegramSettings struct {
+	BotToken  string    `json:"bot_token"`
+	ChatID    string    `json:"chat_id"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Sealing coordinates for the stored bot token (secrets.Sealer AAD).
+const (
+	TelegramSettingsTable = "telegram_settings"
+	TelegramSettingsRow   = "1"
+	TelegramTokenColumn   = "encrypted_token"
+)
+
+// Snapshot 是 Agent 返回的 Restic 快照读模型，不在 Server 数据库中持久化。
 type Snapshot struct {
-	ID       string   `json:"id"`
-	Time     string   `json:"time"`
-	Host     string   `json:"host"`
-	Tags     []string `json:"tags,omitempty"`
-	Paths    []string `json:"paths,omitempty"`
-	PlanID   string   `json:"-"`
+	ID    string   `json:"id"`
+	Time  string   `json:"time"`
+	Host  string   `json:"host"`
+	Tags  []string `json:"tags"`
+	Paths []string `json:"paths"`
+}
+
+// SnapshotDeletionSource 标识删除意图来源。
+type SnapshotDeletionSource string
+
+const (
+	SnapshotDeletionManual SnapshotDeletionSource = "manual"
+	SnapshotDeletionOrphan SnapshotDeletionSource = "orphan"
+)
+
+// SnapshotDeletionState 标识删除意图状态。
+type SnapshotDeletionState string
+
+const (
+	SnapshotDeletionCandidate SnapshotDeletionState = "candidate"
+	SnapshotDeletionPending   SnapshotDeletionState = "pending"
+	SnapshotDeletionRunning   SnapshotDeletionState = "running"
+	SnapshotDeletionSucceeded SnapshotDeletionState = "succeeded"
+)
+
+// SnapshotDeletion 记录一次快照删除意图与执行状态。
+type SnapshotDeletion struct {
+	ID             string                 `json:"id"`
+	RepositoryID   string                 `json:"repository_id"`
+	AgentID        string                 `json:"agent_id"`
+	SnapshotID     string                 `json:"snapshot_id"`
+	Source         SnapshotDeletionSource `json:"source"`
+	State          SnapshotDeletionState  `json:"state"`
+	FirstSeenAt    time.Time              `json:"first_seen_at"`
+	LastSeenAt     time.Time              `json:"last_seen_at"`
+	SeenCount      int                    `json:"seen_count"`
+	NextAttemptAt  *time.Time             `json:"next_attempt_at,omitempty"`
+	Attempt        int                    `json:"attempt"`
+	RunID          string                 `json:"run_id,omitempty"`
+	LeaseExpiresAt *time.Time             `json:"lease_expires_at,omitempty"`
+	ErrorCode      string                 `json:"error_code,omitempty"`
+	ErrorMessage   string                 `json:"error_message,omitempty"`
+	RequestedBy    string                 `json:"requested_by,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+	CompletedAt    *time.Time             `json:"completed_at,omitempty"`
+}
+
+// SnapshotCleanupState 记录每仓库的孤儿扫描进度。
+type SnapshotCleanupState struct {
+	RepositoryID        string     `json:"repository_id"`
+	ScanRunID           string     `json:"scan_run_id,omitempty"`
+	LastScanStartedAt   *time.Time `json:"last_scan_started_at,omitempty"`
+	LastScanCompletedAt *time.Time `json:"last_scan_completed_at,omitempty"`
+	// NextAttemptAt 是扫描失败后的退避时间点；在此之前不再发起新的孤儿扫描，
+	// 避免失败扫描每 tick 重试造成无上限的 run/日志增长。
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // ServerInfo is reported to agents during handshake.
+
+// ServerInfo is reported to agents during handshake.
 type ServerInfo struct {
-	Version        string
-	InstanceID     string
-	HeartbeatSecs  int
+	Version       string
+	InstanceID    string
+	HeartbeatSecs int
 }

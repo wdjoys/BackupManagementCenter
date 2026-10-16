@@ -1,21 +1,23 @@
 // Package api wires the HTTP surface of the server: setup/auth, agents,
-// storage targets, repositories/snapshots, plans, runs (+WebSocket logs),
-// restores, dashboard, health.
+// process logs, storage targets, repositories/snapshots, plans, runs
+// (+WebSocket logs), restores, dashboard and health.
 package api
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-
+	"backupmanagementcenter/internal/server/agentreg"
 	"backupmanagementcenter/internal/server/events"
 	"backupmanagementcenter/internal/server/jobs"
 	"backupmanagementcenter/internal/server/metrics"
 	"backupmanagementcenter/internal/server/store"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 // Server carries the dependencies of the HTTP layer.
@@ -25,8 +27,69 @@ type Server struct {
 	Met     *metrics.Metrics
 	Jobs    *jobs.Orchestrator
 	Version string
+	// PublicURL is the externally visible origin used to enforce secure
+	// cookies and complete Origin checks when the server is behind a proxy.
+	PublicURL string
+	// Reg is the agent connection registry; revoke kicks live streams.
+	Reg *agentreg.Registry
+	// AgentSvc 处理 Agent 连接生命周期（在线状态与在途 run 的对账）。撤销 Agent 时
+	// 会直接踢流，必须显式让它按断连处理，否则在途 run 会卡在 running。
+	AgentSvc *agentreg.Service
+	// DatabaseRestoreKinds lists the database kinds whose restore path has been
+	// verified on this deployment. Anything else is refused with 503: database
+	// restores overwrite data and stay opt-in.
+	DatabaseRestoreKinds map[string]bool
 	// Ready reports overall server readiness for /health/ready.
-	Ready func() bool
+	Ready  func() bool
+	rateMu sync.Mutex
+	rate   map[string]rateWindow
+}
+
+type rateWindow struct {
+	started time.Time
+	count   int
+}
+
+// allowAuthAttempt is a small in-process login/setup limiter. It is
+// deliberately keyed by the peer address and fails closed after ten attempts
+// in fifteen minutes; a reverse proxy should apply an additional edge limit.
+// 被拒时同时返回当前窗口的剩余时间，供 handler 写 Retry-After（此前 429 没有任何
+// 重试提示，客户端只能盲猜）。
+func (s *Server) allowAuthAttempt(r *http.Request) (bool, time.Duration) {
+	key := r.RemoteAddr
+	if i := strings.LastIndex(key, ":"); i > 0 {
+		key = key[:i]
+	}
+	now := time.Now()
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	if s.rate == nil {
+		s.rate = make(map[string]rateWindow)
+	}
+	w := s.rate[key]
+	if w.started.IsZero() || now.Sub(w.started) >= 15*time.Minute {
+		w = rateWindow{started: now}
+	}
+	if w.count >= 10 {
+		s.rate[key] = w
+		return false, 15*time.Minute - now.Sub(w.started)
+	}
+	w.count++
+	s.rate[key] = w
+	return true, 0
+}
+
+// writeRateLimited answers 429 with a Retry-After header (整秒，向上取整，至少 1s)。
+func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
+	secs := int(retryAfter.Seconds())
+	if retryAfter%time.Second != 0 {
+		secs++
+	}
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
 }
 
 func New(s *Server) http.Handler {
@@ -55,27 +118,36 @@ func New(s *Server) http.Handler {
 		r.Get("/setup/status", s.handleSetupStatus)
 		r.Post("/setup", s.handleSetup)
 		r.Post("/auth/login", s.handleLogin)
-		r.Post("/auth/logout", s.requireAuth(s.handleLogout))
+		r.With(requireCSRF).Post("/auth/logout", s.handleLogout)
 		r.Get("/auth/me", s.requireAuth(s.handleMe))
 		r.Group(func(r chi.Router) {
 			r.Use(func(next http.Handler) http.Handler {
 				return s.requireAuth(next.ServeHTTP)
 			})
 			r.Get("/dashboard", s.handleDashboard)
+			r.Get("/logs/server", s.handleListServerLogs)
+			r.Get("/logs/agent", s.handleListAgentLogs)
+			r.Get("/agents/{id}/logs", s.handleListAgentLogs)
 
+			r.Patch("/agents/{id}", s.handleRenameAgent)
 			r.Get("/agents", s.handleListAgents)
 			r.Delete("/agents/{id}", s.handleRevokeAgent)
+			r.Post("/agents/{id}/restore", s.handleRestoreAgent)
 			r.Post("/enrollment-tokens", s.handleCreateEnrollmentToken)
 			r.Get("/enrollment-tokens", s.handleListEnrollmentTokens)
 
 			r.Post("/storage-targets/validate", s.handleValidateStorageTarget)
 			r.Post("/storage-targets", s.handleCreateStorageTarget)
 			r.Get("/storage-targets", s.handleListStorageTargets)
+			r.Patch("/storage-targets/{id}", s.handleRenameStorageTarget)
 			r.Delete("/storage-targets/{id}", s.handleDeleteStorageTarget)
 
 			r.Post("/repositories", s.handleBindRepository)
 			r.Get("/repositories", s.handleListRepositories)
+			r.Delete("/repositories/{id}", s.handleUnbindRepository)
+			r.Post("/repositories/{id}/check", s.handleRepositoryCheck)
 			r.Get("/repositories/{id}/snapshots", s.handleRepoSnapshots)
+			r.Delete("/repositories/{id}/snapshots/{snapshotID}", s.handleDeleteSnapshot)
 			r.Get("/snapshots/{snapshotID}/tree", s.handleSnapshotTree)
 
 			r.Post("/plans/validate", s.handleValidatePlan)
@@ -84,6 +156,7 @@ func New(s *Server) http.Handler {
 			r.Get("/plans/{id}", s.handleGetPlan)
 			r.Put("/plans/{id}", s.handleUpdatePlan)
 			r.Delete("/plans/{id}", s.handleDeletePlan)
+			r.Post("/plans/{id}/backups/delete", s.handleDeletePlanBackups)
 			r.Post("/plans/{id}/run", s.handleRunPlan)
 
 			r.Get("/runs", s.handleListRuns)
@@ -94,6 +167,9 @@ func New(s *Server) http.Handler {
 			r.Post("/restores/dry-run", s.handleDryRunRestore)
 			r.Post("/restores", s.handleStartRestore)
 			r.Get("/restores", s.handleListRestores)
+			r.Post("/restores/{id}/resolve", s.handleResolveRestore)
+			r.Get("/settings/telegram", s.handleGetTelegramSettings)
+			r.Put("/settings/telegram", s.handlePutTelegramSettings)
 		})
 	})
 
@@ -147,12 +223,19 @@ func queryInt(r *http.Request, name string, def int) int {
 	return n
 }
 
-var errBadRequest = errors.New("bad request")
-
 func requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-		logf("%s %s -> %d", r.Method, r.URL.Path, ww.Status())
+		logf("[INFO] http request request_id=%s method=%s path=%s status=%d duration=%s remote=%s user_agent=%q",
+			middleware.GetReqID(r.Context()),
+			r.Method,
+			r.URL.Path,
+			ww.Status(),
+			time.Since(started).Round(time.Microsecond),
+			r.RemoteAddr,
+			r.UserAgent(),
+		)
 	})
 }

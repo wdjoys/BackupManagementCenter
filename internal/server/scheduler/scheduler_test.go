@@ -3,6 +3,9 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,13 +21,15 @@ import (
 type fakeStore struct {
 	mu sync.Mutex
 
-	plans []model.Plan
-	runs  []model.Run
+	plans  []model.Plan
+	runs   []model.Run
 	agents map[string]model.Agent
-	repos []model.Repository
+	repos  []model.Repository
 
 	// record of transitions
 	transitions []transitionCall
+	// sessionCleanups 记录 DeleteExpiredSessions 的调用次数与传入的 now。
+	sessionCleanups []time.Time
 }
 
 type transitionCall struct {
@@ -127,10 +132,10 @@ func (f *fakeStore) ListRepositoriesNeedingCheck(_ context.Context, olderThan ti
 
 // ---- Stubs for unused Store methods ----
 
-func (f *fakeStore) Close() error                                              { return nil }
-func (f *fakeStore) Migrate(_ context.Context) error                            { return nil }
-func (f *fakeStore) HasAdmin(_ context.Context) (bool, error)                   { return false, nil }
-func (f *fakeStore) CreateAdmin(_ context.Context, _ *model.Admin) error        { return nil }
+func (f *fakeStore) Close() error                                        { return nil }
+func (f *fakeStore) Migrate(_ context.Context) error                     { return nil }
+func (f *fakeStore) HasAdmin(_ context.Context) (bool, error)            { return false, nil }
+func (f *fakeStore) CreateAdmin(_ context.Context, _ *model.Admin) error { return nil }
 func (f *fakeStore) GetAdminByUsername(_ context.Context, _ string) (*model.Admin, error) {
 	return nil, store.ErrNotFound
 }
@@ -139,69 +144,180 @@ func (f *fakeStore) GetAdminByID(_ context.Context, _ string) (*model.Admin, err
 	return nil, store.ErrNotFound
 }
 func (f *fakeStore) UpdateAdminLastLogin(_ context.Context, _ string, _ time.Time) error { return nil }
-func (f *fakeStore) CreateSession(_ context.Context, _ *model.Session) error               { return nil }
-func (f *fakeStore) GetSession(_ context.Context, _ string) (*model.Session, error)        { return nil, store.ErrNotFound }
-func (f *fakeStore) TouchSession(_ context.Context, _ string, _ time.Time) error           { return nil }
-func (f *fakeStore) DeleteSession(_ context.Context, _ string) error                        { return nil }
-func (f *fakeStore) DeleteExpiredSessions(_ context.Context, _ time.Time) error             { return nil }
-func (f *fakeStore) CreateEnrollmentToken(_ context.Context, _ *model.EnrollmentToken) error { return nil }
-func (f *fakeStore) ListEnrollmentTokens(_ context.Context) ([]model.EnrollmentToken, error) { return nil, nil }
+func (f *fakeStore) ResetAdmin(_ context.Context) error                                  { return nil }
+func (f *fakeStore) CreateSession(_ context.Context, _ *model.Session) error             { return nil }
+func (f *fakeStore) GetSession(_ context.Context, _ string) (*model.Session, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) TouchSession(_ context.Context, _ string, _ time.Time) error { return nil }
+func (f *fakeStore) DeleteSession(_ context.Context, _ string) error             { return nil }
+func (f *fakeStore) DeleteExpiredSessions(_ context.Context, now time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionCleanups = append(f.sessionCleanups, now)
+	return nil
+}
+func (f *fakeStore) CreateEnrollmentToken(_ context.Context, _ *model.EnrollmentToken) error {
+	return nil
+}
+func (f *fakeStore) ListEnrollmentTokens(_ context.Context) ([]model.EnrollmentToken, error) {
+	return nil, nil
+}
 func (f *fakeStore) ConsumeEnrollmentToken(_ context.Context, _ string, _ time.Time) (*model.EnrollmentToken, error) {
 	return nil, store.ErrTokenInvalid
 }
-func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, _ *model.Agent) error                 { return nil }
-func (f *fakeStore) SetAgentStatus(_ context.Context, _ string, _ model.AgentStatus, _ time.Time) error { return nil }
-func (f *fakeStore) SaveAgentCapabilities(_ context.Context, _ string, _ []model.ToolInfo, _ time.Time) error { return nil }
-func (f *fakeStore) GetAgentBySecretHash(_ context.Context, _ string) (*model.Agent, error) { return nil, store.ErrNotFound }
-func (f *fakeStore) ListAgents(_ context.Context) ([]model.Agent, error)                     { return nil, nil }
-func (f *fakeStore) RevokeAgent(_ context.Context, _ string) error                           { return nil }
-func (f *fakeStore) CreateStorageTarget(_ context.Context, _ *model.StorageTarget) error     { return nil }
-func (f *fakeStore) UpdateStorageTarget(_ context.Context, _ *model.StorageTarget) error     { return nil }
-func (f *fakeStore) DeleteStorageTarget(_ context.Context, _ string) error                   { return nil }
+func (f *fakeStore) ReEnrollAgent(context.Context, string, string, time.Time) error { return nil }
+func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, _ *model.Agent) error   { return nil }
+func (f *fakeStore) SetAgentStatus(_ context.Context, _ string, _ model.AgentStatus, _ time.Time) error {
+	return nil
+}
+func (f *fakeStore) SaveAgentCapabilities(_ context.Context, _ string, _ []model.ToolInfo, _ []model.PathMapping, _ []model.PathMapping, _ bool, _ time.Time) error {
+	return nil
+}
+
+func (f *fakeStore) CreateDatabaseRestoreRun(context.Context, *model.Run, *model.RestoreRequest) error {
+	return nil
+}
+func (f *fakeStore) ActiveDatabaseRestoreRunID(context.Context) (string, error) { return "", nil }
+func (f *fakeStore) RepositoryRestoreBlocked(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+func (f *fakeStore) ProtectedRestoreSnapshotIDs(context.Context, string) (map[string]struct{}, error) {
+	return nil, nil
+}
+func (f *fakeStore) UpdateRestoreRollbackSnapshot(context.Context, string, string) error { return nil }
+func (f *fakeStore) FinishRestoreRun(context.Context, store.FinishRestoreRunInput) error { return nil }
+func (f *fakeStore) RequestRestoreStop(context.Context, string, time.Time) error         { return nil }
+func (f *fakeStore) ResolveRestoreRequest(context.Context, string, string, string, string, time.Time) error {
+	return nil
+}
+func (f *fakeStore) GetAgentBySecretHash(_ context.Context, _ string) (*model.Agent, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) ListAgents(_ context.Context) ([]model.Agent, error) { return nil, nil }
+func (f *fakeStore) RevokeAgent(_ context.Context, _ string) error       { return nil }
+func (f *fakeStore) UnrevokeAgent(_ context.Context, _ string) error     { return nil }
+func (f *fakeStore) RenameAgent(_ context.Context, _, _ string) error    { return nil }
+func (f *fakeStore) GetTelegramSettings(_ context.Context) (*model.TelegramSettings, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) SaveTelegramSettings(_ context.Context, _ *model.TelegramSettings) error {
+	return nil
+}
+func (f *fakeStore) DeleteTelegramSettings(_ context.Context) error                      { return nil }
+func (f *fakeStore) CreateStorageTarget(_ context.Context, _ *model.StorageTarget) error { return nil }
+func (f *fakeStore) UpdateStorageTarget(_ context.Context, _ *model.StorageTarget) error { return nil }
+func (f *fakeStore) DeleteStorageTarget(_ context.Context, _ string) error               { return nil }
 func (f *fakeStore) GetStorageTarget(_ context.Context, _ string) (*model.StorageTarget, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListStorageTargets(_ context.Context) ([]model.StorageTarget, error) { return nil, nil }
-func (f *fakeStore) CreateRepository(_ context.Context, _ *model.Repository) error   { return nil }
-func (f *fakeStore) GetRepository(_ context.Context, _ string) (*model.Repository, error) { return nil, store.ErrNotFound }
+func (f *fakeStore) ListStorageTargets(_ context.Context) ([]model.StorageTarget, error) {
+	return nil, nil
+}
+func (f *fakeStore) CreateRepository(_ context.Context, _ *model.Repository) error { return nil }
+func (f *fakeStore) GetRepository(_ context.Context, _ string) (*model.Repository, error) {
+	return nil, store.ErrNotFound
+}
 func (f *fakeStore) GetRepositoryByAgentAndTarget(_ context.Context, _, _ string) (*model.Repository, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListRepositories(_ context.Context) ([]model.Repository, error)  { return nil, nil }
-func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, _, _ string) error      { return nil }
-func (f *fakeStore) MarkRepositoryChecked(_ context.Context, _ string, _ time.Time) error { return nil }
-func (f *fakeStore) CreatePlan(_ context.Context, _ *model.Plan) error                { return nil }
-func (f *fakeStore) UpdatePlan(_ context.Context, _ *model.Plan) error                { return nil }
-func (f *fakeStore) DeletePlan(_ context.Context, _ string) error                     { return nil }
-func (f *fakeStore) ListPlans(_ context.Context, _ string) ([]model.Plan, error)      { return nil, nil }
-func (f *fakeStore) CreateRun(_ context.Context, _ *model.Run) error                  { return nil }
-func (f *fakeStore) GetRun(_ context.Context, _ string) (*model.Run, error)           { return nil, store.ErrNotFound }
-func (f *fakeStore) ListRuns(_ context.Context, _ store.RunFilter) ([]model.Run, error) { return nil, nil }
-func (f *fakeStore) FailStaleRuns(_ context.Context, _ []string, _ string, _ time.Time) (int64, error) {
-	return 0, nil
+func (f *fakeStore) ListRepositories(_ context.Context) ([]model.Repository, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]model.Repository, len(f.repos))
+	copy(out, f.repos)
+	return out, nil
 }
-func (f *fakeStore) AppendRunLogs(_ context.Context, _ []model.RunLog) error          { return nil }
-func (f *fakeStore) ListRunLogs(_ context.Context, _ string, _ uint64, _ int) ([]model.RunLog, error) {
+func (f *fakeStore) DetachRepository(_ context.Context, _ string) error          { return nil }
+func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, _, _ string) error { return nil }
+func (f *fakeStore) PruneHistory(context.Context, time.Time) (store.HistoryPruneResult, error) {
+	return store.HistoryPruneResult{}, nil
+}
+
+func (f *fakeStore) MarkRepositoryChecked(_ context.Context, _ string, _ time.Time) error { return nil }
+func (f *fakeStore) CreatePlan(_ context.Context, _ *model.Plan) error                    { return nil }
+func (f *fakeStore) UpdatePlan(_ context.Context, _ *model.Plan) error                    { return nil }
+func (f *fakeStore) DeletePlan(_ context.Context, _ string) error                         { return nil }
+func (f *fakeStore) ListPlans(_ context.Context, _ string) ([]model.Plan, error)          { return nil, nil }
+func (f *fakeStore) CreateRun(_ context.Context, _ *model.Run) error                      { return nil }
+func (f *fakeStore) FindActiveRunByDedupKey(_ context.Context, _ string) (*model.Run, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) GetRun(_ context.Context, _ string) (*model.Run, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) ListRuns(_ context.Context, filter store.RunFilter) ([]model.Run, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	statusSet := make(map[string]bool, len(filter.Statuses))
+	for _, status := range filter.Statuses {
+		statusSet[status] = true
+	}
+	out := make([]model.Run, 0)
+	for _, run := range f.runs {
+		if filter.RepositoryID != "" && run.RepositoryID != filter.RepositoryID {
+			continue
+		}
+		if filter.Operation != "" && run.Operation != filter.Operation {
+			continue
+		}
+		if len(statusSet) > 0 && !statusSet[run.Status] {
+			continue
+		}
+		excluded := false
+		for _, sub := range filter.ExcludeDedupKeySubstrings {
+			if strings.Contains(run.DedupKey, sub) {
+				excluded = true
+				break
+			}
+		}
+		if excluded {
+			continue
+		}
+		out = append(out, run)
+	}
+	// 与真实 store 一致：按排队时间倒序并应用 Limit（否则"最近 N 条"的窗口语义
+	// 在测试里不成立，回归测试无法复现被挤出窗口的场景）。
+	sort.Slice(out, func(i, j int) bool { return out[i].QueuedAt.After(out[j].QueuedAt) })
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, nil
+}
+func (f *fakeStore) FailStaleRuns(_ context.Context, _ []string, _ string, _ time.Time) ([]string, error) {
 	return nil, nil
 }
-func (f *fakeStore) MaxRunLogSeq(_ context.Context, _ string) (uint64, error) { return 0, nil }
-func (f *fakeStore) CreateRestoreRequest(_ context.Context, _ *model.RestoreRequest) error { return nil }
+func (f *fakeStore) AppendRunLogs(_ context.Context, _ []model.RunLog) error { return nil }
+func (f *fakeStore) ListRunLogs(_ context.Context, _ string, _ int64, _ int) ([]model.RunLog, error) {
+	return nil, nil
+}
+func (f *fakeStore) CreateRestoreRequest(_ context.Context, _ *model.RestoreRequest) error {
+	return nil
+}
 func (f *fakeStore) GetRestoreRequest(_ context.Context, _ string) (*model.RestoreRequest, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListRestoreRequests(_ context.Context, _ int) ([]model.RestoreRequest, error) { return nil, nil }
+func (f *fakeStore) GetRestoreRequestByRunID(_ context.Context, _ string) (*model.RestoreRequest, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) ListRestoreRequests(_ context.Context, _ int) ([]model.RestoreRequest, error) {
+	return nil, nil
+}
 func (f *fakeStore) AppendAuditEvent(_ context.Context, _ *model.AuditEvent) error { return nil }
-func (f *fakeStore) ListAuditEvents(_ context.Context, _ int) ([]model.AuditEvent, error) { return nil, nil }
+func (f *fakeStore) ListAuditEvents(_ context.Context, _ int) ([]model.AuditEvent, error) {
+	return nil, nil
+}
 
 // ---------------------------------------------------------------------------
 // fakeStarter records calls to StartPlanRun / SystemRunCheck.
 // ---------------------------------------------------------------------------
 
 type fakeStarter struct {
-	mu                 sync.Mutex
-	startPlanRunCalls  []startPlanRunCall
+	mu                  sync.Mutex
+	startPlanRunCalls   []startPlanRunCall
 	systemRunCheckCalls []string
-	returnErr          error // if set, returned by StartPlanRun
+	retentionCalls      []string
+	returnErr           error // if set, returned by StartPlanRun
 }
 
 type startPlanRunCall struct {
@@ -232,6 +348,29 @@ func (f *fakeStarter) SystemRunCheck(_ context.Context, repositoryID string) (st
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// recordingNotifier records failure-notification calls.
+// ---------------------------------------------------------------------------
+
+type recordingNotifier struct {
+	mu  sync.Mutex
+	ids []string
+	err error
+}
+
+func (r *recordingNotifier) NotifyPlanFailure(_ context.Context, runID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ids = append(r.ids, runID)
+	return r.err
+}
+
+func (r *recordingNotifier) calls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.ids...)
+}
+
 func tickAt(s *Scheduler, now time.Time) {
 	s.runTick(context.Background(), now)
 }
@@ -258,7 +397,7 @@ func TestCronFiresOncePerSlot(t *testing.T) {
 		Timezone: "UTC",
 	})
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil, 0)
 
 	// Tick 1 @ 10:00:00 → cursor initialized to 10:01:00 (nextAfter), no fire.
 	tickAt(s, mustTime("2026-08-22T10:00:00Z"))
@@ -299,6 +438,51 @@ func TestCronFiresOncePerSlot(t *testing.T) {
 	}
 }
 
+// TestCronCursorResetOnScheduleChange 复现并锁住 L1：PUT 改计划后，内存游标来自旧
+// 表达式，若沿用会在旧槽位补触发一次（实测 * * * * * 改成 0 3 * * * 后 14:32:07 的
+// tick 仍建了 scheduled_at=14:32:00Z 的运行），且与按新表达式现算的下次时间不一致。
+func TestCronCursorResetOnScheduleChange(t *testing.T) {
+	fst := newFakeStore(t)
+	fst.plans = append(fst.plans, model.Plan{
+		ID:       "plan-1",
+		Enabled:  true,
+		Schedule: "* * * * *",
+		Timezone: "UTC",
+	})
+	start := newFakeStarter()
+	s := New(fst, start, nil, 0)
+
+	tickAt(s, mustTime("2026-08-22T10:00:00Z")) // 游标初始化为 10:01
+	tickAt(s, mustTime("2026-08-22T10:01:01Z")) // 按时触发一次
+	if len(start.startPlanRunCalls) != 1 {
+		t.Fatalf("expected 1 fire before the change, got %d", len(start.startPlanRunCalls))
+	}
+	if got := s.cursors["plan-1"].next; !got.Equal(mustTime("2026-08-22T10:02:00Z")) {
+		t.Fatalf("cursor after fire = %v, want 10:02:00", got)
+	}
+
+	// 计划改成每天 03:00（等价于 PUT /plans/{id}）。
+	fst.plans[0].Schedule = "0 3 * * *"
+
+	// 旧的分钟槽位 10:02 已到点：游标必须被丢弃重算，本 tick 不触发。
+	tickAt(s, mustTime("2026-08-22T10:02:05Z"))
+	if len(start.startPlanRunCalls) != 1 {
+		t.Fatalf("expected no fire on the stale slot, got %d fires", len(start.startPlanRunCalls))
+	}
+	if got := s.cursors["plan-1"].next; !got.Equal(mustTime("2026-08-23T03:00:00Z")) {
+		t.Fatalf("cursor after schedule change = %v, want next day 03:00", got)
+	}
+
+	// 新表达式的槽位到点后仍要正常触发。
+	tickAt(s, mustTime("2026-08-23T03:00:05Z"))
+	if len(start.startPlanRunCalls) != 2 {
+		t.Fatalf("expected the new schedule to fire, got %d fires", len(start.startPlanRunCalls))
+	}
+	if got := start.startPlanRunCalls[1].scheduledAt.UTC(); !got.Equal(mustTime("2026-08-23T03:00:00Z")) {
+		t.Fatalf("scheduledAt=%v, want 2026-08-23T03:00:00Z", got)
+	}
+}
+
 // TestCronToleratesDuplicateRun verifies that ErrDuplicateRun from the
 // starter is logged (not fatal) and the cursor still advances.
 func TestCronToleratesDuplicateRun(t *testing.T) {
@@ -312,7 +496,7 @@ func TestCronToleratesDuplicateRun(t *testing.T) {
 	start := newFakeStarter()
 	start.returnErr = store.ErrDuplicateRun
 
-	s := New(fst, start)
+	s := New(fst, start, nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z")) // init cursor
 	tickAt(s, mustTime("2026-08-22T10:01:01Z")) // fire (ErrDuplicateRun returned)
@@ -338,7 +522,7 @@ func TestCronTimezone(t *testing.T) {
 		Timezone: "Asia/Shanghai", // UTC+8
 	})
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil, 0)
 
 	// 09:00 Asia/Shanghai = 01:00 UTC. At this point 08:00 has already
 	// passed, so the next fire is 2026-08-23T00:00:00Z (08:00 Shanghai next day).
@@ -369,12 +553,34 @@ func TestCronDisabledPlanSkipped(t *testing.T) {
 		Timezone: "UTC",
 	})
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z"))
 	tickAt(s, mustTime("2026-08-22T10:01:01Z"))
 	if len(start.startPlanRunCalls) != 0 {
 		t.Fatalf("expected 0 fires for disabled plan, got %d", len(start.startPlanRunCalls))
+	}
+}
+
+// TestCronSkipsOfflineAgent verifies a due plan does not start a run when its
+// agent is offline, while still advancing the cursor past that slot.
+func TestCronSkipsOfflineAgent(t *testing.T) {
+	fst := newFakeStore(t)
+	fst.plans = append(fst.plans, model.Plan{
+		ID:       "plan-offline",
+		AgentID:  "agent-1",
+		Enabled:  true,
+		Schedule: "* * * * *",
+		Timezone: "UTC",
+	})
+	fst.agents["agent-1"] = model.Agent{ID: "agent-1", Status: model.AgentOffline}
+	start := newFakeStarter()
+	s := New(fst, start, nil, 0)
+
+	tickAt(s, mustTime("2026-08-22T10:00:00Z"))
+	tickAt(s, mustTime("2026-08-22T10:01:01Z"))
+	if len(start.startPlanRunCalls) != 0 {
+		t.Fatalf("expected offline agent plan to be skipped, got %d starts", len(start.startPlanRunCalls))
 	}
 }
 
@@ -402,7 +608,7 @@ func TestCronInvalidScheduleAndTZDoNotCrash(t *testing.T) {
 		Timezone: "UTC",
 	})
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:00:00Z")) // init cursors
 	tickAt(s, mustTime("2026-08-22T10:05:01Z")) // good plan should fire
@@ -425,19 +631,20 @@ func TestStaleQueuedRunFailsWhenAgentOffline(t *testing.T) {
 		TimeoutSeconds: 60,
 	})
 	fst.runs = append(fst.runs, model.Run{
-		ID:       "run-1",
-		PlanID:   "plan-1",
-		AgentID:  "agent-1",
+		ID:        "run-1",
+		PlanID:    "plan-1",
+		AgentID:   "agent-1",
 		Operation: model.OpBackup,
-		Status:   model.RunQueued,
-		QueuedAt: mustTime("2026-08-22T10:00:00Z"),
+		Status:    model.RunQueued,
+		QueuedAt:  mustTime("2026-08-22T10:00:00Z"),
 	})
 	fst.agents["agent-1"] = model.Agent{
 		ID:     "agent-1",
 		Status: model.AgentOffline,
 	}
 	start := newFakeStarter()
-	s := New(fst, start)
+	notifier := &recordingNotifier{}
+	s := New(fst, start, notifier, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:00:30Z")) // deadline 10:01:00 not yet reached → no fail
 	if len(fst.transitions) != 0 {
@@ -458,6 +665,18 @@ func TestStaleQueuedRunFailsWhenAgentOffline(t *testing.T) {
 	if fst.runs[0].FinishedAt == nil || !fst.runs[0].FinishedAt.Equal(mustTime("2026-08-22T10:01:30Z")) {
 		t.Fatalf("FinishedAt not set correctly: %v", fst.runs[0].FinishedAt)
 	}
+	if got := notifier.calls(); len(got) != 1 || got[0] != "run-1" {
+		t.Fatalf("expected exactly one notification for run-1, got %v", got)
+	}
+
+	// Second tick: run already terminal, transition fails, no re-notification.
+	tickAt(s, mustTime("2026-08-22T10:02:30Z"))
+	if len(fst.transitions) != 1 {
+		t.Fatalf("expected still 1 transition after second tick, got %d", len(fst.transitions))
+	}
+	if got := notifier.calls(); len(got) != 1 {
+		t.Fatalf("expected still 1 notification after second tick, got %v", got)
+	}
 }
 
 // TestStaleQueuedRunUsesDefaultTimeoutWhenNoPlan verifies that a system
@@ -465,17 +684,17 @@ func TestStaleQueuedRunFailsWhenAgentOffline(t *testing.T) {
 func TestStaleQueuedRunUsesDefaultTimeoutWhenNoPlan(t *testing.T) {
 	fst := newFakeStore(t)
 	fst.runs = append(fst.runs, model.Run{
-		ID:       "sys-run",
-		AgentID:  "agent-1",
+		ID:        "sys-run",
+		AgentID:   "agent-1",
 		Operation: model.OpCheck,
-		Status:   model.RunQueued,
-		QueuedAt: mustTime("2026-08-22T10:00:00Z"),
+		Status:    model.RunQueued,
+		QueuedAt:  mustTime("2026-08-22T10:00:00Z"),
 	})
 	fst.agents["agent-1"] = model.Agent{
 		ID:     "agent-1",
 		Status: model.AgentOffline,
 	}
-	s := New(fst, newFakeStarter())
+	s := New(fst, newFakeStarter(), nil, 0)
 
 	// 4 minutes < 300s → no fail.
 	tickAt(s, mustTime("2026-08-22T10:04:00Z"))
@@ -505,7 +724,7 @@ func TestStaleQueuedRunNotFailedWhenAgentOnline(t *testing.T) {
 		ID:     "agent-1",
 		Status: model.AgentOnline,
 	}
-	s := New(fst, newFakeStarter())
+	s := New(fst, newFakeStarter(), nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:05:00Z"))
 	if len(fst.transitions) != 0 {
@@ -525,7 +744,7 @@ func TestStaleQueuedRunFailsWhenAgentRowMissing(t *testing.T) {
 		Status:   model.RunQueued,
 		QueuedAt: mustTime("2026-08-22T10:00:00Z"),
 	})
-	s := New(fst, newFakeStarter())
+	s := New(fst, newFakeStarter(), nil, 0)
 
 	tickAt(s, mustTime("2026-08-22T10:01:00Z"))
 	if len(fst.transitions) != 1 || fst.transitions[0].code != model.ErrAgentUnavailable {
@@ -578,7 +797,7 @@ func TestWeeklyRepoCheckOnlyReadyOnline(t *testing.T) {
 	fst.agents["agent-4"] = model.Agent{ID: "agent-4", Status: model.AgentOnline}
 
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil, 0)
 	s.now = func() time.Time { return now }
 
 	s.runTick(context.Background(), now)
@@ -603,7 +822,7 @@ func TestWeeklyRepoCheckFiresMultipleRepos(t *testing.T) {
 	fst.agents["agent-b"] = model.Agent{ID: "agent-b", Status: model.AgentOnline}
 
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil, 0)
 	now := mustTime("2026-08-22T10:00:00Z")
 	s.now = func() time.Time { return now }
 
@@ -613,13 +832,36 @@ func TestWeeklyRepoCheckFiresMultipleRepos(t *testing.T) {
 	}
 }
 
+func TestWeeklyRepoCheckDoesNotStormAfterFailure(t *testing.T) {
+	fst := newFakeStore(t)
+	lastCheck := mustTime("2026-08-10T10:00:00Z")
+	finished := mustTime("2026-08-22T09:59:00Z")
+	fst.repos = append(fst.repos, model.Repository{
+		ID: "failed-check", AgentID: "agent-1", Status: "ready", LastCheckAt: &lastCheck,
+	})
+	fst.agents["agent-1"] = model.Agent{ID: "agent-1", Status: model.AgentOnline}
+	fst.runs = append(fst.runs, model.Run{
+		ID: "check-1", RepositoryID: "failed-check", Operation: model.OpCheck,
+		Status: model.RunFailed, FinishedAt: &finished,
+	})
+
+	start := newFakeStarter()
+	s := New(fst, start, nil, 0)
+	now := mustTime("2026-08-22T10:00:00Z")
+	s.now = func() time.Time { return now }
+	s.runTick(context.Background(), now)
+	if len(start.systemRunCheckCalls) != 0 {
+		t.Fatalf("failed check should be cooled down, got %v", start.systemRunCheckCalls)
+	}
+}
+
 // TestLoopStartsAndStops verifies the scheduler goroutine starts and stops
 // cleanly. We inject a fake ticker whose channel fires once so the loop
 // processes exactly one tick before Stop closes it.
 func TestLoopStartsAndStops(t *testing.T) {
 	fst := newFakeStore(t)
 	start := newFakeStarter()
-	s := New(fst, start)
+	s := New(fst, start, nil, 0)
 
 	called := make(chan time.Time, 1)
 	s.tickFn = func(_ time.Duration) *time.Ticker {
@@ -632,4 +874,152 @@ func TestLoopStartsAndStops(t *testing.T) {
 	s.Start()
 	called <- mustTime("2026-08-22T10:00:00Z")
 	s.Stop()
+}
+
+// StartRetentionRun 记录保留策略派发（原 fakeStarter 未实现该接口，
+// 导致 tickMaintenance 在测试中直接返回、完全未被覆盖）。
+func (f *fakeStarter) StartRetentionRun(_ context.Context, repositoryID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retentionCalls = append(f.retentionCalls, repositoryID)
+	return nil
+}
+
+// 只有"保留策略"驱动的 forget 运行才应推迟下一次保留。实测：新绑定的仓库因初始化
+// forget 运行（参数为 {"initialized":true}）被跳过保留超过 100 秒（窗口 24 小时）；
+// 计划清理与手动删除同样产生 forget 运行，一并计入会让频繁删除的仓库永不裁剪。
+func TestMaintenanceRetentionNotStarvedByOtherForgetRuns(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name       string
+		params     string
+		wantSkip   bool
+		wantReason string
+	}{
+		{"init 运行不推迟保留", `{"repository":{"repository_path":"r:/x"},"restic_init":true}`, false, "initialized"},
+		{"计划清理（delete_all）不推迟保留", `{"plan_id":"p1","kind":"mysql","repository":{"repository_path":"r:/x"},"delete_all":true}`, false, "delete_all"},
+		{"手动删除快照不推迟保留", `{"plan_id":"p1","kind":"mysql","repository":{"repository_path":"r:/x"},"snapshot_ids":["abc"]}`, false, "snapshot_ids"},
+		{"保留运行推迟保留", `{"plan_id":"p1","kind":"mysql","repository":{"repository_path":"r:/x"},"retention":{"keep_last":1},"tags":["plan:p1"]}`, true, "keep_last"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore(t)
+			starter := newFakeStarter()
+			st.agents["agent-1"] = model.Agent{ID: "agent-1", Status: model.AgentOnline}
+			st.repos = append(st.repos, model.Repository{ID: "repo-1", AgentID: "agent-1", Status: "ready"})
+			fin := now.Add(-5 * time.Minute)
+			st.runs = append(st.runs, model.Run{
+				ID: "run-forget", AgentID: "agent-1", RepositoryID: "repo-1",
+				Operation: model.OpForget, Status: model.RunSucceeded,
+				QueuedAt: fin, FinishedAt: &fin, ProgressJSON: tc.params,
+			})
+			s := New(st, starter, nil, 0)
+			s.tickMaintenance(context.Background(), now)
+			got := len(starter.retentionCalls)
+			if tc.wantSkip && got != 0 {
+				t.Fatalf("%s: retention must be postponed by a recent retention run, got %d dispatch(es)", tc.wantReason, got)
+			}
+			if !tc.wantSkip && got == 0 {
+				t.Fatalf("%s: retention must NOT be postponed by this forget run", tc.wantReason)
+			}
+		})
+	}
+}
+
+// 24h 节流只按 forget 运行判断：繁忙仓库（每次快照浏览都产生运行）会把守卫运行
+// 挤出"最近 100 条任意运行"的窗口，旧实现因此在同日重复派发保留策略。
+func TestTickMaintenanceRetentionThrottleSurvivesBusyRepository(t *testing.T) {
+	st := newFakeStore(t)
+	start := newFakeStarter()
+	now := time.Now().UTC()
+	repoID, agentID := "repo-1", "agent-1"
+	st.agents[agentID] = model.Agent{ID: agentID, Status: model.AgentOnline}
+	st.repos = append(st.repos, model.Repository{ID: repoID, AgentID: agentID, Status: "ready"})
+	// 保留策略 3 小时前跑过（在 24h 节流窗口内），随后 150 条 snapshots 运行把它
+	// 挤出"最近 100 条任意运行"的窗口 —— 旧实现因此会重复派发。
+	old := now.Add(-3 * time.Hour)
+	st.runs = append(st.runs, model.Run{
+		ID: "retention-old", RepositoryID: repoID, Operation: model.OpForget,
+		Status: model.RunSucceeded, QueuedAt: old, FinishedAt: &old,
+		ProgressJSON: `{"retention":{"keep_last":2},"tags":["plan:p1"]}`,
+	})
+	for i := 0; i < 150; i++ {
+		at := now.Add(-time.Duration(150-i) * time.Minute) // 全部晚于上面的保留策略运行
+		st.runs = append(st.runs, model.Run{
+			ID: fmt.Sprintf("snap-%d", i), RepositoryID: repoID, Operation: model.OpSnapshots,
+			Status: model.RunSucceeded, QueuedAt: at, FinishedAt: &at,
+		})
+	}
+	s := New(st, start, nil, 0)
+	s.now = func() time.Time { return now }
+	s.tickMaintenance(context.Background(), now)
+	start.mu.Lock()
+	calls := append([]string(nil), start.retentionCalls...)
+	start.mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("retention must stay throttled for 24h on a busy repository, got %v", calls)
+	}
+}
+
+// 定向删除（delete_all / snapshot_ids）产生的 forget 运行与保留无关，但数量一多就会
+// 把保留型运行挤出"最近 20 条 forget"的守卫窗口 —— 实测同一仓库同日会再次执行保留
+// 策略，与"每仓库每日至多一次"不符。
+func TestTickMaintenanceRetentionThrottleSurvivesDirectedDeletionTraffic(t *testing.T) {
+	st := newFakeStore(t)
+	start := newFakeStarter()
+	now := time.Now().UTC()
+	repoID, agentID := "repo-1", "agent-1"
+	st.agents[agentID] = model.Agent{ID: agentID, Status: model.AgentOnline}
+	st.repos = append(st.repos, model.Repository{ID: repoID, AgentID: agentID, Status: "ready"})
+
+	// 保留策略 2 小时前跑过（在 24h 窗口内）。
+	old := now.Add(-2 * time.Hour)
+	st.runs = append(st.runs, model.Run{
+		ID: "retention-recent", RepositoryID: repoID, Operation: model.OpForget,
+		Status: model.RunSucceeded, QueuedAt: old, FinishedAt: &old,
+		ProgressJSON: `{"retention":{"keep_last":2},"tags":["plan:p1"]}`,
+		DedupKey:     `sysforget|agent-1|repo-1|{"plan_id":"p1","retention":{"keep_last":2}}`,
+	})
+	// 30 条定向删除型 forget，全部比保留运行更新；旧实现的窗口里只剩它们。
+	for i := 0; i < 30; i++ {
+		at := now.Add(-time.Duration(30-i) * time.Minute)
+		st.runs = append(st.runs, model.Run{
+			ID: fmt.Sprintf("del-%d", i), RepositoryID: repoID, Operation: model.OpForget,
+			Status: model.RunSucceeded, QueuedAt: at, FinishedAt: &at,
+			DedupKey: fmt.Sprintf(`sysforget|agent-1|repo-1|{"delete_all":true,"plan_id":"p%d"}`, i),
+		})
+	}
+
+	s := New(st, start, nil, 0)
+	s.now = func() time.Time { return now }
+	s.tickMaintenance(context.Background(), now)
+
+	start.mu.Lock()
+	calls := append([]string(nil), start.retentionCalls...)
+	start.mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("定向删除流量不应让保留策略在一个节流窗口内重复执行，got %v", calls)
+	}
+}
+
+// 过期会话清理必须真的被调度：store.DeleteExpiredSessions 此前无任何生产调用者
+// （死代码），实测 sessions 表 3 天累积 319 行、过期行永不清除。
+func TestSessionCleanupRunsDaily(t *testing.T) {
+	st := newFakeStore(t)
+	s := New(st, newFakeStarter(), nil, 0)
+	base := time.Date(2026, 10, 12, 3, 0, 0, 0, time.UTC)
+
+	s.tickSessionCleanup(context.Background(), base)
+	s.tickSessionCleanup(context.Background(), base.Add(time.Hour)) // 节流窗口内，跳过
+	s.tickSessionCleanup(context.Background(), base.Add(25*time.Hour))
+
+	st.mu.Lock()
+	got := append([]time.Time(nil), st.sessionCleanups...)
+	st.mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("DeleteExpiredSessions 调用 %d 次，want 2（首次 + 24h 后）", len(got))
+	}
+	if !got[0].Equal(base) || !got[1].Equal(base.Add(25*time.Hour)) {
+		t.Fatalf("传入的 now 不对：%v", got)
+	}
 }

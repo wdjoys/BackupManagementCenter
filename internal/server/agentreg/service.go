@@ -12,9 +12,11 @@ import (
 	"time"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
+	"backupmanagementcenter/internal/logging"
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/secrets"
 	"backupmanagementcenter/internal/server/events"
+	"backupmanagementcenter/internal/server/notification"
 	"backupmanagementcenter/internal/server/store"
 	"backupmanagementcenter/internal/version"
 	"google.golang.org/grpc/codes"
@@ -40,21 +42,49 @@ func init() {
 }
 
 // Service implements bmcv1.AgentControlServer for the gRPC channel layer.
+// RunMetrics 是本服务需要的最小指标面。nil 时全部为 no-op（测试与嵌入式场景）。
+type RunMetrics interface {
+	SetRepoCheck(repositoryID string, at time.Time)
+	IncReconnects()
+}
+
+// SetMetrics 注入指标实现（构造后接线，与 orchestrator 的 AgentCaps 同风格）。
+func (s *Service) SetMetrics(m RunMetrics) { s.met = m }
+
+func (s *Service) recordRepoCheck(repositoryID string, at time.Time) {
+	if s.met != nil && repositoryID != "" {
+		s.met.SetRepoCheck(repositoryID, at)
+	}
+}
+
+func (s *Service) recordStreamStart() {
+	if s.met != nil {
+		s.met.IncReconnects()
+	}
+}
+
 type Service struct {
 	bmcv1.UnimplementedAgentControlServer
 
-	store store.Store
-	reg   *Registry
-	bus   events.Bus
-	cfg   Config
+	store     store.Store
+	reg       *Registry
+	bus       events.Bus
+	cfg       Config
+	notifier  notification.FailureNotifier
+	warmCache func(ctx context.Context, repoID, agentID, snapshotID string) error
+	met       RunMetrics
 
 	// mu protects lastSeenWrite for the heartbeat throttle
 	lastSeenMu     sync.Mutex
 	lastSeenWrites map[string]time.Time
 
 	// Once started goroutines
-	startOnce sync.Once
-	stopCh    chan struct{}
+	startOnce  sync.Once
+	stopOnce   sync.Once
+	stopCh     chan struct{}
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
+	warmWg     sync.WaitGroup
 }
 
 // Config holds optional configuration for the gRPC service.
@@ -76,15 +106,24 @@ func DefaultConfig() Config {
 	}
 }
 
-// NewService creates a new AgentControl gRPC service.
-func NewService(s store.Store, reg *Registry, bus events.Bus, cfg Config) *Service {
+// NewService creates a new AgentControl gRPC service. notifier receives one
+// call per persisted plan-bound failed run; nil falls back to a no-op.
+func NewService(s store.Store, reg *Registry, bus events.Bus, cfg Config, notifier notification.FailureNotifier, warmCache func(context.Context, string, string, string) error) *Service {
+	if notifier == nil {
+		notifier = notification.NopNotifier{}
+	}
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	return &Service{
 		store:          s,
 		reg:            reg,
 		bus:            bus,
 		cfg:            cfg,
+		notifier:       notifier,
+		warmCache:      warmCache,
 		lastSeenWrites: make(map[string]time.Time),
 		stopCh:         make(chan struct{}),
+		stopCtx:        stopCtx,
+		stopCancel:     stopCancel,
 	}
 }
 
@@ -97,7 +136,11 @@ func (s *Service) Start() {
 
 // Stop signals the background goroutine to shut down.
 func (s *Service) Stop() {
-	close(s.stopCh)
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		s.stopCancel()
+	})
+	s.warmWg.Wait()
 }
 
 // ---------------------------------------------------------------------------
@@ -108,61 +151,56 @@ func (s *Service) Enroll(ctx context.Context, req *bmcv1.EnrollRequest) (*bmcv1.
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "empty request")
 	}
-
-	// Validate enrollment token
-	tokenHash := secrets.HashToken(req.GetEnrollmentToken())
-	et, err := s.store.ConsumeEnrollmentToken(ctx, tokenHash, time.Now().UTC())
+	if len(req.GetSecret()) != 32 {
+		return nil, status.Error(codes.InvalidArgument, "secret must be exactly 32 bytes")
+	}
+	et, err := s.store.ConsumeEnrollmentToken(ctx, secrets.HashToken(req.GetEnrollmentToken()), time.Now().UTC())
 	if err != nil {
-		if err == store.ErrTokenInvalid {
+		if errors.Is(err, store.ErrTokenInvalid) {
 			return nil, status.Error(codes.PermissionDenied, "invalid or expired enrollment token")
 		}
 		return nil, status.Error(codes.Internal, "failed to consume enrollment token")
 	}
-
-	// Validate agent secret
-	if len(req.GetSecret()) != 32 {
-		return nil, status.Error(codes.InvalidArgument, "secret must be exactly 32 bytes")
+	targetID := req.GetTargetAgentId()
+	if et.TargetAgentID != targetID {
+		return nil, status.Error(codes.PermissionDenied, "target agent does not match enrollment token")
 	}
-
-	// Generate agent ID (UUIDv7)
+	secretHash := secrets.HashToken(hex.EncodeToString(req.GetSecret()))
+	now := time.Now().UTC()
+	if targetID != "" {
+		if s.reg.Connected(targetID) {
+			return nil, status.Error(codes.FailedPrecondition, "target agent is still online")
+		}
+		runs, runErr := s.store.ListRunsByStatus(ctx, []string{model.RunDispatched, model.RunRunning})
+		if runErr != nil {
+			return nil, status.Error(codes.Internal, "failed to check active agent runs")
+		}
+		for _, run := range runs {
+			if run.AgentID == targetID {
+				return nil, status.Error(codes.FailedPrecondition, "target agent has an active run")
+			}
+		}
+		if err := s.store.ReEnrollAgent(ctx, targetID, secretHash, now); err != nil {
+			if err.Error() == model.ErrAgentRevoked {
+				return nil, status.Error(codes.PermissionDenied, "agent is revoked")
+			}
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, status.Error(codes.NotFound, "agent not found")
+			}
+			return nil, status.Error(codes.Internal, "failed to re-enroll agent")
+		}
+		s.reg.Unregister(targetID)
+		return &bmcv1.EnrollResponse{AgentId: targetID}, nil
+	}
 	agentID := model.NewUUIDv7()
-
-	// Compute secret hash: sha256(hex(secret))
-	secretHex := hex.EncodeToString(req.GetSecret())
-	secretHash := secrets.HashToken(secretHex)
-
-	// Build agent name from hostname or use first 8 chars of ID
 	name := req.GetHostname()
 	if name == "" {
 		name = agentID[:8]
 	}
-
-	now := time.Now().UTC()
-	agent := &model.Agent{
-		ID:         agentID,
-		Name:       name,
-		Hostname:   req.GetHostname(),
-		OS:         req.GetOs(),
-		Arch:       req.GetArch(),
-		Version:    req.GetVersion(),
-		Status:     model.AgentOffline, // not online until Connect
-		EnrolledAt: now,
-		TokenHash:  secretHash,
-		Revoked:    false,
-	}
-
-	// Use UpsertAgentOnConnect to create the agent row
-	// (it's an INSERT OR REPLACE by ID, which works for first insert)
+	agent := &model.Agent{ID: agentID, Name: name, Hostname: req.GetHostname(), OS: req.GetOs(), Arch: req.GetArch(), Version: req.GetVersion(), Status: model.AgentOffline, EnrolledAt: now, TokenHash: secretHash}
 	if err := s.store.UpsertAgentOnConnect(ctx, agent); err != nil {
 		return nil, status.Error(codes.Internal, "failed to create agent")
 	}
-
-	// Mark token as used
-	_ = et // already consumed by ConsumeEnrollmentToken
-
-	log.Printf("agent enrolled: id=%s name=%s hostname=%s os=%s arch=%s",
-		agentID, name, req.GetHostname(), req.GetOs(), req.GetArch())
-
 	return &bmcv1.EnrollResponse{AgentId: agentID}, nil
 }
 
@@ -186,27 +224,31 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 	agentID := agentIDs[0]
 	agentSecret := agentSecrets[0]
 
-	// Authenticate: compute secret hash (sha256(hex(secret))) and look up agent
 	secretHash := secrets.HashToken(agentSecret)
-	agent, err := s.store.GetAgentBySecretHash(stream.Context(), secretHash)
+	agent, err := s.store.GetAgent(stream.Context(), agentID)
 	if err != nil {
-		if err == store.ErrNotFound {
+		if errors.Is(err, store.ErrNotFound) {
 			return status.Error(codes.PermissionDenied, "invalid agent credentials")
 		}
 		return status.Error(codes.Internal, "failed to authenticate agent")
 	}
-
+	if agent.TokenHash != secretHash {
+		return status.Error(codes.PermissionDenied, "invalid agent credentials")
+	}
 	if agent.Revoked {
 		return status.Error(codes.PermissionDenied, "agent is revoked")
 	}
 
 	// Register the stream (kicks old connection if any)
+	// 每次控制流（重）建立即计数：此前 bmc_agent_grpc_reconnects_total 恒为 0。
+	s.recordStreamStart()
 	sendCh, streamCtx := s.reg.Register(stream.Context(), agentID)
 
 	// Ensure cleanup on exit
 	defer func() {
-		s.reg.Unregister(agentID)
-		s.handleDisconnect(agentID)
+		if s.reg.UnregisterIf(agentID, streamCtx) {
+			s.handleDisconnect(agentID)
+		}
 	}()
 
 	// Wait for the Hello message
@@ -214,13 +256,10 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 	if err != nil {
 		return status.Errorf(codes.Unavailable, "failed to receive hello: %v", err)
 	}
-
 	hello := firstMsg.GetHello()
 	if hello == nil {
 		return status.Error(codes.InvalidArgument, "first message must be Hello")
 	}
-
-	// Version handshake
 	serverMajor, serverMinor, _, serverOk := version.Parts()
 	clientMajor, clientMinor, _, clientOk := version.PartsFromString(hello.GetVersion())
 	versionMinorMismatch := false
@@ -264,26 +303,56 @@ func (s *Service) Connect(stream bmcv1.AgentControl_ConnectServer) error {
 	if err := s.store.UpsertAgentOnConnect(stream.Context(), agent); err != nil {
 		log.Printf("failed to upsert agent on connect: %v", err)
 	}
+	log.Printf("[INFO] agent connected id=%s hostname=%s os=%s arch=%s version=%s minor_mismatch=%t",
+		agentID,
+		agent.Hostname,
+		agent.OS,
+		agent.Arch,
+		agent.Version,
+		versionMinorMismatch,
+	)
 
 	// Start a goroutine to forward messages from sendCh to the stream
 	errCh := make(chan error, 1)
 	go s.sendLoop(streamCtx, stream, sendCh, errCh)
 
-	// Main receive loop
-	for {
-		msg, err := stream.Recv()
-		if err != nil {
-			// Stream ended
-			select {
-			case sendErr := <-errCh:
-				return sendErr
-			default:
+	// Main receive loop: Recv runs in its own goroutine so the loop can also
+	// wake on streamCtx cancellation (Registry.Unregister — e.g. agent revoked
+	// or replaced by a newer connection). Cancelling the context alone never
+	// unblocks Recv.
+	type recvResult struct {
+		msg *bmcv1.AgentMessage
+		err error
+	}
+	recvCh := make(chan recvResult, 1)
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			recvCh <- recvResult{msg, err}
+			if err != nil {
+				return
 			}
-			return nil
 		}
+	}()
 
-		if err := s.handleAgentMessage(stream, agentID, msg); err != nil {
-			log.Printf("error handling agent message from %s: %v", agentID, err)
+	for {
+		select {
+		case <-streamCtx.Done():
+			return status.Error(codes.Canceled, "stream cancelled")
+		case r := <-recvCh:
+			if r.err != nil {
+				// Stream ended
+				select {
+				case sendErr := <-errCh:
+					return sendErr
+				default:
+				}
+				return nil
+			}
+
+			if err := s.handleAgentMessage(stream, streamCtx, agentID, r.msg); err != nil {
+				log.Printf("error handling agent message from %s: %v", agentID, err)
+			}
 		}
 	}
 }
@@ -307,12 +376,14 @@ func (s *Service) sendLoop(ctx context.Context, stream bmcv1.AgentControl_Connec
 }
 
 // handleAgentMessage dispatches an incoming AgentMessage to the appropriate handler.
-func (s *Service) handleAgentMessage(stream bmcv1.AgentControl_ConnectServer, agentID string, msg *bmcv1.AgentMessage) error {
+// streamCtx identifies the connection that produced the message so capability
+// reports and results can be bound to that exact stream.
+func (s *Service) handleAgentMessage(stream bmcv1.AgentControl_ConnectServer, streamCtx context.Context, agentID string, msg *bmcv1.AgentMessage) error {
 	switch p := msg.GetPayload().(type) {
 	case *bmcv1.AgentMessage_Heartbeat:
 		return s.handleHeartbeat(stream.Context(), agentID, p.Heartbeat)
 	case *bmcv1.AgentMessage_CapabilitiesReport:
-		return s.handleCapabilities(stream.Context(), agentID, p.CapabilitiesReport)
+		return s.handleCapabilities(stream.Context(), streamCtx, agentID, p.CapabilitiesReport)
 	case *bmcv1.AgentMessage_CommandAccepted:
 		return s.handleCommandAccepted(stream.Context(), agentID, p.CommandAccepted)
 	case *bmcv1.AgentMessage_RunProgress:
@@ -331,6 +402,40 @@ func (s *Service) handleAgentMessage(stream bmcv1.AgentControl_ConnectServer, ag
 // Message handlers
 // ---------------------------------------------------------------------------
 
+// appendServerRunLog 记录 Server 视角的运行里程碑，并推送给实时日志订阅者。
+func (s *Service) appendServerRunLog(ctx context.Context, runID, level, message string) {
+	now := time.Now().UTC()
+	logs := []model.RunLog{{
+		RunID: runID, Source: model.RunLogSourceServer, SourceSeq: uint64(now.UnixNano()),
+		Timestamp: now, Level: level, Message: message,
+	}}
+	if err := s.store.AppendRunLogs(ctx, logs); err != nil {
+		log.Printf("failed to persist server run log for %s: %v", runID, err)
+		return
+	}
+	if logs[0].ID != 0 {
+		s.bus.Publish(runID, events.Event{Type: events.Log, Entry: &logs[0]})
+	}
+}
+
+// terminalRunLog 根据终态运行生成 Server 结束日志。
+func terminalRunLog(r *model.Run) (level, message string) {
+	switch r.Status {
+	case model.RunSucceeded:
+		if r.SnapshotID != "" {
+			return "info", "运行成功，快照 " + r.SnapshotID
+		}
+		return "info", "运行成功"
+	case model.RunFailed:
+		if r.ErrorMessage != "" {
+			return "error", fmt.Sprintf("运行失败：[%s] %s", r.ErrorCode, r.ErrorMessage)
+		}
+		return "error", fmt.Sprintf("运行失败：[%s]", r.ErrorCode)
+	default:
+		return "warn", "运行已取消"
+	}
+}
+
 func (s *Service) handleHeartbeat(ctx context.Context, agentID string, hb *bmcv1.Heartbeat) error {
 	// Throttle last_seen_at writes to at most once per 10 seconds
 	s.lastSeenMu.Lock()
@@ -346,16 +451,22 @@ func (s *Service) handleHeartbeat(ctx context.Context, agentID string, hb *bmcv1
 	return s.store.SetAgentStatus(ctx, agentID, model.AgentOnline, now)
 }
 
-func (s *Service) handleCapabilities(ctx context.Context, agentID string, report *bmcv1.CapabilitiesReport) error {
+func (s *Service) handleCapabilities(ctx context.Context, streamCtx context.Context, agentID string, report *bmcv1.CapabilitiesReport) error {
+	// 只有当前连接上报的报告才构成执行授权；被替换连接的迟到报告会被忽略。
+	s.reg.ReportCapabilities(agentID, streamCtx, report.GetSafeDatabaseRestore())
+
 	tools := make([]model.ToolInfo, 0, len(report.GetTools()))
 	for _, t := range report.GetTools() {
-		tools = append(tools, model.ToolInfo{
-			Name:    t.GetName(),
-			Path:    t.GetPath(),
-			Version: t.GetVersion(),
-		})
+		tools = append(tools, model.ToolInfo{Name: t.GetName(), Path: t.GetPath(), Version: t.GetVersion()})
 	}
-	return s.store.SaveAgentCapabilities(ctx, agentID, tools, time.Now().UTC())
+	toMappings := func(input []*bmcv1.PathMapping) []model.PathMapping {
+		out := make([]model.PathMapping, 0, len(input))
+		for _, m := range input {
+			out = append(out, model.PathMapping{HostPath: m.GetHostPath(), RuntimePath: m.GetRuntimePath(), ReadOnly: m.GetReadOnly()})
+		}
+		return out
+	}
+	return s.store.SaveAgentCapabilities(ctx, agentID, tools, toMappings(report.GetSourcePathMappings()), toMappings(report.GetRestorePathMappings()), report.GetSafeDatabaseRestore(), time.Now().UTC())
 }
 
 func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca *bmcv1.CommandAccepted) error {
@@ -369,12 +480,27 @@ func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca 
 		}
 		return err
 	}
+	if run.AgentID != agentID {
+		return status.Error(codes.PermissionDenied, "run belongs to another agent")
+	}
 
 	if run.Status == model.RunDispatched {
-		return s.store.TransitionRun(ctx, runID, model.RunDispatched, model.RunRunning, func(r *model.Run) {
+		err := s.store.TransitionRun(ctx, runID, model.RunDispatched, model.RunRunning, func(r *model.Run) {
 			now := time.Now().UTC()
 			r.StartedAt = &now
+			r.LeaseExpiresAt = nil
 		})
+		if err == nil && run.Operation == model.OpRestore {
+			if rs, ok := s.store.(interface {
+				UpdateRestorePhase(context.Context, string, string) error
+			}); ok {
+				_ = rs.UpdateRestorePhase(ctx, runID, model.RestorePhaseRunning)
+			}
+		}
+		if err == nil {
+			s.appendServerRunLog(ctx, runID, "info", "Agent 已接收任务，开始执行")
+		}
+		return err
 	}
 	return nil
 }
@@ -399,14 +525,50 @@ func (s *Service) handleRunProgress(ctx context.Context, agentID string, rp *bmc
 		}
 		return err
 	}
+	if run.AgentID != agentID {
+		return status.Error(codes.PermissionDenied, "run belongs to another agent")
+	}
 
 	run.Progress = progress
 	progressJSON, _ := json.Marshal(progress)
 	run.ProgressJSON = string(progressJSON)
 
-	// We publish progress event without needing to persist progress_json separately
-	// since it's typically updated through TransitionRun or direct DB update.
-	// For simplicity, we just publish the event.
+	if ps, ok := s.store.(interface {
+		UpdateRunProgress(context.Context, string, string) error
+	}); ok {
+		if err := ps.UpdateRunProgress(ctx, runID, run.ProgressJSON); err != nil {
+			return err
+		}
+	}
+
+	// 恢复进度可能携带预备份快照 ID 与阶段；两者都只用于提前展示与防删定位，
+	// 不能作为可恢复性的唯一依据。
+	if run.Operation == model.OpRestore {
+		if detail := rp.GetDetailJson(); detail != "" {
+			var d struct {
+				RollbackSnapshotID string `json:"rollback_snapshot_id"`
+			}
+			if json.Unmarshal([]byte(detail), &d) == nil && d.RollbackSnapshotID != "" {
+				if rs, ok := s.store.(interface {
+					UpdateRestoreRollbackSnapshot(context.Context, string, string) error
+				}); ok {
+					if err := rs.UpdateRestoreRollbackSnapshot(ctx, runID, d.RollbackSnapshotID); err != nil {
+						log.Printf("failed to record rollback snapshot for run %s: %v", runID, err)
+					}
+				}
+			}
+		}
+		if phase := rp.GetPhase(); phase != "" {
+			if rs, ok := s.store.(interface {
+				UpdateRestorePhase(context.Context, string, string) error
+			}); ok {
+				if err := rs.UpdateRestorePhase(ctx, runID, phase); err != nil {
+					log.Printf("failed to update restore phase for run %s: %v", runID, err)
+				}
+			}
+		}
+	}
+
 	s.bus.Publish(runID, events.Event{
 		Type:     events.Progress,
 		Progress: &progress,
@@ -420,6 +582,20 @@ func (s *Service) handleRunLogBatch(ctx context.Context, agentID string, batch *
 	entries := batch.GetEntries()
 	if len(entries) == 0 {
 		return nil
+	}
+	// run_id为空表示Agent进程日志；非空仍按运行日志处理。
+	if runID == "" {
+		return s.handleAgentLogBatch(ctx, agentID, entries)
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			return nil
+		}
+		return err
+	}
+	if run.AgentID != agentID {
+		return status.Error(codes.PermissionDenied, "run belongs to another agent")
 	}
 
 	logs := make([]model.RunLog, 0, len(entries))
@@ -436,21 +612,66 @@ func (s *Service) handleRunLogBatch(ctx context.Context, agentID string, batch *
 
 		logEntry := model.RunLog{
 			RunID:     runID,
-			Seq:       entry.GetSeq(),
+			Source:    runLogSource(entry.GetSource()),
+			SourceSeq: entry.GetSeq(),
 			Timestamp: time.Unix(0, entry.GetTimestampUnixNanos()).UTC(),
 			Level:     logLevel,
 			Message:   entry.GetMessage(),
 		}
 		logs = append(logs, logEntry)
-
-		// Publish log event
-		s.bus.Publish(runID, events.Event{
-			Type:  events.Log,
-			Entry: &logEntry,
-		})
 	}
 
-	return s.store.AppendRunLogs(ctx, logs)
+	// 先落库拿到真实 ID 再推送：前端按 id 去重，ID 恒为 0 会让实时日志互相覆盖。
+	if err := s.store.AppendRunLogs(ctx, logs); err != nil {
+		return err
+	}
+	for i := range logs {
+		if logs[i].ID != 0 {
+			s.bus.Publish(runID, events.Event{Type: events.Log, Entry: &logs[i]})
+		}
+	}
+	return nil
+}
+
+// runLogSource 归一化来源标记；未升级的Agent留空时按 agent 归类。
+func runLogSource(source string) string {
+	if source == model.RunLogSourceServer {
+		return model.RunLogSourceServer
+	}
+	return model.RunLogSourceAgent
+}
+func (s *Service) handleAgentLogBatch(ctx context.Context, agentID string, entries []*bmcv1.LogEntry) error {
+	logStore, ok := s.store.(store.LogStore)
+	if !ok {
+		return fmt.Errorf("agent log storage is unavailable")
+	}
+	logs := make([]model.SystemLog, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		level := "info"
+		switch entry.GetLevel() {
+		case bmcv1.LogLevel_DEBUG:
+			level = "debug"
+		case bmcv1.LogLevel_WARN:
+			level = "warn"
+		case bmcv1.LogLevel_ERROR:
+			level = "error"
+		}
+		timestamp := time.Now().UTC()
+		if nanos := entry.GetTimestampUnixNanos(); nanos != 0 {
+			timestamp = time.Unix(0, nanos).UTC()
+		}
+		logs = append(logs, model.SystemLog{
+			SourceSeq: entry.GetSeq(),
+			Timestamp: timestamp,
+			Type:      logging.ClassifyType(entry.GetMessage()),
+			Level:     level,
+			Message:   entry.GetMessage(),
+		})
+	}
+	return logStore.AppendAgentLogs(ctx, agentID, logs)
 }
 
 func (s *Service) handleRunResult(ctx context.Context, agentID string, result *bmcv1.RunResult) error {
@@ -487,87 +708,343 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 	resultJSON := result.GetResultJson()
 	now := time.Now().UTC()
 
-	err = s.store.TransitionRun(ctx, runID, model.RunRunning, toStatus, func(r *model.Run) {
-		r.FinishedAt = &now
-		r.ErrorCode = result.GetErrorCode()
-		r.ErrorMessage = result.GetErrorMessage()
-		r.SnapshotID = snapshotID
-		if len(resultJSON) > 0 {
-			r.ProgressJSON = string(resultJSON)
-		}
-	})
+	if run.AgentID != agentID {
+		return status.Error(codes.PermissionDenied, "run belongs to another agent")
+	}
+	initRepositoryID := ""
+	if isRepositoryInitRun(run) {
+		initRepositoryID = run.RepositoryID
+	}
 
-	if errors.Is(err, store.ErrInvalidTransition) {
-		// Fast-finished runs may still be 'dispatched'.
-		err = s.store.TransitionRun(ctx, runID, model.RunDispatched, toStatus, func(r *model.Run) {
-			now := time.Now().UTC()
-			r.StartedAt = &now
+	if run.Operation == model.OpRestore {
+		phase, rollbackID, errCode := restoreResultOutcome(result, toStatus)
+		status := toStatus
+		if phase == model.RestorePhaseRollbackFailed {
+			// 回滚失败必须暴露为 FAILED，不能伪装成普通取消。
+			status = model.RunFailed
+			errCode = model.ErrRollbackFailed
+		}
+		finErr := s.store.FinishRestoreRun(ctx, store.FinishRestoreRunInput{
+			RunID:              runID,
+			ToStatus:           status,
+			ErrorCode:          errCode,
+			ErrorMessage:       result.GetErrorMessage(),
+			SnapshotID:         snapshotID,
+			ResultJSON:         resultJSON,
+			Phase:              phase,
+			RollbackSnapshotID: rollbackID,
+			FinishedAt:         now,
+		})
+		if finErr != nil {
+			if errors.Is(finErr, store.ErrInvalidTransition) {
+				return nil
+			}
+			return finErr
+		}
+		toStatus = status
+	} else {
+		err = s.store.TransitionRun(ctx, runID, model.RunRunning, toStatus, func(r *model.Run) {
 			r.FinishedAt = &now
 			r.ErrorCode = result.GetErrorCode()
 			r.ErrorMessage = result.GetErrorMessage()
 			r.SnapshotID = snapshotID
+			r.LeaseExpiresAt = nil
 			if len(resultJSON) > 0 {
 				r.ProgressJSON = string(resultJSON)
 			}
 		})
-	}
 
-	if err == store.ErrInvalidTransition {
-		// Already terminal — idempotent.
-		return nil
-	}
-	if err != nil {
-		return err
-	}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			// Fast-finished runs may still be 'dispatched'.
+			err = s.store.TransitionRun(ctx, runID, model.RunDispatched, toStatus, func(r *model.Run) {
+				now := time.Now().UTC()
+				r.StartedAt = &now
+				r.FinishedAt = &now
+				r.ErrorCode = result.GetErrorCode()
+				r.ErrorMessage = result.GetErrorMessage()
+				r.SnapshotID = snapshotID
+				r.LeaseExpiresAt = nil
+				if len(resultJSON) > 0 {
+					r.ProgressJSON = string(resultJSON)
+				}
+			})
+		}
 
-	// Mark repository checked for backup/check operations on success
-	if toStatus == model.RunSucceeded && run.Operation != "" {
-		if run.Operation == model.OpBackup || run.Operation == model.OpCheck {
-			// Find the plan to get the repository (plan_id may be empty for system operations)
-			if run.PlanID != "" {
-				plan, planErr := s.store.GetPlan(ctx, run.PlanID)
-				if planErr == nil && plan.RepositoryID != "" {
-					_ = s.store.MarkRepositoryChecked(ctx, plan.RepositoryID, time.Now().UTC())
+		if errors.Is(err, store.ErrInvalidTransition) {
+			// 取消是尽力而为：服务端在 Agent 确认前就把运行写成 cancelled，而 Agent
+			// 可能随后上报 succeeded（取消到达前备份已提交快照）。这里把迟到的成功结果
+			// 收敛回终态，否则留下"cancelled 但仓库里已有该次运行的快照、snapshot_id
+			// 为空"的不一致（终态与仓库内容矛盾）。
+			if toStatus == model.RunSucceeded {
+				var reconciled bool
+				reconciled, err = s.reconcileCancelledSuccess(ctx, runID, snapshotID, string(resultJSON))
+				if !reconciled {
+					// 运行已被其它路径终结（重复结果）或本就不需要修正：保持
+					// ErrInvalidTransition，走下面的幂等返回，不进入终态副作用
+					// （重复结果不得重复预热快照缓存/重复推送终态事件）。
+					err = store.ErrInvalidTransition
 				}
 			}
+		}
+
+		if err == store.ErrInvalidTransition {
+			// Already terminal — idempotent.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if isTerminal(toStatus) {
+		// Binding waits synchronously for restic init, but the HTTP request can
+		// time out while the agent is still finishing. Reconcile the repository
+		// status from the eventual terminal init result so a late success heals
+		// the pending/error row automatically.
+		if initRepositoryID != "" {
+			repositoryStatus := "error"
+			if toStatus == model.RunSucceeded {
+				repositoryStatus = "ready"
+			}
+			if err := s.store.UpdateRepositoryStatus(ctx, initRepositoryID, repositoryStatus); err != nil {
+				log.Printf("failed to update repository %s status after init: %v", initRepositoryID, err)
+			}
+		}
+		if rs, ok := s.store.(interface {
+			DeleteRunSecrets(context.Context, string) error
+		}); ok {
+			if secretErr := rs.DeleteRunSecrets(ctx, runID); secretErr != nil {
+				log.Printf("failed to delete run secrets for %s: %v", runID, secretErr)
+			}
+		}
+	}
+
+	// repositoryID 供两处使用：备份成功后的快照缓存预热（下方 warmCache），以及
+	// 校验成功后的"最近一次校验时间"。两者用途不同，不能共用一个条件。
+	var repositoryID string
+	if toStatus == model.RunSucceeded && (run.Operation == model.OpBackup || run.Operation == model.OpCheck) {
+		// Scheduled repository checks are system runs with no plan ID, so
+		// prefer the repository carried directly on the run. Backups keep
+		// the plan lookup as a compatibility fallback for older rows.
+		repositoryID = run.RepositoryID
+		if repositoryID == "" && run.PlanID != "" {
+			plan, planErr := s.store.GetPlan(ctx, run.PlanID)
+			if planErr == nil {
+				repositoryID = plan.RepositoryID
+			}
+		}
+		// 只有**校验**（check）成功才更新"最近一次校验时间"：备份成功并不校验仓库
+		// 完整性。此前一并写入，使 last_check_at 在活跃部署里永远新鲜，而周检要求
+		// last_check_at > 7 天（ListRepositoriesNeedingCheck）→ 有日常备份的仓库
+		// **永远不会被校验**，完整性检查等于被关掉。指标
+		// bmc_repository_last_check_timestamp 的说明（last successful restic check）
+		// 也印证这里只应记 check。
+		if run.Operation == model.OpCheck && repositoryID != "" {
+			now := time.Now().UTC()
+			_ = s.store.MarkRepositoryChecked(ctx, repositoryID, now)
+			s.recordRepoCheck(repositoryID, now)
 		}
 	}
 
 	// Publish state event
 	updatedRun, _ := s.store.GetRun(ctx, runID)
 	if updatedRun != nil {
+		// 结束日志必须先于终态 state 推送：前端收到终态后会关闭 WebSocket。
+		level, message := terminalRunLog(updatedRun)
+		s.appendServerRunLog(ctx, runID, level, message)
 		s.bus.Publish(runID, events.Event{
 			Type: events.State,
 			Run:  updatedRun,
 		})
 	}
 
+	// Trigger background snapshot cache warm after backup success
+	if toStatus == model.RunSucceeded && run.Operation == model.OpBackup && s.warmCache != nil && repositoryID != "" && agentID != "" {
+		select {
+		case <-s.stopCtx.Done():
+		default:
+			s.warmWg.Add(1)
+			go func(repoID, agID, snapID, rID string) {
+				defer s.warmWg.Done()
+				warmCtx, cancel := context.WithTimeout(s.stopCtx, 2*time.Minute)
+				defer cancel()
+				if err := s.warmCache(warmCtx, repoID, agID, snapID); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("snapshot cache warm failed for repo %s run %s: %v", repoID, rID, err)
+				}
+			}(repositoryID, agentID, snapshotID, runID)
+		}
+	}
+
+	// Notify only after the failed terminal state is durably committed and
+	// the state event published. Duplicate agent results return earlier via
+	// ErrInvalidTransition and never reach this point.
+	if toStatus == model.RunFailed {
+		if err := s.notifier.NotifyPlanFailure(ctx, runID); err != nil {
+			notification.LogFailure(runID, err)
+		}
+	}
 	return nil
+}
+
+// reconcileCancelledSuccess 把迟到的成功结果收敛回被乐观标记为 cancelled 的运行。
+// 取消是尽力而为（dispatcher.Cancel 不等 Agent 确认就写终态），而备份只有在快照
+// 提交后才返回成功：此时保留 cancelled 会留下"cancelled 但快照已产生、snapshot_id
+// 为空"的终态与仓库内容不一致。是否改写由 store 的 SQL 守卫决定（仅当前状态仍为
+// cancelled 才改写），因此这里不依赖 handleRunResult 开头读到的（可能已过期的）
+// 状态。返回 reconciled=false 表示无需修正（运行不是 cancelled，例如重复结果），
+// 调用方据此保持幂等返回，不进入终态副作用。
+func (s *Service) reconcileCancelledSuccess(ctx context.Context, runID, snapshotID, resultJSON string) (bool, error) {
+	rs, ok := s.store.(interface {
+		ReconcileCancelledRunSuccess(context.Context, string, string, string) error
+	})
+	if !ok {
+		return false, nil
+	}
+	err := rs.ReconcileCancelledRunSuccess(ctx, runID, snapshotID, resultJSON)
+	if err != nil {
+		if errors.Is(err, store.ErrInvalidTransition) {
+			return false, nil // 运行不是 cancelled（已被其它路径终结），无需修正
+		}
+		return false, err
+	}
+	log.Printf("[INFO] run %s was cancelled before the agent confirmed, but the agent reported success; reconciled to succeeded (snapshot=%s)", runID, snapshotID)
+	s.appendServerRunLog(ctx, runID, "warn", "取消未生效：Agent 在取消送达前已完成本次运行，已按成功记录（快照 "+snapshotID+"）")
+	return true, nil
+}
+
+// restoreResultOutcome 从 Agent 结果里提取安全的恢复结论：phase、保护快照 ID 与
+// 稳定错误码。Agent 未上报 phase 时按最保守的不确定状态处理，避免服务器替 Agent
+// 声称目标已还原。
+func restoreResultOutcome(result *bmcv1.RunResult, toStatus string) (phase, rollbackSnapshotID, errorCode string) {
+	errorCode = result.GetErrorCode()
+	reported := ""
+	if raw := result.GetResultJson(); raw != "" {
+		var payload struct {
+			Phase              string `json:"phase"`
+			RollbackSnapshotID string `json:"rollback_snapshot_id"`
+		}
+		if json.Unmarshal([]byte(raw), &payload) == nil {
+			reported = payload.Phase
+			rollbackSnapshotID = payload.RollbackSnapshotID
+		}
+	}
+	switch reported {
+	case model.RestorePhaseSucceeded, model.RestorePhaseFailed, model.RestorePhasePreBackupFailed,
+		model.RestorePhaseRolledBack, model.RestorePhaseNewTargetCleaned, model.RestorePhaseRollbackFailed,
+		model.RestorePhaseManualRecoveryNeeded:
+		return reported, rollbackSnapshotID, errorCode
+	}
+	// 已知安全终态之外的取消/失败无法证明目标未被修改。
+	if toStatus == model.RunFailed || toStatus == model.RunCancelled {
+		if errorCode == "" {
+			errorCode = model.ErrRollbackFailed
+		}
+		return model.RestorePhaseManualRecoveryNeeded, rollbackSnapshotID, errorCode
+	}
+	return model.RestorePhaseSucceeded, rollbackSnapshotID, errorCode
+}
+
+// isRepositoryInitRun distinguishes the repository bootstrap form of the
+// legacy FORGET operation from normal retention/forget runs.
+func isRepositoryInitRun(run *model.Run) bool {
+	if run == nil || run.Operation != model.OpForget || run.RepositoryID == "" {
+		return false
+	}
+	var task model.InitTask
+	if err := json.Unmarshal([]byte(run.ProgressJSON), &task); err != nil {
+		return false
+	}
+	return task.ResticInit
+}
+
+// isTerminal reports whether a run status is immutable.  Keep this helper
+// local to the agent callback service so duplicate terminal callbacks can be
+// treated idempotently without coupling the service to the orchestrator.
+func isTerminal(status string) bool {
+	return status == model.RunSucceeded || status == model.RunFailed || status == model.RunCancelled
 }
 
 // ---------------------------------------------------------------------------
 // Disconnect handling
 // ---------------------------------------------------------------------------
 
+// HandleAgentRevoked 在撤销 Agent（DELETE /agents/{id}）后按断连处理其状态：
+// 撤销路径会直接踢掉活跃 stream，此时 Service 自己的 defer UnregisterIf 不再生效，
+// 若不显式调用，在途 run 会一直停在 running（实测 300s+ 只能靠 plan 超时兜底），
+// 并占住该仓库的队列槽位（同仓库后续 run 被 head-of-line 阻塞）。
+func (s *Service) HandleAgentRevoked(agentID string) { s.handleDisconnect(agentID) }
+
 func (s *Service) handleDisconnect(agentID string) {
+	log.Printf("[WARN] agent disconnected id=%s", agentID)
 	ctx := context.Background()
 
 	// Set agent offline
 	_ = s.store.SetAgentStatus(ctx, agentID, model.AgentOffline, time.Now().UTC())
 
-	// Reset dispatched/running runs back to queued
+	// Reset only retry-safe work. A restore/init/forget operation may have
+	// changed external state before the stream disappeared, so silently
+	// replaying it would be destructive. Those runs become an explicit
+	// operator-visible failure instead.
 	runs, err := s.store.ListRunsByStatus(ctx, []string{model.RunDispatched, model.RunRunning})
 	if err == nil {
 		for _, run := range runs {
 			if run.AgentID == agentID {
-				_ = s.store.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
-					r.StartedAt = nil
-				})
+				if run.Operation == model.OpRestore {
+					// 断线不证明执行已经停止：保留非终态并记录人工恢复要求，
+					// 不自动重放破坏性恢复；占用与仓库阻塞由未安全终结的
+					// restore_request 维持，等待可信结果或人工解除。
+					if rs, ok := s.store.(interface {
+						UpdateRestorePhase(context.Context, string, string) error
+					}); ok {
+						if err := rs.UpdateRestorePhase(ctx, run.ID, model.RestorePhaseManualRecoveryNeeded); err != nil {
+							log.Printf("failed to mark restore run %s manual recovery: %v", run.ID, err)
+						}
+					}
+					continue
+				}
+				if retryableOperation(run.Operation) {
+					_ = s.store.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
+						r.StartedAt = nil
+						r.LeaseExpiresAt = nil
+						r.ErrorCode = ""
+						r.ErrorMessage = ""
+						// 重排队必须同时清掉进度：否则 run 回到 queued 后仍显示上一个
+						// 执行阶段的 phase（实测撤销 Agent 重排队后 status=queued 却
+						// 显示 dumping），运维会误判它还在跑。
+						r.ProgressJSON = "{}"
+					})
+					continue
+				}
+				finished := time.Now().UTC()
+				if err := s.store.TransitionRun(ctx, run.ID, run.Status, model.RunFailed, func(r *model.Run) {
+					r.FinishedAt = &finished
+					r.ErrorCode = model.ErrAgentDisconnected
+					r.ErrorMessage = "agent stream disconnected during a non-retryable operation"
+					r.LeaseExpiresAt = nil
+				}); err == nil {
+					if rs, ok := s.store.(interface {
+						DeleteRunSecrets(context.Context, string) error
+					}); ok {
+						_ = rs.DeleteRunSecrets(ctx, run.ID)
+					}
+					if nerr := s.notifier.NotifyPlanFailure(ctx, run.ID); nerr != nil {
+						notification.LogFailure(run.ID, nerr)
+					}
+				}
 			}
 		}
 	}
 
 	s.reg.notifyDisconnect(agentID)
+}
+
+func retryableOperation(op string) bool {
+	switch op {
+	case model.OpBackup, model.OpCheck, model.OpSnapshots, model.OpSnapshotLs,
+		model.OpValidatePaths, model.OpProbeCaps, model.OpVerifyRemote:
+		return true
+	default:
+		return false
+	}
 }
 
 // offlineLoop periodically checks for agents that haven't sent a heartbeat

@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"backupmanagementcenter/internal/model"
 )
 
 // MongoDBAdapter implements Adapter for MongoDB plans.
@@ -34,8 +38,19 @@ func (a *MongoDBAdapter) Validate(ctx context.Context, spec PlanSpec) error {
 	if s.Database == "" {
 		return errors.New("database is required (single name or 'all')")
 	}
+	// capture_oplog 的快照在本平台内不可能被恢复，故在此拒绝（服务端在计划创建阶段
+	// 同样拒绝，这里是兜底：老计划或直接调 Agent 都不会产出"不能恢复"的快照）：
+	// mongodump 的 --oplog 只支持整实例 dump（配 --db 时工具报
+	// "bad option: --oplog mode only supported on full dumps"），而整实例
+	// （database=all）快照在恢复侧被一律拒绝（平台只开放单库恢复）。
+	if s.CaptureOplog {
+		return errors.New("capture_oplog is not supported: its snapshot could never be restored by this platform (mongodump --oplog requires a full instance dump, and full instance snapshots are not restorable here)")
+	}
 	if s.EstimatedDumpBytes <= 0 {
 		return errors.New("estimated_dump_bytes must be > 0")
+	}
+	if err := model.ValidateExtraArgs(model.KindMongoDB, s.ExtraArgs); err != nil {
+		return err
 	}
 	return nil
 }
@@ -49,7 +64,7 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 	}
 
 	// Write mongodb config YAML (0600)
-	configContent := buildMongoConfig(source.Host, source.Port, source.Username, rc.Secrets.DBPassword, source.Database)
+	configContent := buildMongoConfig(source.Host, source.Port, source.Username, rc.Secrets.DBPassword, source.AuthSource)
 	configFile, err := writeSecretFile(rc.TempDir, "mongo.yml", configContent)
 	if err != nil {
 		return nil, fmt.Errorf("write mongo config: %w", err)
@@ -57,6 +72,14 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 
 	toolVersions := make(map[string]string)
 	mongodumpPath := toolPath("mongodump")
+
+	// 整实例导出前的完整性判定：listDatabases 对只有库/集合级角色的账号只返回
+	// 已授权库，mongodump 不报错也不告警，于是 all 模式会静默产出残缺快照。
+	if source.Database == "all" {
+		if err := ensureMongoFullInstance(ctx, rc, func(level, msg string) { rc.Logf(level, "%s", msg) }); err != nil {
+			return nil, err
+		}
+	}
 
 	archiveFile := filepath.Join(stagingDir, fmt.Sprintf("%s.archive", rc.Task.PlanID))
 	args := []string{
@@ -66,15 +89,14 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 	if source.Database != "all" {
 		args = append(args, "--db="+source.Database)
 	}
-	if source.CaptureOplog {
-		args = append(args, "--oplog")
-	}
+	// 不传 --oplog：capture_oplog 已在 Validate 阶段被拒绝（其快照在本平台无法恢复）。
 	args = append(args, source.ExtraArgs...)
 
 	logLine := func(l string) { rc.Logf("info", "%s", l) }
-	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mongodumpPath, Args: args, Env: nil}, logLine, logLine)
+	capture := &stderrCapture{logf: logLine}
+	exitCode, err := rc.Exec.Run(ctx, Cmd{Exe: mongodumpPath, Args: args, Env: nil}, logLine, capture.line)
 	if err != nil || exitCode != 0 {
-		return nil, fmt.Errorf("mongodump failed (exit %d): %w", exitCode, err)
+		return nil, exitErrorWithStderr("mongodump", exitCode, err, capture.tail)
 	}
 	toolVersions["mongodump"] = getToolVersion(ctx, rc.Exec, mongodumpPath, nil)
 
@@ -113,83 +135,435 @@ func (a *MongoDBAdapter) Backup(ctx context.Context, rc *RunContext) (*BackupArt
 	}, nil
 }
 
-// Restore imports restored snapshot data into target MongoDB.
-func (a *MongoDBAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
-	db := spec.Database
-	if db == nil {
-		return errors.New("database restore spec missing")
-	}
-	stagingDir := spec.StagingDir
+// mongoClusterWideRoles 是判定「凭据能看见实例全部库」的集群级角色。
+//
+// MongoDB 的 listDatabases 对只有库/集合级角色（read@某库、自定义集合级角色）的账号
+// 只返回已授权库，mongodump 不报错也不告警（实测：read@p_f2_m1_src 的账号在 all
+// 模式下 rc=0、快照里只有 1 个库的集合，而实例实有 20 个库）。只有集群级角色才能
+// 保证整实例枚举完整。
+var mongoClusterWideRoles = map[string]bool{
+	"root": true, "__system": true,
+	"readAnyDatabase": true, "readWriteAnyDatabase": true,
+	"dbAdminAnyDatabase": true, "userAdminAnyDatabase": true,
+	"clusterAdmin": true, "clusterMonitor": true, "hostManager": true,
+	"backup": true, "restore": true,
+}
 
-	// Read manifest
-	manifestPath := filepath.Join(stagingDir, "manifest.json")
-	data, err := os.ReadFile(manifestPath)
+// mongoAuthenticatedRoles 返回凭据在服务端上的角色清单（形如 role@db）。
+//
+// 依据 connectionStatus 的 authenticatedUserRoles：它只描述当前连接自身的授权，
+// 任何已认证账号都能读，不需要额外权限（与 MySQL 用 SHOW GRANTS FOR CURRENT_USER()
+// 同思路）。读取失败时返回错误——无法证明完整性时宁可拒绝，也不静默产出残缺快照。
+func mongoAuthenticatedRoles(ctx context.Context, rc *RunContext, authSource string) ([]string, error) {
+	if authSource == "" {
+		authSource = "admin"
+	}
+	source := rc.Task.Source
+	script := fmt.Sprintf(
+		"const uri = %s; const conn = Mongo(uri);\n"+
+			"const st = conn.getDB(%s).runCommand({connectionStatus:1});\n"+
+			"st.authInfo.authenticatedUserRoles.forEach(function(r){ print(r.role + \"\\t\" + r.db); });",
+		strconv.Quote(mongoURI(source.Host, source.Port, source.Username, rc.Secrets.DBPassword, source.AuthSource)),
+		strconv.Quote(authSource))
+	// 校验脚本必须落在 rc.TempDir 而不是 staging：staging 会被整体上传进快照。
+	file, err := writeSecretFile(rc.TempDir, "mongo-roles.js", script)
 	if err != nil {
-		return fmt.Errorf("read manifest: %w", err)
+		return nil, fmt.Errorf("write mongo role check script: %w", err)
 	}
-	var manifest Manifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return fmt.Errorf("unmarshal manifest: %w", err)
-	}
-	if manifest.Adapter != KindMongoDB {
-		return fmt.Errorf("manifest adapter mismatch: %s", manifest.Adapter)
-	}
-
-	// Find the archive file
-	archiveFile := ""
-	for _, dbe := range manifest.Databases {
-		if dbe.Format == "archive" {
-			archiveFile = filepath.Join(stagingDir, dbe.File)
-			break
-		}
-	}
-	if archiveFile == "" {
-		entries, _ := os.ReadDir(stagingDir)
-		for _, e := range entries {
-			if strings.HasSuffix(e.Name(), ".archive") {
-				archiveFile = filepath.Join(stagingDir, e.Name())
-				break
+	var roles []string
+	var stderrTail []string
+	exit, err := rc.Exec.Run(ctx, Cmd{Exe: toolPath("mongosh"), Args: []string{"--quiet", "--nodb", "--file", file}},
+		func(line string) {
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				roles = append(roles, strings.ReplaceAll(trimmed, "\t", "@"))
 			}
+		}, func(line string) {
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				stderrTail = append(stderrTail, trimmed)
+			}
+			rc.Logf("info", "%s", line)
+		})
+	if err != nil || exit != 0 {
+		return nil, fmt.Errorf("无法确认账号 %q 的授权范围，拒绝整实例导出（无法证明快照完整）：%w",
+			source.Username, exitErrorWithStderr("mongosh connectionStatus", exit, err, stderrTail))
+	}
+	return roles, nil
+}
+
+// checkMongoFullInstanceScope 在 all 模式导出前证明凭据能看见实例的全部库：只要有一个
+// 集群级角色即可保证 listDatabases 枚举完整；只有库/集合级角色时明确拒绝，并给出可执行
+// 的处置方式（授集群级角色，或改用单库计划）。
+//
+// 单库模式不受影响：mongodump 用 listCollections 枚举全部集合（不传
+// authorizedCollections），无权限必然 Unauthorized 退出，属响亮失败。
+//
+// 建议里给的是 backup：实测（MongoDB 7.0.43）只有 root/backup 这类角色能完成整实例
+// 导出——readAnyDatabase/readWriteAnyDatabase/clusterMonitor 虽能看到全部库（因此不
+// 在本检查的拒绝范围内），但读不到 admin 的系统集合，mongodump 会在
+// "error counting admin.system.roles" 处响亮失败，不是可用的整实例方案。
+func checkMongoFullInstanceScope(roles []string, username string) error {
+	for _, r := range roles {
+		if mongoClusterWideRoles[strings.SplitN(r, "@", 2)[0]] {
+			return nil
 		}
 	}
-	if archiveFile == "" {
-		return errors.New("no archive file found in staging dir")
+	detail := "该账号没有任何角色"
+	if len(roles) > 0 {
+		detail = "现有角色：" + strings.Join(roles, ", ")
 	}
+	return fmt.Errorf("mongodb 整实例导出被拒绝：账号 %q 只被授予库/集合级角色（%s），"+
+		"MongoDB 的 listDatabases 对这类账号只返回已授权库，mongodump 既不报错也不告警，"+
+		"整实例快照会静默缺失其它库的数据；"+
+		"请为该账号授予集群级备份角色（db.grantRolesToUser(%q, [{role:\"backup\", db:\"admin\"}])，或改用 root），"+
+		"或把该计划改为单库备份（source.database 填具体库名）",
+		username, detail, username)
+}
 
-	mongorestorePath := toolPath("mongorestore")
-	logLine := func(l string) { spec.Logf("info", "%s", l) }
-
-	args := []string{
-		"--archive=" + archiveFile, "--gzip",
+// ensureMongoFullInstance 是 all 模式导出前的完整性闸门（见 checkMongoFullInstanceScope）。
+func ensureMongoFullInstance(ctx context.Context, rc *RunContext, logf func(level, msg string)) error {
+	if toolPath("mongosh") == "" {
+		return errors.New("mongodb 整实例导出被拒绝：镜像缺少 mongosh，无法确认账号的授权范围（不能证明快照完整）")
 	}
-	if db.ReplaceExisting {
-		args = append(args, "--drop")
+	roles, err := mongoAuthenticatedRoles(ctx, rc, rc.Task.Source.AuthSource)
+	if err != nil {
+		return err
 	}
-
-	exitCode, err := spec.Exec.Run(ctx, Cmd{Exe: mongorestorePath, Args: args, Env: nil}, logLine, logLine)
-	if err != nil || exitCode != 0 {
-		return fmt.Errorf("mongorestore failed (exit %d): %w", exitCode, err)
+	if err := checkMongoFullInstanceScope(roles, rc.Task.Source.Username); err != nil {
+		return err
 	}
-
-	spec.Logf("info", "mongodb restore completed; verification skipped (no mongosh)")
+	if logf != nil {
+		logf("info", fmt.Sprintf("整实例导出授权检查通过：账号 %q 拥有集群级角色（%s）", rc.Task.Source.Username, strings.Join(roles, ", ")))
+	}
 	return nil
 }
 
-// buildMongoConfig builds the YAML config for mongodump/mongorestore.
-func buildMongoConfig(host string, port int, username, password, database string) string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("host: %s\n", host))
-	b.WriteString(fmt.Sprintf("port: %d\n", port))
+// mongoCtx groups the target connection details a restore needs.
+type mongoCtx struct {
+	db       *model.DatabaseRestore
+	config   string
+	shell    string
+	password string
+	logf     func(string)
+}
+
+// mongoPrepare writes the target credentials into a 0600 YAML file inside the
+// private staging dir and resolves the shell used for verification.
+//
+// MongoDB restore requires mongosh to tell an empty database apart from a
+// missing one and to verify imported collections; without it the restore is
+// refused rather than guessed.
+func mongoPrepare(spec *RestoreSpec) (*mongoCtx, error) {
+	db := spec.Database
+	if db == nil {
+		return nil, errors.New("database restore spec missing")
+	}
+	if db.TargetDatabase == "" || db.TargetDatabase == "all" {
+		return nil, errors.New("mongodb restore requires a single target database")
+	}
+	// admin 存放用户与角色，local/config 存放副本集与分片元数据：恢复进去会
+	// 覆盖它们。此前 mongodb 侧没有这层守卫，仅靠目标已存在时的 pre-check 兜底。
+	if model.IsSystemDatabase(model.KindMongoDB, db.TargetDatabase) {
+		return nil, fmt.Errorf("refusing to restore into system database %q", db.TargetDatabase)
+	}
+	authSource := db.TargetAuthSource
+	if authSource == "" {
+		authSource = "admin"
+	}
+	configFile, err := WriteSecretFile(spec.StagingDir, "mongo-restore.yml",
+		buildMongoConfig(db.TargetHost, db.TargetPort, db.TargetUsername, spec.Secrets.DBPassword, authSource))
+	if err != nil {
+		return nil, fmt.Errorf("write mongo restore config: %w", err)
+	}
+	shell := toolPath("mongosh")
+	if shell == "" {
+		return nil, errors.New("mongosh is required to verify the mongodb target; refusing to restore without a reliable existence check")
+	}
+	return &mongoCtx{
+		db:       db,
+		config:   configFile,
+		shell:    shell,
+		password: spec.Secrets.DBPassword,
+		logf:     func(l string) { spec.Logf("info", "%s", l) },
+	}, nil
+}
+
+// runJS 通过 stdin 把 JS 交给 mongosh，连接信息来自 0600 配置文件。
+func (c *mongoCtx) runJS(ctx context.Context, spec *RestoreSpec, js string, scan func(string)) error {
+	script := fmt.Sprintf(
+		"const uri = %s; const conn = Mongo(uri); const db = conn.getDB(%s);\n%s",
+		strconv.Quote(c.uri()), strconv.Quote(c.db.TargetDatabase), js)
+	tmp, err := WriteSecretFile(spec.StagingDir, "mongo-check.js", script)
+	if err != nil {
+		return fmt.Errorf("write mongo check script: %w", err)
+	}
+	var stderrTail strings.Builder
+	exit, err := spec.Exec.Run(ctx, Cmd{Exe: c.shell, Args: []string{"--quiet", "--nodb", "--file", tmp}},
+		func(line string) {
+			if trimmed := strings.TrimSpace(line); trimmed != "" && scan != nil {
+				scan(trimmed)
+			}
+		}, func(line string) {
+			// mongosh 的失败原因只出现在 stderr（如 "MongoServerError: Authentication failed."），
+			// 只记日志会让运行错误停在 "mongosh query failed (exit 1)"，凭据错与网络错不可区分。
+			// 与 mysql 侧 runQuery 的处理保持一致。
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				stderrTail.WriteString(trimmed + "\n")
+			}
+			if c.logf != nil {
+				c.logf(line)
+			}
+		})
+	if err != nil || exit != 0 {
+		base := exitError("mongosh query", exit, err)
+		if tail := strings.TrimSpace(stderrTail.String()); tail != "" {
+			return fmt.Errorf("%w: %s", base, tail)
+		}
+		return base
+	}
+	return nil
+}
+
+// uri 构造带凭据的 mongodb URI（仅写入 0600 脚本文件，不进入 argv）。
+func (c *mongoCtx) uri() string {
+	authSource := c.db.TargetAuthSource
+	if authSource == "" {
+		authSource = "admin"
+	}
+	return mongoURI(c.db.TargetHost, c.db.TargetPort, c.db.TargetUsername, c.password, authSource)
+}
+
+// TargetExists reports whether the target database has been created.
+// listDatabases distinguishes an empty database from a missing one, so an empty
+// dump is never mistaken for absence. Auth/permission failures abort the query
+// and surface as errors.
+func (a *MongoDBAdapter) TargetExists(ctx context.Context, spec *RestoreSpec) (bool, error) {
+	c, err := mongoPrepare(spec)
+	if err != nil {
+		return false, err
+	}
+	found := ""
+	js := mongoTargetExistsScript(c.db.TargetDatabase)
+	if err := c.runJS(ctx, spec, js, func(line string) { found = line }); err != nil {
+		return false, err
+	}
+	return found == c.db.TargetDatabase, nil
+}
+
+// mongoTargetExistsScript 生成用于判断目标库是否存在的 JS。
+// adminCommand 挂在 Database 对象上；Mongo(uri) 返回的连接对象没有该方法，
+// 直接调用会抛 "conn.adminCommand is not a function"。
+func mongoTargetExistsScript(database string) string {
+	return fmt.Sprintf(
+		"const r = db.adminCommand({listDatabases:1, filter:{name:%s}});\n"+
+			"r.databases.forEach(function(d){print(d.name);});", strconv.Quote(database))
+}
+
+// mongoCollectionNamesScript 列出当前库的集合名。
+func mongoCollectionNamesScript() string {
+	return "db.getCollectionNames().forEach(function(n){print(n);});"
+}
+
+// Import loads the archive into the target. A new target is created without
+// dropping (the pipeline verified it does not exist); an overwrite uses --drop
+// to replace every collection.
+func (a *MongoDBAdapter) Import(ctx context.Context, spec *RestoreSpec) error {
+	c, err := mongoPrepare(spec)
+	if err != nil {
+		return err
+	}
+	if spec.ArtifactFile == "" {
+		return errors.New("mongodb restore artifact is missing")
+	}
+	args := []string{"--archive=" + spec.ArtifactFile, "--gzip", "--config=" + c.config}
+	if !spec.TargetIsNew {
+		// 覆盖语义要求“完整替换目标内容”。mongorestore --drop 只会重建归档里
+		// 存在的集合，归档之外的集合会原样残留（实测：目标 pre-existing 的集合
+		// 在覆盖恢复后仍在），因此先整库删除——与 MySQL/PostgreSQL 适配器的
+		// DROP DATABASE 等价。
+		if err := c.runJS(ctx, spec, "db.dropDatabase();", nil); err != nil {
+			return fmt.Errorf("drop mongodb target database before overwrite: %w", err)
+		}
+		args = append(args, "--drop")
+	}
+	if spec.ArtifactDatabase != "" && spec.ArtifactDatabase != c.db.TargetDatabase {
+		args = append(args,
+			"--nsFrom="+spec.ArtifactDatabase+".*",
+			"--nsTo="+c.db.TargetDatabase+".*")
+	}
+	capture := &stderrCapture{logf: c.logf}
+	exit, err := spec.Exec.Run(ctx, Cmd{Exe: toolPath("mongorestore"), Args: args}, c.logf, capture.line)
+	if err != nil || exit != 0 {
+		return exitErrorWithStderr("mongorestore", exit, err, capture.tail)
+	}
+	return nil
+}
+
+// VerifyRestored lists the namespaces the archive would restore and requires
+// every one of them to exist in the target.
+//
+// 解析失败必须中止（fail-closed）：把“解析不出来”当成“归档为空”会让一次
+// 完全没落地的导入静默通过验证。
+func (a *MongoDBAdapter) VerifyRestored(ctx context.Context, spec *RestoreSpec) error {
+	c, err := mongoPrepare(spec)
+	if err != nil {
+		return err
+	}
+	namespaces := map[string]map[string]struct{}{}
+	var out strings.Builder
+	// mongorestore 把 "found collection ..." 与 "archive prelude ..." 全部写到
+	// stderr，只收集 stdout 会得到空输出并把每次恢复都判成失败。
+	collect := func(line string) { out.WriteString(line); out.WriteString("\n") }
+	capture := &stderrCapture{logf: c.logf}
+	exit, err := spec.Exec.Run(ctx, Cmd{Exe: toolPath("mongorestore"),
+		Args: []string{"--archive=" + spec.ArtifactFile, "--gzip", "--config=" + c.config, "--dryRun", "--verbose"}},
+		collect, func(line string) { collect(line); capture.line(line) })
+	if err != nil || exit != 0 {
+		return exitErrorWithStderr("mongorestore dry run", exit, err, capture.tail)
+	}
+	parsed := mongoDumpNamespaces(out.String())
+	if len(parsed) == 0 {
+		return errors.New("mongodb restore verification failed: could not read any namespace from the mongorestore --dryRun output")
+	}
+	for _, ns := range parsed {
+		parts := strings.SplitN(ns, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if namespaces[parts[0]] == nil {
+			namespaces[parts[0]] = map[string]struct{}{}
+		}
+		namespaces[parts[0]][parts[1]] = struct{}{}
+	}
+	var missing []string
+	for db, cols := range namespaces {
+		present := map[string]struct{}{}
+		_ = db
+		// 目标库用 TargetDatabase：归档里的库名可能与目标名不同
+		// （Import 用 --nsFrom/--nsTo 重命名）。
+		js := mongoCollectionNamesScript()
+		if err := c.runJS(ctx, spec, js, func(line string) { present[line] = struct{}{} }); err != nil {
+			return err
+		}
+		for col := range cols {
+			if _, ok := present[col]; !ok {
+				missing = append(missing, db+"."+col)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("mongodb restore verification failed: missing collections %v", missing)
+	}
+	spec.Logf("info", "mongodb verification: %d namespaces present", len(namespaces))
+	return nil
+}
+
+// RemoveTarget drops the database created by this run.
+func (a *MongoDBAdapter) RemoveTarget(ctx context.Context, spec *RestoreSpec) error {
+	if !spec.TargetIsNew {
+		return errors.New("refusing to remove a target this run did not create")
+	}
+	c, err := mongoPrepare(spec)
+	if err != nil {
+		return err
+	}
+	if err := c.runJS(ctx, spec, "db.dropDatabase();", nil); err != nil {
+		return fmt.Errorf("drop mongodb target database: %w", err)
+	}
+	return nil
+}
+
+// mongoDumpNamespaces 从 mongorestore --dryRun --verbose 输出里抽取“归档中的”
+// 命名空间。
+//
+// archive 模式下当前工具（Database Tools 100.x）输出：
+//
+//	found collection `appdb.users` bson to restore to `appdb.users`
+//	found collection metadata from `appdb.users` to restore to `appdb.users`
+//
+// 而旧版 / 目录模式下是 "reading metadata for appdb.users from …"。这里两种
+// 都认，并优先取 `from` 一侧（`to` 一侧可能是 --nsFrom/--nsTo 重命名后的目标名）。
+func mongoDumpNamespaces(out string) []string {
+	seen := map[string]struct{}{}
+	var namespaces []string
+	add := func(ns string) {
+		ns = strings.TrimSpace(strings.Trim(ns, "`"))
+		if ns == "" || strings.ContainsAny(ns, " \t") {
+			return
+		}
+		if _, ok := seen[ns]; ok {
+			return
+		}
+		seen[ns] = struct{}{}
+		namespaces = append(namespaces, ns)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if idx := strings.Index(trimmed, "reading metadata for "); idx >= 0 {
+			rest := strings.TrimSpace(trimmed[idx+len("reading metadata for "):])
+			if fields := strings.Fields(rest); len(fields) > 0 {
+				// 目录模式为 "ns from path"；archive 模式无 "from"。
+				add(strings.TrimSuffix(fields[0], "..."))
+			}
+			continue
+		}
+		if idx := strings.Index(trimmed, "found collection metadata from "); idx >= 0 {
+			add(firstToken(trimmed[idx+len("found collection metadata from "):]))
+			continue
+		}
+		if idx := strings.Index(trimmed, "archive prelude "); idx >= 0 {
+			add(firstToken(trimmed[idx+len("archive prelude "):]))
+		}
+	}
+	return namespaces
+}
+
+// firstToken 返回 s 中第一个空白分隔的片段。
+func firstToken(s string) string {
+	if fields := strings.Fields(s); len(fields) > 0 {
+		return fields[0]
+	}
+	return ""
+}
+
+// mongoURIEscape 按 RFC 3986 对 MongoDB URI 里的组件做百分号编码。
+//
+// 不能直接用 url.QueryEscape：它按 form 语义把空格编码成 "+"，而 URI 的 userinfo
+// 与查询值里 "+" 是字面加号，服务端不会还原成空格——含空格的密码因此永远认证失败
+// （实测：密码 "p a s s" 的计划备份 100% 失败，且去掉配置文件里的 password 字段后
+// 仍失败，证明问题就在 uri）。QueryEscape 除空格外的编码都是合法的百分号编码，
+// 所以只需把 "+" 换回 "%20"。
+func mongoURIEscape(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
+}
+
+// mongoURI 构造带凭据的连接串。只会写进 0600 配置文件，绝不进入 argv。
+func mongoURI(host string, port int, username, password, authSource string) string {
+	if authSource == "" {
+		authSource = "admin"
+	}
+	// 无凭据时不能省略 "@"：否则解析出空用户信息段。
+	creds := ""
 	if username != "" {
-		b.WriteString(fmt.Sprintf("username: %s\n", username))
+		creds = mongoURIEscape(username) + ":" + mongoURIEscape(password) + "@"
 	}
+	return fmt.Sprintf("mongodb://%s%s:%d/?authSource=%s",
+		creds, host, port, mongoURIEscape(authSource))
+}
+
+// buildMongoConfig builds the YAML config for mongodump/mongorestore.
+//
+// Database Tools 的 --config 只认识 password / uri / sslPEMKeyPassword /
+// destinationPassword 四个字段；host、port、username、authSource 写在扁平
+// YAML 里会被拒绝（"field host not found in type struct {...}"）并直接退出。
+// 因此连接信息统一编码进 uri。
+func buildMongoConfig(host string, port int, username, password, authSource string) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("uri: %s\n", strconv.Quote(mongoURI(host, port, username, password, authSource))))
+	// uri 已含密码时这个字段是可选的，但显式写出可保证 uri 被改写或
+	// 查询参数丢失时仍能认证。
 	if password != "" {
-		b.WriteString(fmt.Sprintf("password: %s\n", password))
-	}
-	if database != "" && database != "all" {
-		b.WriteString(fmt.Sprintf("authSource: %s\n", database))
-	} else {
-		b.WriteString("authSource: admin\n")
+		b.WriteString(fmt.Sprintf("password: %s\n", strconv.Quote(password)))
 	}
 	return b.String()
 }

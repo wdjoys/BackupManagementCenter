@@ -1,23 +1,26 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/server/jobs"
+	"backupmanagementcenter/internal/server/store"
 )
 
 // ---- Storage targets ----
 
 type storageTargetView struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Type       string    `json:"type"`
-	RemoteName string    `json:"remote_name"`
-	RemotePath string    `json:"remote_path"`
-	CreatedAt  string    `json:"created_at"`
-	UpdatedAt  string    `json:"updated_at"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	RemoteName string `json:"remote_name"`
+	RemotePath string `json:"remote_path"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
 }
 
 func targetView(t *model.StorageTarget) storageTargetView {
@@ -61,6 +64,12 @@ func (s *Server) handleCreateStorageTarget(w http.ResponseWriter, r *http.Reques
 		writeErr(w, http.StatusBadRequest, "validation_failed", "name and remote_name are required")
 		return
 	}
+	// 空 rclone_conf 会在落库时变成 NULL 并撞 NOT NULL 约束，冒泡成 500 internal；
+	// 这是客户端输入问题，必须回 400。
+	if strings.TrimSpace(body.RcloneConf) == "" {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "rclone_conf is required")
+		return
+	}
 	t, err := s.Jobs.CreateStorageTargetWithAgent(r.Context(), actorID(r), body.Name, body.RcloneConf, body.RemoteName, body.RemotePath, body.ValidateAgentID, body.Validate)
 	if err != nil {
 		s.jobsErr(w, err)
@@ -83,6 +92,45 @@ func (s *Server) handleListStorageTargets(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 
+// PATCH /storage-targets/{id} {name}
+// Only the display name is editable. The encrypted connection configuration
+// and remote path are immutable after import; create a new target to rotate
+// credentials or move a remote safely.
+func (s *Server) handleRenameStorageTarget(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name       string  `json:"name"`
+		RemotePath *string `json:"remote_path"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "name is required")
+		return
+	}
+	// remote_path 不可变：以前带该字段会被静默忽略并回 200，运维以为改成功。
+	// 明确拒绝，避免"看起来生效了"的错误预期。
+	if body.RemotePath != nil {
+		if cur, err := s.ST.GetStorageTarget(r.Context(), pathParam(r, "id")); err == nil && *body.RemotePath != cur.RemotePath {
+			writeErr(w, http.StatusBadRequest, "validation_failed",
+				"remote_path is immutable; create a new storage target to change it")
+			return
+		}
+	}
+	t, err := s.Jobs.RenameStorageTarget(r.Context(), actorID(r), pathParam(r, "id"), body.Name)
+	if err != nil {
+		if errors.Is(err, jobs.ErrStorageTargetName) {
+			writeErr(w, http.StatusBadRequest, "validation_failed", "name is required")
+			return
+		}
+		if !mapStoreErr(w, err) {
+			s.jobsErr(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, targetView(t))
+}
+
 // DELETE /storage-targets/{id}
 func (s *Server) handleDeleteStorageTarget(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
@@ -99,16 +147,19 @@ func (s *Server) handleDeleteStorageTarget(w http.ResponseWriter, r *http.Reques
 // ---- Repositories ----
 
 type repositoryView struct {
-	ID               string     `json:"id"`
-	AgentID          string     `json:"agent_id"`
-	AgentName        string     `json:"agent_name,omitempty"`
-	StorageTargetID  string     `json:"storage_target_id"`
-	StorageTargetName string    `json:"storage_target_name,omitempty"`
-	RepositoryPath   string     `json:"repository_path"`
-	Status           string     `json:"status"`
-	LastCheckAt      *string    `json:"last_check_at,omitempty"`
-	CreatedAt        string     `json:"created_at"`
-	UpdatedAt        string     `json:"updated_at"`
+	ID                string  `json:"id"`
+	AgentID           string  `json:"agent_id"`
+	AgentName         string  `json:"agent_name,omitempty"`
+	StorageTargetID   string  `json:"storage_target_id"`
+	StorageTargetName string  `json:"storage_target_name,omitempty"`
+	RepositoryPath    string  `json:"repository_path"`
+	Status            string  `json:"status"`
+	// ErrorMessage 是最近一次失败 run 的原因（仓库检查/初始化/浏览等），供 UI 在
+	// error 状态下展示，避免只显示一个没有原因的「错误」徽标。
+	ErrorMessage string  `json:"error_message,omitempty"`
+	LastCheckAt  *string `json:"last_check_at,omitempty"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
 }
 
 // POST /repositories {agent_id, storage_target_id}
@@ -122,6 +173,9 @@ func (s *Server) handleBindRepository(w http.ResponseWriter, r *http.Request) {
 	}
 	repo, err := s.Jobs.BindRepository(r.Context(), actorID(r), body.AgentID, body.StorageTargetID)
 	if err != nil {
+		// 仓库初始化/探测失败原因必须进服务端日志：此前只有 requestLog 的
+		// status=500 一行，运维无法判断是远端不可达、密码错误还是 restic init 失败。
+		logf("[ERROR] repository bind failed agent=%s storage_target=%s: %v", body.AgentID, body.StorageTargetID, err)
 		s.jobsErr(w, err)
 		return
 	}
@@ -129,6 +183,17 @@ func (s *Server) handleBindRepository(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /repositories
+// POST /repositories/{id}/check — 手工触发一次仓库完整性校验（restic check）。
+// 返回 202 与 run 视图；校验结果通过 run 终态与日志呈现。
+func (s *Server) handleRepositoryCheck(w http.ResponseWriter, r *http.Request) {
+	run, err := s.Jobs.StartRepositoryCheck(r.Context(), actorID(r), pathParam(r, "id"))
+	if err != nil {
+		s.jobsErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"run": runView(run)})
+}
+
 func (s *Server) handleListRepositories(w http.ResponseWriter, r *http.Request) {
 	repos, err := s.ST.ListRepositories(r.Context())
 	if err != nil {
@@ -140,6 +205,19 @@ func (s *Server) handleListRepositories(w http.ResponseWriter, r *http.Request) 
 		out = append(out, s.repoView(r, &repos[i]))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// DELETE /repositories/{id} removes the server-side binding only. Remote
+// Restic snapshots are preserved and can be adopted again by binding the same
+// Agent and storage target later.
+func (s *Server) handleUnbindRepository(w http.ResponseWriter, r *http.Request) {
+	if err := s.Jobs.UnbindRepository(r.Context(), actorID(r), pathParam(r, "id")); err != nil {
+		if !mapStoreErr(w, err) {
+			s.jobsErr(w, err)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) repoView(r *http.Request, repo *model.Repository) repositoryView {
@@ -158,10 +236,27 @@ func (s *Server) repoView(r *http.Request, repo *model.Repository) repositoryVie
 	if t, err := s.ST.GetStorageTarget(r.Context(), repo.StorageTargetID); err == nil {
 		v.StorageTargetName = t.Name
 	}
+	// 最近一次失败 run 的原因（按 queued_at 倒序取最新一条）。仓库处于 error 时
+	// 这是用户唯一能看到根因的地方；仓库已恢复 ready 后不得再带上过期原因，
+	// 否则 API 消费者会把历史失败当成当前故障。
+	//
+	// 只回填人可读的 message：失败 run 只有 error_code 时不再把 code 原文当原因
+	// 展示（中文界面会出现裸英文码），UI 侧改用本地化的通用提示。
+	if repo.Status == "error" {
+		if runs, err := s.ST.ListRuns(r.Context(), store.RunFilter{
+			RepositoryID: repo.ID,
+			Statuses:     []string{model.RunFailed},
+			Limit:        1,
+		}); err == nil && len(runs) > 0 {
+			if msg := strings.TrimSpace(runs[0].ErrorMessage); msg != "" {
+				v.ErrorMessage = msg
+			}
+		}
+	}
 	return v
 }
 
-// GET /repositories/{id}/snapshots — synchronous browse run on the agent.
+// GET /repositories/{id}/snapshots — 优先使用缓存的同步浏览。
 func (s *Server) handleRepoSnapshots(w http.ResponseWriter, r *http.Request) {
 	repoID := pathParam(r, "id")
 	repo, err := s.ST.GetRepository(r.Context(), repoID)
@@ -169,19 +264,133 @@ func (s *Server) handleRepoSnapshots(w http.ResponseWriter, r *http.Request) {
 		mapStoreErr(w, err)
 		return
 	}
-	snaps, _, err := s.Jobs.Snapshots(r.Context(), repo.ID, repo.AgentID)
+	refresh := r.URL.Query().Get("refresh") == "1"
+	if !refresh && r.URL.Query().Get("cached") == "1" {
+		cs, hasCache := s.ST.(store.SnapshotCacheStore)
+		if !hasCache {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		cached, stale, err := cs.GetSnapshotListBrowseCache(r.Context(), repo.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "internal", redactMsg(err.Error()))
+			return
+		}
+		var snaps []model.Snapshot
+		if err := json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps); err != nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if store.SnapshotFingerprint(snaps) != cached.Fingerprint {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		snaps = s.Jobs.FilterHiddenSnapshots(r.Context(), repo.ID, snaps)
+		if snaps == nil {
+			snaps = []model.Snapshot{}
+		}
+		if stale {
+			w.Header().Set("X-BMC-Cache", "STALE")
+		} else {
+			w.Header().Set("X-BMC-Cache", "HIT")
+		}
+		if !cached.VerifiedAt.IsZero() {
+			w.Header().Set("X-BMC-Verified-At", cached.VerifiedAt.UTC().Format(timeRFC3339))
+		}
+		writeJSON(w, http.StatusOK, snaps)
+		return
+	}
+	snaps, _, cacheInfo, err := s.Jobs.SnapshotsWithOptions(r.Context(), repo.ID, repo.AgentID, refresh)
 	if err != nil {
 		s.jobsErr(w, err)
 		return
 	}
+	writeSnapshotCacheHeaders(w, cacheInfo)
 	writeJSON(w, http.StatusOK, snaps)
 }
 
-// GET /snapshots/{snapshotID}/tree?repo=&path=
+// DELETE /repositories/{id}/snapshots/{snapshotID} 请求手动删除单个快照。
+// HTTP 层不等待 Agent，也不直接调用 restic；后台由 scheduler 按仓库 FIFO
+// 处理真正的 forget + prune。响应 202 后立即从列表隐藏。
+func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	repoID := pathParam(r, "id")
+	snapshotID := pathParam(r, "snapshotID")
+
+	repo, err := s.ST.GetRepository(r.Context(), repoID)
+	if err != nil {
+		mapStoreErr(w, err)
+		return
+	}
+
+	// 恢复保护优先于"是否命中快照列表缓存"：未终结恢复的源快照/回滚来源可能是恢复期间
+	// 刚由 Agent 上传的（该仓库的后续命令被 dispatcher 暂缓，缓存刷新拿不到），此时按
+	// 缓存判定会返回 404 "not found"，而它其实存在且被保护——会误导运维以为快照没了。
+	// 先按引用判定，命中即按文档返回 409（与 QueueSnapshotDeletion 内的护栏同一判据）。
+	if protected, perr := s.ST.ProtectedRestoreSnapshotIDs(r.Context(), repoID); perr == nil {
+		if _, ok := protected[snapshotID]; ok {
+			writeErr(w, http.StatusConflict, model.ErrSnapshotRestoreProtected,
+				"snapshot is referenced by an unresolved restore; resolve it before deleting")
+			return
+		}
+	}
+
+	// 要求当前 repository 存在有效的快照列表缓存，并确认该 snapshotID 在缓存中；
+	// 避免对任意 ID 发起破坏性命令。
+	cs, hasCache := s.ST.(store.SnapshotCacheStore)
+	if !hasCache {
+		writeErr(w, http.StatusConflict, "snapshot_list_refresh_required",
+			"snapshot list cache unavailable; refresh the list first")
+		return
+	}
+	cached, err := cs.GetSnapshotListCache(r.Context(), repoID)
+	if err != nil {
+		writeErr(w, http.StatusConflict, "snapshot_list_refresh_required",
+			"snapshot list cache is missing or stale; refresh the list first")
+		return
+	}
+	var snaps []model.Snapshot
+	if json.Unmarshal([]byte(cached.SnapshotsJSON), &snaps) != nil {
+		writeErr(w, http.StatusConflict, "snapshot_list_refresh_required",
+			"snapshot list cache is corrupt; refresh the list first")
+		return
+	}
+	if store.SnapshotFingerprint(snaps) != cached.Fingerprint {
+		writeErr(w, http.StatusConflict, "snapshot_list_refresh_required",
+			"snapshot list cache fingerprint mismatch; refresh the list first")
+		return
+	}
+	found := false
+	for _, snap := range snaps {
+		if snap.ID == snapshotID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, "not_found", "snapshot not found in repository")
+		return
+	}
+
+	del, _, err := s.Jobs.QueueSnapshotDeletion(r.Context(), actorID(r), repo.ID, snapshotID)
+	if err != nil {
+		s.jobsErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"deletion_id": del.ID,
+		"status":      string(del.State),
+	})
+}
+
+// GET /snapshots/{snapshotID}/tree?repo=&path=&refresh=1
 func (s *Server) handleSnapshotTree(w http.ResponseWriter, r *http.Request) {
 	snapshotID := pathParam(r, "snapshotID")
 	repoID := r.URL.Query().Get("repo")
-	path := r.URL.Query().Get("path")
+	cachePath := r.URL.Query().Get("path")
 	if repoID == "" {
 		writeErr(w, http.StatusBadRequest, "validation_failed", "repo query parameter is required")
 		return
@@ -191,21 +400,167 @@ func (s *Server) handleSnapshotTree(w http.ResponseWriter, r *http.Request) {
 		mapStoreErr(w, err)
 		return
 	}
-	tree, _, err := s.Jobs.SnapshotTree(r.Context(), repo.ID, repo.AgentID, snapshotID, path)
+	refresh := r.URL.Query().Get("refresh") == "1"
+	if !refresh && r.URL.Query().Get("cached") == "1" {
+		cs, hasCache := s.ST.(store.SnapshotCacheStore)
+		if !hasCache {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		listCached, listStale, err := cs.GetSnapshotListBrowseCache(r.Context(), repo.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "internal", redactMsg(err.Error()))
+			return
+		}
+		var snaps []model.Snapshot
+		if err := json.Unmarshal([]byte(listCached.SnapshotsJSON), &snaps); err != nil || store.SnapshotFingerprint(snaps) != listCached.Fingerprint {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		filteredSnaps := s.Jobs.FilterHiddenSnapshots(r.Context(), repo.ID, snaps)
+		found := false
+		for _, snap := range filteredSnaps {
+			if snap.ID == snapshotID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeErr(w, http.StatusNotFound, "not_found", "snapshot not found in repository")
+			return
+		}
+
+		treeCached, treeStale, err := cs.GetSnapshotTreeBrowseCache(r.Context(), repo.ID, snapshotID, cachePath)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "internal", redactMsg(err.Error()))
+			return
+		}
+		var tree jobs.TreeResult
+		if err := json.Unmarshal([]byte(treeCached.TreeJSON), &tree); err != nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if listStale || treeStale {
+			w.Header().Set("X-BMC-Cache", "STALE")
+		} else {
+			w.Header().Set("X-BMC-Cache", "HIT")
+		}
+		if !treeCached.VerifiedAt.IsZero() {
+			w.Header().Set("X-BMC-Verified-At", treeCached.VerifiedAt.UTC().Format(timeRFC3339))
+		}
+		writeJSON(w, http.StatusOK, tree)
+		return
+	}
+	tree, _, cacheInfo, err := s.Jobs.SnapshotTreeWithOptions(r.Context(), repo.ID, repo.AgentID, snapshotID, cachePath, refresh)
 	if err != nil {
 		s.jobsErr(w, err)
 		return
 	}
+	writeSnapshotCacheHeaders(w, cacheInfo)
 	writeJSON(w, http.StatusOK, tree)
+}
+
+func writeSnapshotCacheHeaders(w http.ResponseWriter, info jobs.CacheInfo) {
+	if info.Hit {
+		w.Header().Set("X-BMC-Cache", "HIT")
+	} else {
+		w.Header().Set("X-BMC-Cache", "MISS")
+	}
+	if info.VerifiedAt != nil {
+		w.Header().Set("X-BMC-Verified-At", info.VerifiedAt.UTC().Format(timeRFC3339))
+	}
 }
 
 // jobsErr maps orchestrator errors (incl. stable codes) to HTTP.
 func (s *Server) jobsErr(w http.ResponseWriter, err error) {
 	var mt *jobs.MissingToolsError
+	if errors.Is(err, jobs.ErrForbidden) {
+		// 覆盖恢复的确认值不匹配等刻意拒绝：属客户端问题，必须是 4xx 而不是 500，
+		// 否则运维会把它当成服务端内部错误。文案保持简短（反枚举）。
+		writeErr(w, http.StatusForbidden, model.ErrForbidden, "forbidden")
+		return
+	}
+	if errors.Is(err, jobs.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "resource not found")
+		return
+	}
+	if errors.Is(err, store.ErrCacheGenerationChanged) {
+		writeErr(w, http.StatusConflict, "cache_generation_changed", "repository changed while browsing; retry")
+		return
+	}
+	if errors.Is(err, jobs.ErrRestoreBusy) {
+		writeErr(w, http.StatusConflict, model.ErrDatabaseRestoreBusy, "another database restore is in progress; wait for it to finish")
+		return
+	}
+	if errors.Is(err, store.ErrRestoreTargetBusy) {
+		writeErr(w, http.StatusConflict, model.ErrRestoreTargetBusy, "another restore is already writing to this target path; wait for it to finish")
+		return
+	}
+	if errors.Is(err, jobs.ErrRestoreConflict) || errors.Is(err, store.ErrRestoreConflict) {
+		writeErr(w, http.StatusConflict, "restore_conflict", "restore request is not in a state that can be resolved")
+		return
+	}
+	if errors.Is(err, jobs.ErrCapabilitiesPending) {
+		writeErr(w, http.StatusConflict, model.ErrAgentCapabilitiesPending, "target agent connection has not reported its capabilities yet; retry shortly")
+		return
+	}
+	if errors.Is(err, jobs.ErrUnsafeDatabaseRestore) {
+		writeErr(w, http.StatusUnprocessableEntity, model.ErrAgentUpgradeRequired,
+			"target agent does not support pre-restore backup and rollback; upgrade it first: "+err.Error())
+		return
+	}
+	if errors.Is(err, jobs.ErrSnapshotRefreshRequired) {
+		writeErr(w, http.StatusConflict, model.ErrSnapshotListRefreshRequired, "a verified snapshot list or directory cache is required; refresh the snapshot list first")
+		return
+	}
+	if errors.Is(err, jobs.ErrSnapshotKindMismatch) {
+		writeErr(w, http.StatusUnprocessableEntity, "restore_snapshot_kind_mismatch", "the snapshot kind does not match the requested restore kind")
+		return
+	}
+	if errors.Is(err, jobs.ErrSnapshotRestoreProtected) {
+		writeErr(w, http.StatusConflict, model.ErrSnapshotRestoreProtected, "the snapshot backs an unresolved restore and cannot be deleted")
+		return
+	}
+	if errors.Is(err, jobs.ErrUnsupportedManifest) {
+		writeErr(w, http.StatusUnprocessableEntity, model.ErrUnsupportedRestoreManifest, "the snapshot is not a single-database artifact")
+		return
+	}
+	if errors.Is(err, jobs.ErrAgentOffline) {
+		writeErr(w, http.StatusConflict, model.ErrAgentUnavailable, "target agent is offline")
+		return
+	}
+	if errors.Is(err, jobs.ErrAgentRevoked) {
+		writeErr(w, http.StatusConflict, model.ErrAgentRevoked, "target agent is revoked")
+		return
+	}
+	if errors.Is(err, jobs.ErrRepositoryUnavailable) {
+		// 仓库不可用（状态未就绪，或远端打不开/初始化/浏览失败）：属操作者可自行
+		// 纠正的前置条件问题，必须回 409 + 稳定码，而不是 500 internal。真实原因
+		// 保留在 message 中。
+		writeErr(w, http.StatusConflict, model.ErrRepositoryUnavailable, redactMsg(err.Error()))
+		return
+	}
+	if errors.Is(err, jobs.ErrRepositoryNotReady) {
+		writeErr(w, http.StatusConflict, model.ErrRepositoryMissing, "cross-agent restore requires a ready source repository")
+		return
+	}
 	if errors.As(err, &mt) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error": map[string]any{"code": "missing_tools", "message": "agent lacks required tools", "tools": mt.Tools},
 		})
+		return
+	}
+	if errors.Is(err, jobs.ErrWaitTimeout) {
+		writeErr(w, http.StatusGatewayTimeout, "wait_timeout",
+			"agent did not finish the operation in time; it may still complete - retry or check run logs")
 		return
 	}
 	if mapStoreErr(w, err) {

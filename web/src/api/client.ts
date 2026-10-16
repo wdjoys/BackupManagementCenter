@@ -1,6 +1,31 @@
-import type { ApiError } from './types'
+import type { ApiErrorPayload } from './types'
+import { localizeErrorCode } from '@/lib/errors'
 
 const BASE_URL = '/api/v1'
+
+export class ApiClientError extends Error {
+  readonly code: string
+  readonly status: number
+  /** 服务端原始 message。已映射的码在 message 里只剩本地化通用文案，具体原因只在这里。 */
+  readonly serverMessage: string
+
+  constructor(message: string, code: string, status: number, serverMessage = '') {
+    super(message)
+    this.name = 'ApiClientError'
+    this.code = code
+    this.status = status
+    this.serverMessage = serverMessage
+    Object.setPrototypeOf(this, new.target.prototype)
+  }
+}
+
+export function isApiClientError(value: unknown): value is ApiClientError {
+  return value instanceof ApiClientError
+}
+
+export function isAbortError(value: unknown): boolean {
+  return typeof DOMException !== 'undefined' && value instanceof DOMException && value.name === 'AbortError'
+}
 
 /**
  * Parse a cookie value by name from document.cookie.
@@ -13,9 +38,15 @@ export function getCookie(name: string): string | null {
 /**
  * Thin fetch wrapper with automatic JSON parsing, credentials, and CSRF.
  */
+export interface ApiResponseMeta {
+  cache: string | null
+  verifiedAt: string | null
+}
+
 export async function api<T = unknown>(
   path: string,
   options: RequestInit = {},
+  onMeta?: (meta: ApiResponseMeta) => void,
 ): Promise<T> {
   const url = `${BASE_URL}${path}`
   const headers = new Headers(options.headers)
@@ -40,6 +71,10 @@ export async function api<T = unknown>(
   }
 
   const response = await fetch(url, fetchOptions)
+  onMeta?.({
+    cache: response.headers.get('X-BMC-Cache'),
+    verifiedAt: response.headers.get('X-BMC-Verified-At'),
+  })
 
   // 204 No Content
   if (response.status === 204) {
@@ -51,21 +86,24 @@ export async function api<T = unknown>(
   if (contentType.includes('application/json')) {
     const body = await response.json()
     if (!response.ok) {
-      const err = body.error as ApiError | undefined
-      throw Object.assign(new Error(err?.message || response.statusText), {
-        code: err?.code || 'unknown',
-        status: response.status,
-      })
+      const err = body?.error as ApiErrorPayload | undefined
+      const code = err?.code || 'unknown'
+      // 已映射的错误码在构造时即本地化：toast/表单/页面错误条统一从这里取文案，
+      // 避免各处透传服务端英文原文；未映射的码保持服务端 message 原样。
+      const message = err?.message || response.statusText || 'Request failed'
+      throw new ApiClientError(localizeErrorCode(code) ?? message, code, response.status, message)
     }
-    return body as T
+    // 空列表在 Go 侧为 nil slice，JSON 编码为 null；列表消费方统一假设数组，这里归一为 []。
+    return (body === null ? [] : body) as T
   }
 
-  // Non-JSON success
+  // Non-JSON failure（网关/代理返回的纯文本错误）：statusText 是英文，同样按码本地化。
   if (!response.ok) {
-    throw Object.assign(new Error(response.statusText), {
-      code: 'unknown',
-      status: response.status,
-    })
+    throw new ApiClientError(
+      localizeErrorCode('unknown') ?? (response.statusText || 'Request failed'),
+      'unknown',
+      response.status,
+    )
   }
 
   const text = await response.text()
@@ -73,7 +111,11 @@ export async function api<T = unknown>(
 }
 
 // Convenience helpers
-export const apiGet = <T>(path: string, params?: Record<string, string | number | undefined>) => {
+export const apiGet = <T>(
+  path: string,
+  params?: Record<string, string | number | undefined>,
+  options?: Omit<RequestInit, 'method' | 'body'>,
+): Promise<T> => {
   let url = path
   if (params) {
     const qs = Object.entries(params)
@@ -82,7 +124,27 @@ export const apiGet = <T>(path: string, params?: Record<string, string | number 
       .join('&')
     if (qs) url += `?${qs}`
   }
-  return api<T>(url)
+  return api<T>(url, { ...options, method: 'GET' })
+}
+
+export const apiGetWithMeta = async <T>(
+  path: string,
+  params?: Record<string, string | number | undefined>,
+  options?: Omit<RequestInit, 'method' | 'body'>,
+): Promise<{ data: T; meta: ApiResponseMeta }> => {
+  let url = path
+  if (params) {
+    const qs = Object.entries(params)
+      .filter(([, v]) => v !== undefined && v !== null)
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+      .join('&')
+    if (qs) url += `?${qs}`
+  }
+  let meta: ApiResponseMeta = { cache: null, verifiedAt: null }
+  const data = await api<T>(url, { ...options, method: 'GET' }, (responseMeta) => {
+    meta = responseMeta
+  })
+  return { data, meta }
 }
 
 export const apiPost = <T>(path: string, body?: unknown) =>
@@ -91,5 +153,8 @@ export const apiPost = <T>(path: string, body?: unknown) =>
 export const apiPut = <T>(path: string, body: unknown) =>
   api<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 
-export const apiDelete = (path: string) =>
-  api<void>(path, { method: 'DELETE' })
+export const apiPatch = <T>(path: string, body: unknown) =>
+  api<T>(path, { method: 'PATCH', body: JSON.stringify(body) })
+
+export const apiDelete = <T = void>(path: string) =>
+  api<T>(path, { method: 'DELETE' })

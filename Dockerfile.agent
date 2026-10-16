@@ -1,32 +1,120 @@
 # syntax=docker/dockerfile:1.7
 
 FROM golang:1.27-bookworm AS go-build
+# 构建版本：make docker-build-agent 传 --build-arg VERSION=$(VERSION)（基础版本+git
+# 描述），未传时回落基础版本。0.1.0 是 2026-09-29 遗留构建的版本号：该批构建误报
+# safe_database_restore=true，服务端自 0.1.1 起按版本下限拒绝其破坏性数据库恢复。
+ARG VERSION=0.1.1
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags='-s -w' -o /out/backup-center-agent ./cmd/agent
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w -X backupmanagementcenter/internal/version.Version=$VERSION" -o /out/backup-center-agent ./cmd/agent
 
 FROM debian:bookworm-slim
 ARG DEBIAN_MIRROR=mirrors.aliyun.com
 ARG RESTIC_VERSION=0.18.0
 ARG RCLONE_VERSION=1.69.0
+ARG MONGODB_TOOLS_VERSION=100.12.2
+# MongoDB 恢复的校验（判断目标库是否存在、集合是否落地）依赖 mongosh；
+# 官方 Database Tools 包不含它，需单独从 MongoDB 官方分发地址安装。
+ARG MONGOSH_VERSION=2.3.9
+# MySQL 客户端必须是官方 mysql 二进制：Debian 的 mariadb-client
+# （default-mysql-client 的实体）在 dump 前会探测
+# information_schema.columns.generation_expression，该列在 MySQL 5.6 及更早
+# 版本不存在，导致对旧服务端的备份必然失败
+# （Unknown column 'generation_expression' (1054)）。
+# 官方 APT 源的签名密钥已过期（EXPKEYSIG），因此改用 tarball 提取客户端。
+ARG MYSQL_CLIENT_VERSION=8.0.40
+ARG MYSQL_BASE_URL=https://dev.mysql.com/get/Downloads/MySQL-8.0
+# 另装一份 MySQL 5.7 客户端：官方 8.0 客户端请求 utf8mb4 时会带上 8.0 专有的
+# 默认排序规则 utf8mb4_0900_ai_ci，MySQL ≤5.7 不认识而回退 latin1，导致
+# 非 ASCII 标识符（库名/表名）被错误解释、备份失败。5.7 客户端在旧服务端与
+# MariaDB 上不存在该回退（且不探测 COLUMN_STATISTICS / generation_expression）。
+# 适配器按服务端主版本选择：<8.0 与 MariaDB 用 5.7 客户端，>=8.0 用 8.0 客户端
+# （避免旧客户端漏掉 8.0 的新对象类型）。
+ARG MYSQL57_CLIENT_VERSION=5.7.44
+ARG MYSQL57_BASE_URL=https://dev.mysql.com/get/Downloads/MySQL-5.7
+# PostgreSQL 客户端主版本必须 >= 目标服务端主版本，否则 pg_dump 直接
+# abort（"server version mismatch"）。Debian bookworm 自带 15，无法备份
+# PG 16+；改用 PGDG 提供的最新客户端，可备份所有更旧的服务端。
+ARG PG_CLIENT_MAJOR=18
+# 直连 apt.postgresql.org 在国内经常超时；默认走阿里云镜像。
+ARG PGDG_BASE_URL=https://mirrors.aliyun.com/postgresql/repos/apt
 ARG RESTIC_BASE_URL=https://gh-proxy.com/https://github.com/restic/restic/releases/download
 ARG RCLONE_BASE_URL=https://gh-proxy.com/https://github.com/rclone/rclone/releases/download
+# fetch 带重试的下载：国内到 GitHub/厂商 CDN 的连接时常被重置，
+# 单次 curl 失败会让整个镜像构建失败。
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+RUN printf '%s\n' \
+      '#!/bin/bash' \
+      'set -eo pipefail' \
+      'url="$1"; out="$2"; tries="${3:-8}"' \
+      'for i in $(seq 1 "$tries"); do' \
+      '  if curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --connect-timeout 15 "$url" -o "$out"; then exit 0; fi' \
+      '  echo "fetch attempt $i/$tries failed: $url" >&2; sleep 3' \
+      'done' \
+      'echo "fetch exhausted retries: $url" >&2; exit 1' \
+      > /usr/local/bin/fetch && chmod 0755 /usr/local/bin/fetch
+
 RUN sed -i "s|deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g; s|security.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|g" /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip bzip2 sqlite3 mariadb-client postgresql-client && \
-    rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL "${RESTIC_BASE_URL}/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" | bunzip2 > /usr/local/bin/restic && \
-    chmod 0755 /usr/local/bin/restic && \
-    curl -fsSL "${RCLONE_BASE_URL}/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip && \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg unzip bzip2 xz-utils sqlite3 mariadb-client && \
+    rm -rf /var/lib/apt/lists/*
+
+# PostgreSQL 客户端从 PGDG 安装（bookworm 自带 15 无法备份 PG 16+）。
+RUN echo "deb [trusted=yes] ${PGDG_BASE_URL} bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && apt-get install -y --no-install-recommends "postgresql-client-${PG_CLIENT_MAJOR}" && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN fetch "${RESTIC_BASE_URL}/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" /tmp/restic.bz2 && \
+    bunzip2 -c /tmp/restic.bz2 > /usr/local/bin/restic && chmod 0755 /usr/local/bin/restic && rm -f /tmp/restic.bz2
+
+RUN fetch "${RCLONE_BASE_URL}/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" /tmp/rclone.zip && \
     unzip -q /tmp/rclone.zip -d /tmp/rclone && \
     install -m 0755 "/tmp/rclone/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone && \
     rm -rf /tmp/rclone /tmp/rclone.zip
+
+RUN fetch "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-debian12-x86_64-${MONGODB_TOOLS_VERSION}.tgz" /tmp/mongodb-tools.tgz && \
+    mkdir -p /tmp/mongodb-tools && tar -xzf /tmp/mongodb-tools.tgz -C /tmp/mongodb-tools --strip-components=1 && \
+    install -m 0755 /tmp/mongodb-tools/bin/mongodump /usr/local/bin/mongodump && \
+    install -m 0755 /tmp/mongodb-tools/bin/mongorestore /usr/local/bin/mongorestore && \
+    rm -rf /tmp/mongodb-tools /tmp/mongodb-tools.tgz
+
+# mongosh 是 MongoDB 恢复校验的硬依赖（缺失时适配器拒绝恢复）。
+RUN fetch "https://downloads.mongodb.com/compass/mongosh-${MONGOSH_VERSION}-linux-x64.tgz" /tmp/mongosh.tgz && \
+    mkdir -p /tmp/mongosh && tar -xzf /tmp/mongosh.tgz -C /tmp/mongosh --strip-components=1 && \
+    install -m 0755 /tmp/mongosh/bin/mongosh /usr/local/bin/mongosh && \
+    rm -rf /tmp/mongosh /tmp/mongosh.tgz
+
+RUN fetch "${MYSQL_BASE_URL}/mysql-${MYSQL_CLIENT_VERSION}-linux-glibc2.28-x86_64.tar.xz" /tmp/mysql-client.tar.xz && \
+    mkdir -p /tmp/mysql-client && tar -xJf /tmp/mysql-client.tar.xz -C /tmp/mysql-client --strip-components=1 && \
+    install -m 0755 /tmp/mysql-client/bin/mysql /usr/local/bin/mysql && \
+    install -m 0755 /tmp/mysql-client/bin/mysqldump /usr/local/bin/mysqldump && \
+    rm -rf /tmp/mysql-client /tmp/mysql-client.tar.xz
+
+# MySQL 5.7 客户端（mysql57/mysqldump57）：供 <8.0 与 MariaDB 服务端使用，
+# 见上方 ARG 注释。只取这两个二进制，tarball 解包后即删。
+RUN fetch "${MYSQL57_BASE_URL}/mysql-${MYSQL57_CLIENT_VERSION}-linux-glibc2.12-x86_64.tar.gz" /tmp/mysql57.tar.gz && \
+    mkdir -p /tmp/mysql57 && tar -xzf /tmp/mysql57.tar.gz -C /tmp/mysql57 --strip-components=1 && \
+    install -m 0755 /tmp/mysql57/bin/mysql /usr/local/bin/mysql57 && \
+    install -m 0755 /tmp/mysql57/bin/mysqldump /usr/local/bin/mysqldump57 && \
+    rm -rf /tmp/mysql57 /tmp/mysql57.tar.gz
+
+# MySQL 5.7 的 mysql 客户端链接 libncurses.so.5（bookworm 默认只带 .so.6）。
+# 单独一层安装，避免使上面已缓存的 MySQL 客户端大包下载层失效。
+RUN apt-get update && apt-get install -y --no-install-recommends libncurses5 && \
+    rm -rf /var/lib/apt/lists/*
 COPY --from=go-build /out/backup-center-agent /usr/local/bin/backup-center-agent
-RUN useradd --system --home-dir /var/lib/bmc-agent --create-home --shell /usr/sbin/nologin bmc-agent && \
+# 固定 UID/GID 65532，并让持久 scratch/restore 卷由非 root 用户使用。
+RUN groupadd --system --gid 65532 bmc-agent && \
+    useradd --system --uid 65532 --gid bmc-agent --home-dir /var/lib/bmc-agent --create-home --shell /usr/sbin/nologin bmc-agent && \
     mkdir -p /var/lib/bmc-agent/scratch && chown -R bmc-agent:bmc-agent /var/lib/bmc-agent
+ENV BMC_AGENT_STATE_DIR=/var/lib/bmc-agent
 USER bmc-agent:bmc-agent
-VOLUME ["/var/lib/bmc-agent", "/backup-sources"]
+VOLUME ["/var/lib/bmc-agent", "/backup-sources", "/backup-restore"]
 ENTRYPOINT ["/usr/local/bin/backup-center-agent"]

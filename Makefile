@@ -7,14 +7,17 @@ else
 PNPM := pnpm
 endif
 GOFLAGS ?=
-VERSION ?= 0.1.0
-VERSION := $(if $(VERSION),$(VERSION),0.1.0)
+# 构建版本 = 基础版本 + 构建标识（git describe）。构建必须可辨识：此前恒定 0.1.0，
+# 09-29 与 10-11 两个 agent 镜像上报完全相同的 version，服务端无法区分构建，
+# 也就无法对已知有缺陷的旧构建发升级提示。无 git（导出源码构建）时回落基础版本。
+VERSION ?= $(shell v=0.1.1; d=$$(git describe --tags --always --dirty 2>/dev/null); if [ -n "$$d" ]; then echo "$$v+$$d"; else echo "$$v"; fi)
+VERSION := $(if $(VERSION),$(VERSION),0.1.1)
 GO_LDFLAGS := -s -w -X backupmanagementcenter/internal/version.Version=$(VERSION)
 WEB_DIST := internal/server/webui/dist
 
 PLATFORMS ?= linux/amd64
 
-.PHONY: generate web-build build test docker-build docker-build-server docker-build-agent docker-up docker-down dev-server dev-agent clean lint tidy
+.PHONY: generate web-build build test docker-build docker-build-server docker-build-agent docker-up docker-pull docker-update docker-down dev-server dev-agent clean lint tidy
 
 ## generate: regenerate protobuf code (requires protoc + plugins)
 generate:
@@ -22,9 +25,9 @@ generate:
 	       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
 	       api/proto/v1/agent.proto
 
-## web-build: build the Vue app into internal/server/webui/dist
+## web-build: build the React web app into internal/server/webui/dist
 web-build:
-	cd web && $(PNPM) install --frozen-lockfile && $(PNPM) run build
+	cd web && $(PNPM) --ignore-workspace install --frozen-lockfile && $(PNPM) --ignore-workspace rebuild esbuild && $(PNPM) --ignore-workspace run build
 	rm -rf $(WEB_DIST)
 	mkdir -p $(WEB_DIST)
 	cp -r web/dist/. $(WEB_DIST)/
@@ -42,16 +45,23 @@ build-linux: web-build
 docker-build: docker-build-server docker-build-agent
 
 docker-build-server:
-	docker build -f Dockerfile.server -t backup-management-center-server:latest .
+	docker build -f Dockerfile.server --build-arg VERSION=$(VERSION) -t backup-management-center-server:latest .
 
 docker-build-agent:
-	docker build -f Dockerfile.agent -t backup-management-center-agent:latest .
+	docker build -f Dockerfile.agent --build-arg VERSION=$(VERSION) -t backup-management-center-agent:latest .
 
 docker-up:
-	docker compose up -d --build
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+
+docker-pull:
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
+
+docker-update:
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --no-build --remove-orphans
 
 docker-down:
-	docker compose down
+	docker compose --env-file deploy/.env -f deploy/docker-compose.yml down
 
 test:
 	$(GO) test ./... -count=1
@@ -59,11 +69,15 @@ test:
 tidy:
 	$(GO) mod tidy
 
+## dev-server: local Server for the Vite dev proxy；不要设置 BMC_PUBLIC_URL，
+## 否则 Origin 必须等于代理目标（http://127.0.0.1:8080），默认按 Host 同源校验。
+## BMC_DEV_INSECURE=1 是必需的：本地开发没有 TLS 证书，否则启动即以
+## "BMC_TLS_CERT_FILE and BMC_TLS_KEY_FILE are required" 退出。
 dev-server:
-	BMC_DATA_DIR=./data BMC_PUBLIC_URL=http://localhost:5173 $(GO) run ./cmd/server
+	BMC_DATA_DIR=./data BMC_GRPC_ADDR=:9091 BMC_DEV_INSECURE=1 $(GO) run ./cmd/server
 
 dev-agent:
-	BMC_SERVER_GRPC_URL=127.0.0.1:9090 $(GO) run ./cmd/agent
+	BMC_SERVER_GRPC_URL=127.0.0.1:9091 BMC_SERVER_TLS=0 $(GO) run ./cmd/agent
 
 clean:
 	rm -rf bin web/dist $(WEB_DIST)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -49,17 +50,18 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, runView(run))
 }
 
-// GET /runs/{id}/logs?before_seq=&limit=
+// GET /runs/{id}/logs?before_id=&limit=
+// 旧版客户端的 before_seq 被接受但忽略（历史 seq 语义已被 id 取代），仍返回完整倒序首页。
 func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 	runID := pathParam(r, "id")
-	before := uint64(0)
-	if v := r.URL.Query().Get("before_seq"); v != "" {
-		for i := 0; i < len(v); i++ {
+	before := int64(0)
+	if v := r.URL.Query().Get("before_id"); v != "" {
+		for i := range len(v) {
 			if v[i] < '0' || v[i] > '9' {
-				writeErr(w, http.StatusBadRequest, "validation_failed", "before_seq must be uint")
+				writeErr(w, http.StatusBadRequest, "validation_failed", "before_id must be uint")
 				return
 			}
-			before = before*10 + uint64(v[i]-'0')
+			before = before*10 + int64(v[i]-'0')
 		}
 	}
 	limit := queryInt(r, "limit", 200)
@@ -70,6 +72,11 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
+	}
+	// 空结果统一序列化为 []（ListRunLogs 无行时返回 nil slice，此前会输出 null，
+	// 与 /runs、/logs/server 等接口的 [] 不一致）。
+	if logs == nil {
+		logs = []model.RunLog{}
 	}
 	writeJSON(w, http.StatusOK, logs)
 }
@@ -89,10 +96,13 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 func model2Filter(q url.Values) store.RunFilter {
 	get := q.Get
 	f := store.RunFilter{
-		AgentID:   get("agent_id"),
-		PlanID:    get("plan_id"),
-		Operation: get("operation"),
-		Limit:     100,
+		AgentID: get("agent_id"),
+		PlanID:  get("plan_id"),
+		// repository_id 此前未映射，被静默忽略：调用方按仓库过滤时拿到的是全局列表，
+		// 排障时容易据此得出错误结论（实测切片据此误判"该仓库无保留 run"）。
+		RepositoryID: get("repository_id"),
+		Operation:    get("operation"),
+		Limit:        100,
 	}
 	if s := get("status"); s != "" {
 		f.Statuses = []string{s}
@@ -124,11 +134,16 @@ func atoiSafe(s string, def int) int {
 // wsHandler serves GET /ws/runs/{runID}.
 func wsHandler(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		runID := strings.TrimSpace(chi.URLParam(r, "runID"))
+		if runID == "" || runID == "undefined" || runID == "null" {
+			writeErr(w, http.StatusBadRequest, "validation_failed", "run id is required")
+			return
+		}
 		if _, err := s.sessionForWS(r); err != nil {
 			http.Error(w, `{"error":{"code":"unauthorized","message":"login required"}}`, http.StatusUnauthorized)
 			return
 		}
-		s.serveRunWS(w, r, chi.URLParam(r, "runID"))
+		s.serveRunWS(w, r, runID)
 	}
 }
 

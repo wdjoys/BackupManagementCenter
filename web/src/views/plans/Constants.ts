@@ -1,11 +1,11 @@
 import type { PlanKind, PlanFormSource } from './Types'
 
 export const KIND_LABELS: Record<PlanKind, string> = {
-  filesystem: 'Filesystem',
-  postgresql: 'PostgreSQL',
-  mysql: 'MySQL',
-  mongodb: 'MongoDB',
-  sqlite: 'SQLite',
+  filesystem: 'plans.kinds.filesystem',
+  postgresql: 'plans.kinds.postgresql',
+  mysql: 'plans.kinds.mysql',
+  mongodb: 'plans.kinds.mongodb',
+  sqlite: 'plans.kinds.sqlite',
 }
 
 export const KIND_TAG_TYPE: Record<PlanKind, 'primary' | 'success' | 'warning' | 'danger' | 'info'> = {
@@ -16,11 +16,14 @@ export const KIND_TAG_TYPE: Record<PlanKind, 'primary' | 'success' | 'warning' |
   sqlite: 'primary',
 }
 
-export const CRON_PRESETS: readonly { label: string; value: string }[] = [
-  { label: 'Every 15 minutes', value: '*/15 * * * *' },
-  { label: 'Every hour', value: '0 * * * *' },
-  { label: 'Daily at 03:00', value: '0 3 * * *' },
-  { label: 'Every day at 12:00', value: '0 12 * * *' },
+// intervalSeconds 是该表达式相邻两次触发的间隔秒数：服务端要求间隔 ≥ timeout_seconds
+// （否则报 "backup windows would overlap"）。选中高频预设时按它收敛表单里的超时，
+// 避免用户"不改超时"就必然保存失败（实测：*/15 + 默认 3600 → 400）。
+export const CRON_PRESETS: readonly { key: string; value: string; intervalSeconds: number }[] = [
+  { key: 'plans.cronPresets.every15Minutes', value: '*/15 * * * *', intervalSeconds: 900 },
+  { key: 'plans.cronPresets.hourly', value: '0 * * * *', intervalSeconds: 3600 },
+  { key: 'plans.cronPresets.daily3am', value: '0 3 * * *', intervalSeconds: 86400 },
+  { key: 'plans.cronPresets.daily12pm', value: '0 12 * * *', intervalSeconds: 86400 },
 ]
 
 export const IANA_TIMEZONES: readonly string[] = [
@@ -97,7 +100,6 @@ export function defaultSource(kind: PlanKind): PlanFormSource {
       database: 'all',
       extra_args: [],
       estimated_dump_bytes: undefined,
-      capture_oplog: false,
       password: '',
     }
   }

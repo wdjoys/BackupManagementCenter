@@ -4,10 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Backup Management Center</title>
-    <script type="module" crossorigin src="/assets/index-BjbsHVOi.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-BOnEmBe9.css">
   </head>
   <body>
-    <div id="app"></div>
+    <!--
+      占位入口：仅用于让 //go:embed all:dist 在「尚未构建前端」的检出上仍能编译。
+      真实入口由 `make web-build` 或 Dockerfile.server 的 web-build 阶段生成并覆盖本文件。
+
+      切勿在此引用带哈希的 assets/index-*.js：若二进制/镜像里混入本地 web/dist 的
+      assets，就会出现 index.html 指向不存在的入口，浏览器拿到 SPA fallback 返回的
+      text/html 报 "Failed to load module script"，页面白屏（2026-10-11 实测事故）。
+    -->
+    <p>
+      Frontend not built. Run <code>make web-build</code>, or build the server image
+      with <code>Dockerfile.server</code> (which builds the web UI inside the image).
+    </p>
   </body>
 </html>

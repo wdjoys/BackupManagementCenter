@@ -10,8 +10,7 @@ type BackupTask struct {
 	Kind           string     `json:"kind"`
 	Repository     RepoAccess `json:"repository"`
 	Source         PlanSource `json:"source"`
-	Retention       Retention  `json:"retention,omitempty"` // run after successful backup (best effort)
-	Tags           []string   `json:"tags"`                // always contains plan:<id>, kind:<kind>
+	Tags           []string   `json:"tags"` // contains plan:<id>, kind:<kind>, run:<id>
 	TimeoutSeconds int        `json:"timeout_seconds,omitempty"`
 }
 
@@ -26,12 +25,18 @@ type CheckTask struct {
 	Repository RepoAccess `json:"repository"`
 }
 
-// ForgetTask drives OPERATION_FORGET (retention pruning).
+// ForgetTask drives OPERATION_FORGET. When Tags is set, only matching snapshots
+// are selected; Prune removes unreferenced repository data after forgetting.
+// SnapshotIDs 非空时按完整 snapshot ID 精确删除，且不得与 Tags/DeleteAll/retention 并存。
 type ForgetTask struct {
-	PlanID     string     `json:"plan_id"`
-	Kind       string     `json:"kind"`
-	Repository RepoAccess `json:"repository"`
-	Retention  Retention  `json:"retention"`
+	PlanID      string     `json:"plan_id"`
+	Kind        string     `json:"kind"`
+	Repository  RepoAccess `json:"repository"`
+	Retention   Retention  `json:"retention"`
+	Tags        []string   `json:"tags,omitempty"`
+	Prune       bool       `json:"prune,omitempty"`
+	DeleteAll   bool       `json:"delete_all,omitempty"`
+	SnapshotIDs []string   `json:"snapshot_ids,omitempty"`
 }
 
 // RestoreTask drives OPERATION_RESTORE and OPERATION_RESTORE_DRY_RUN.
@@ -40,6 +45,8 @@ type RestoreTask struct {
 	Repository RepoAccess         `json:"repository"`
 	Filesystem *FilesystemRestore `json:"filesystem,omitempty"`
 	Database   *DatabaseRestore   `json:"database,omitempty"`
+	// RunID 用于预备份的保护标签（restore-protection:<runID>）与 staging 命名。
+	RunID string `json:"run_id,omitempty"`
 }
 
 // InitTask drives repository bootstrap via OPERATION_FORGET with
@@ -67,22 +74,22 @@ type SnapshotLsTask struct {
 type FilesystemRestore struct {
 	SnapshotID    string   `json:"snapshot_id"`
 	IncludePaths  []string `json:"include_paths,omitempty"`
-	TargetPath    string   `json:"target_path"` // absolute; staging dir created by agent
+	TargetPath    string   `json:"target_path"`    // absolute; staging dir created by agent
 	OverwriteMode string   `json:"overwrite_mode"` // never|if-changed|always
 	DryRun        bool     `json:"dry_run"`
 }
 
 // DatabaseRestore is the target branch for database kinds.
 type DatabaseRestore struct {
-	SnapshotID      string `json:"snapshot_id"`
-	Kind            string `json:"kind"`
-	TargetHost      string `json:"target_host"`
-	TargetPort      int    `json:"target_port,omitempty"`
-	TargetUsername  string `json:"target_username,omitempty"`
-	TargetDatabase  string `json:"target_database"` // may be "all" for pg full-instance artifacts
-	ReplaceExisting bool   `json:"replace_existing"`
+	SnapshotID       string `json:"snapshot_id"`
+	Kind             string `json:"kind"`
+	TargetHost       string `json:"target_host"`
+	TargetPort       int    `json:"target_port,omitempty"`
+	TargetUsername   string `json:"target_username,omitempty"`
+	TargetDatabase   string `json:"target_database"` // may be "all" for pg full-instance artifacts
+	TargetAuthSource string `json:"target_auth_source,omitempty"`
+	ReplaceExisting  bool   `json:"replace_existing"`
 }
-
 
 // VerifyRemoteTask drives OPERATION_VERIFY_STORAGE_REMOTE: the agent writes
 // the conf to a private temp file and runs rclone listremotes + lsd.

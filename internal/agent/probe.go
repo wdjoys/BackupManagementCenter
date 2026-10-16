@@ -48,6 +48,7 @@ var toolNames = []string{
 	"mysql",
 	"mongodump",
 	"mongorestore",
+	"mongosh",
 	"sqlite3",
 }
 
@@ -97,11 +98,11 @@ func defaultProbe(ctx context.Context, toolName string) (path, version string) {
 	var stdout bytes.Buffer
 	cmd := exec.CommandContext(ctx, path, "--version")
 	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
+	if err := RunTracked(cmd); err != nil {
 		stdout.Reset()
 		cmd2 := exec.CommandContext(ctx, path, "version")
 		cmd2.Stdout = &stdout
-		if err := cmd2.Run(); err != nil {
+		if err := RunTracked(cmd2); err != nil {
 			return path, ""
 		}
 	}

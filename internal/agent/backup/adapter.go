@@ -5,6 +5,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"backupmanagementcenter/internal/model"
@@ -21,9 +22,11 @@ const (
 
 // Cmd is one process to run. Args are passed verbatim to exec; no shell.
 type Cmd struct {
-	Exe  string   // absolute path of the tool
-	Args []string // argv[1:]
-	Env  []string // extra KEY=VAL entries appended to the sanitized env
+	Exe       string   // absolute path of the tool
+	Args      []string // argv[1:]
+	Env       []string // extra KEY=VAL entries appended to the sanitized env
+	Dir       string   // optional working directory
+	StdinPath string   // optional file connected to stdin
 }
 
 // Executor runs commands, streaming stdout/stderr lines to callbacks and
@@ -86,13 +89,27 @@ type BackupArtifact struct {
 type RestoreSpec struct {
 	SnapshotID string
 	Kind       string
-	StagingDir string        // snapshot content restored here (database kinds)
+	StagingDir string // snapshot content restored here (database kinds)
 	Database   *model.DatabaseRestore
 	Secrets    SecretBundle
 	Tools      map[string]ToolInfo
 	Logf       func(level, format string, args ...any)
 	Progress   func(model.Progress)
 	Exec       Executor
+
+	// RunID 是本次恢复的 run 标识，用于保护标签与审计。
+	RunID string
+	// ArtifactFile/ArtifactDatabase/ArtifactFormat 描述本 run 唯一要导入的产物；
+	// 多库、globals 与 all 范围已在上游拒绝。
+	ArtifactFile     string
+	ArtifactDatabase string
+	ArtifactFormat   string
+	// ArtifactCharset/ArtifactCollation 是产物所属库的默认字符集/排序规则（备份时
+	// 记入 manifest，恢复时用于 CREATE DATABASE，避免目标库继承目标服务器默认值）。
+	ArtifactCharset   string
+	ArtifactCollation string
+	// TargetIsNew 为 true 表示目标由本 run 新建，清理时只允许删除该目标。
+	TargetIsNew bool
 }
 
 // PlanSpec is the validated shape passed to Adapter.Validate.
@@ -106,7 +123,7 @@ type PlanSpec struct {
 type ToolInfo = model.ToolInfo
 
 // Adapter is implemented once per plan kind (filesystem, postgresql, mysql,
-// mongodb, sqlite).
+// mongodb, sqlite). Database kinds also implement DatabaseRestorer.
 type Adapter interface {
 	// Validate checks the plan against this host before it can be created or
 	// enabled (paths exist/readable/absolute; tools present; flags sane).
@@ -114,6 +131,35 @@ type Adapter interface {
 	// Backup produces the artifact to snapshot. It must clean up its own
 	// intermediate state on error; TempDir is wiped by the runner afterwards.
 	Backup(ctx context.Context, rc *RunContext) (*BackupArtifact, error)
-	// Restore imports previously restored snapshot data into the target.
-	Restore(ctx context.Context, spec *RestoreSpec) error
+}
+
+// PreflightRestorer 由适配器可选实现：在保护备份与任何写入之前检查"目标当前是否
+// 可恢复"（例如 sqlite 目标仍被其它连接占用）。这里的失败意味着目标尚未被触碰，
+// 运行会按安全失败落地，不进入回滚、也不产生保护快照。
+type PreflightRestorer interface {
+	PreflightRestore(ctx context.Context, spec *RestoreSpec) error
+}
+
+// ErrRestoreTargetOccupied 由预检在**确实**检测到目标被其它会话/连接占用时标注。
+// 调用方据此区分"目标忙"与"连接/认证/参数失败"：后者必须回显原始原因，否则
+// 运维会把密码缺失（1045 Access denied）当成目标忙去排查会话，方向完全错。
+var ErrRestoreTargetOccupied = errors.New("restore target is occupied by another session")
+
+// DatabaseRestorer is the control plane of a database restore. Implementations
+// must be able to tell "target absent" apart from "target unreachable", and must
+// refuse destructive work they cannot prove safe.
+type DatabaseRestorer interface {
+	// TargetExists reports whether the target database/file exists. Permission
+	// or connection failures must return an error, never false.
+	TargetExists(ctx context.Context, spec *RestoreSpec) (bool, error)
+	// Import loads the staged artifact into the target. When TargetIsNew is set
+	// it must create the target with conflict-rejecting semantics; otherwise it
+	// must fully replace the target's content.
+	Import(ctx context.Context, spec *RestoreSpec) error
+	// VerifyRestored proves the imported content matches the snapshot. Exit
+	// codes or a structural integrity check alone are not sufficient.
+	VerifyRestored(ctx context.Context, spec *RestoreSpec) error
+	// RemoveTarget deletes the target created by this run. It must never delete
+	// a database/file another actor created.
+	RemoveTarget(ctx context.Context, spec *RestoreSpec) error
 }

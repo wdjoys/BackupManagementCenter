@@ -52,11 +52,6 @@ func (a *FilesystemAdapter) Backup(ctx context.Context, rc *RunContext) (*Backup
 	}, nil
 }
 
-// Restore is not used for filesystem; pipeline handles restic restore directly.
-func (a *FilesystemAdapter) Restore(ctx context.Context, spec *RestoreSpec) error {
-	return errors.New("filesystem restore is handled by pipeline via restic; adapter.Restore not used")
-}
-
 // isAbs checks if a path is absolute. Production agents are Linux ("/..."),
 // but Windows development hosts ("D:\...") must validate too.
 func isAbs(p string) bool {

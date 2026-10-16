@@ -1,36 +1,66 @@
 package agent
 
 import (
-	crand "crypto/rand"
 	"context"
+	crand "crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	bmcv1 "backupmanagementcenter/api/proto/v1"
+	"backupmanagementcenter/internal/logging"
+	"backupmanagementcenter/internal/model"
 	"backupmanagementcenter/internal/version"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
+// ErrRevoked is returned by Run when the server permanently rejected the
+// agent's credentials because it was revoked. Retrying can never succeed:
+// the process exits and re-enrollment with a fresh token is required.
+var ErrRevoked = errors.New("agent revoked on server")
+
+// isRevokedErr reports whether err is the server's PermissionDenied
+// rejection of a revoked agent. Other PermissionDenied cases (e.g. version
+// mismatch) must keep retrying. The error may be wrapped.
+func isRevokedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var gs interface{ GRPCStatus() *status.Status }
+	if errors.As(err, &gs) {
+		if st := gs.GRPCStatus(); st != nil &&
+			st.Code() == codes.PermissionDenied &&
+			strings.Contains(st.Message(), "revoked") {
+			return true
+		}
+	}
+	return strings.Contains(err.Error(), "agent is revoked")
+}
+
 // ConnectClient manages the bidirectional gRPC stream to the server.
 type ConnectClient struct {
-	cfg        ConfigProvider
-	identity   *Identity
-	im         *IdentityManager
-	prober     *Prober
-	runner     *Runner
+	cfg      ConfigProvider
+	identity *Identity
+	im       *IdentityManager
+	prober   *Prober
+	runner   *Runner
+	logSink  *logging.Sink
 
 	// Reconnection state
 	reconnectCount atomic.Uint64
@@ -51,6 +81,8 @@ type ConfigProvider interface {
 	GetServerTLS() bool
 	GetDevInsecure() bool
 	GetProbeInterval() time.Duration
+	GetSourcePathMappings() []model.PathMapping
+	GetRestorePathMappings() []model.PathMapping
 }
 
 // NewConnectClient assembles the control-stream client. The identity must
@@ -68,6 +100,13 @@ func NewConnectClient(cfg ConfigProvider, im *IdentityManager, prober *Prober, r
 		runner:            runner,
 		heartbeatInterval: 30 * time.Second,
 	}
+}
+
+// SetLogSink绑定Agent进程日志转发器；连接重建时会自动切换发送目标。
+func (c *ConnectClient) SetLogSink(sink *logging.Sink) {
+	c.mu.Lock()
+	c.logSink = sink
+	c.mu.Unlock()
 }
 
 // Run starts the connect loop with reconnection.
@@ -100,8 +139,11 @@ func (c *ConnectClient) Run(ctx context.Context) error {
 		// Run stream — blocks until disconnect
 		if err := c.streamLoop(streamCtx); err != nil && ctx.Err() == nil {
 			log.Printf("[WARN] stream disconnected: %v", err)
+			if isRevokedErr(err) {
+				log.Printf("[ERROR] credentials permanently rejected; stop reconnecting — re-enroll with a fresh token to use this agent again")
+				return fmt.Errorf("%w (%v)", ErrRevoked, err)
+			}
 		}
-
 		c.mu.Lock()
 		c.cancelStream = nil
 		c.mu.Unlock()
@@ -190,6 +232,23 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 		return fmt.Errorf("send hello: %w", err)
 	}
 
+	// 每次连上都把"当前上行流"交给 runner：run 可能跨越重连，日志/进度/结果必须
+	// 发到新连接，否则重连后仍往已死的流里写（实测全部 EOF、进度与日志丢失）。
+	// 必须在 Hello 之后：SetStream 会把断流期间的结果补发出去，而服务端要求流的
+	// 第一条消息是 Hello（否则 RST 掉整条流），补发先到会让 agent 陷入
+	// "reconnect → 补发 → first message must be Hello → reconnect" 的死循环。
+	c.runner.SetStream(ss)
+
+	c.mu.Lock()
+	logSink := c.logSink
+	c.mu.Unlock()
+	if logSink != nil {
+		logSink.SetHandler(func(entry logging.Entry) error {
+			return ss.Send(agentProcessLogMessage(entry))
+		})
+		defer logSink.ClearHandler()
+	}
+
 	// Start heartbeat goroutine
 	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
 	defer heartbeatCancel()
@@ -206,6 +265,9 @@ func (c *ConnectClient) streamLoop(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("recv: %w", err)
 		}
+		// 收到服务端消息即证明连接双向可达：此前发出但未确认的运行结果已被写出去，
+		// 不必在换流时重复补发。
+		c.runner.confirmSentResults()
 		if err := c.handleServerMessage(ctx, ss, msg); err != nil {
 			log.Printf("[ERROR] handling message: %v", err)
 		}
@@ -225,6 +287,23 @@ func (c *ConnectClient) buildHello() *bmcv1.AgentMessage {
 				Os:       runtime.GOOS,
 				Arch:     runtime.GOARCH,
 				Version:  version.Version,
+			},
+		},
+	}
+}
+
+func agentProcessLogMessage(entry logging.Entry) *bmcv1.AgentMessage {
+	return &bmcv1.AgentMessage{
+		MessageId: newMessageID(),
+		Payload: &bmcv1.AgentMessage_RunLogBatch{
+			RunLogBatch: &bmcv1.RunLogBatch{
+				Entries: []*bmcv1.LogEntry{{
+					Seq:                entry.Seq,
+					TimestampUnixNanos: entry.Timestamp.UnixNano(),
+					Level:              protoLevel(entry.Level),
+					Message:            entry.Message,
+					Source:             model.RunLogSourceAgent,
+				}},
 			},
 		},
 	}
@@ -250,7 +329,7 @@ func (c *ConnectClient) heartbeatLoop(ctx context.Context, stream bmcv1.AgentCon
 				MessageId: newMessageID(),
 				Payload: &bmcv1.AgentMessage_Heartbeat{
 					Heartbeat: &bmcv1.Heartbeat{
-						UnixNanos:    time.Now().UnixNano(),
+						UnixNanos:     time.Now().UnixNano(),
 						UptimeSeconds: uptime,
 					},
 				},
@@ -290,20 +369,30 @@ func (c *ConnectClient) sendCapabilities(ctx context.Context, stream bmcv1.Agent
 	}
 	tools := c.prober.Probe(ctx)
 	protoTools := make([]*bmcv1.ToolInfo, 0, len(tools))
-	for _, t := range tools {
+	for _, tool := range tools {
 		protoTools = append(protoTools, &bmcv1.ToolInfo{
-			Name:    t.Name,
-			Path:    t.Path,
-			Version: t.Version,
+			Name:    tool.Name,
+			Path:    tool.Path,
+			Version: tool.Version,
 		})
+	}
+	sourceMappings := c.cfg.GetSourcePathMappings()
+	protoSourceMappings := make([]*bmcv1.PathMapping, 0, len(sourceMappings))
+	for _, mapping := range sourceMappings {
+		protoSourceMappings = append(protoSourceMappings, &bmcv1.PathMapping{HostPath: mapping.HostPath, RuntimePath: mapping.RuntimePath, ReadOnly: mapping.ReadOnly})
+	}
+	restoreMappings := c.cfg.GetRestorePathMappings()
+	protoRestoreMappings := make([]*bmcv1.PathMapping, 0, len(restoreMappings))
+	for _, mapping := range restoreMappings {
+		protoRestoreMappings = append(protoRestoreMappings, &bmcv1.PathMapping{HostPath: mapping.HostPath, RuntimePath: mapping.RuntimePath, ReadOnly: mapping.ReadOnly})
 	}
 	msg := &bmcv1.AgentMessage{
 		MessageId: newMessageID(),
-		Payload: &bmcv1.AgentMessage_CapabilitiesReport{
-			CapabilitiesReport: &bmcv1.CapabilitiesReport{
-				Tools: protoTools,
-			},
-		},
+		Payload: &bmcv1.AgentMessage_CapabilitiesReport{CapabilitiesReport: &bmcv1.CapabilitiesReport{
+			Tools: protoTools, SourcePathMappings: protoSourceMappings, RestorePathMappings: protoRestoreMappings,
+			// 该构建实现了预备份/回滚保护的数据库恢复；服务端以此授权破坏性恢复。
+			SafeDatabaseRestore: true,
+		}},
 	}
 	if err := stream.Send(msg); err != nil {
 		log.Printf("[ERROR] capabilities send: %v", err)
@@ -326,7 +415,7 @@ func (c *ConnectClient) handleServerMessage(ctx context.Context, stream bmcv1.Ag
 
 	case *bmcv1.ServerMessage_ExecuteCommand:
 		cmd := payload.ExecuteCommand
-		log.Printf("[INFO] execute command: command_id=%s run_id=%s operation=%d", cmd.CommandId, cmd.RunId, cmd.Operation)
+		log.Printf("[INFO] execute command: command_id=%s run_id=%s operation=%s", cmd.CommandId, cmd.RunId, operationName(cmd.Operation))
 		c.runner.Execute(ctx, stream, cmd)
 
 	case *bmcv1.ServerMessage_CancelCommand:
@@ -338,6 +427,32 @@ func (c *ConnectClient) handleServerMessage(ctx context.Context, stream bmcv1.Ag
 		log.Printf("[WARN] unknown server message type: %T", payload)
 	}
 	return nil
+}
+func operationName(op bmcv1.ExecuteCommand_Operation) string {
+	switch op {
+	case bmcv1.ExecuteCommand_BACKUP:
+		return "backup"
+	case bmcv1.ExecuteCommand_RESTORE:
+		return "restore"
+	case bmcv1.ExecuteCommand_RESTORE_DRY_RUN:
+		return "restore_dry_run"
+	case bmcv1.ExecuteCommand_CHECK:
+		return "check"
+	case bmcv1.ExecuteCommand_FORGET:
+		return "forget"
+	case bmcv1.ExecuteCommand_SNAPSHOTS:
+		return "snapshots"
+	case bmcv1.ExecuteCommand_SNAPSHOT_LS:
+		return "snapshot_ls"
+	case bmcv1.ExecuteCommand_VERIFY_STORAGE_REMOTE:
+		return "verify_storage_remote"
+	case bmcv1.ExecuteCommand_VALIDATE_PATHS:
+		return "validate_paths"
+	case bmcv1.ExecuteCommand_PROBE_CAPABILITIES:
+		return "probe_capabilities"
+	default:
+		return fmt.Sprintf("unknown(%d)", op)
+	}
 }
 
 func (c *ConnectClient) backoff(ctx context.Context) {

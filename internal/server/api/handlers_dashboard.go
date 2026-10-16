@@ -54,11 +54,13 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	plans, err := s.ST.ListPlans(ctx, "")
 	if err == nil {
 		fires := make([]nextFire, 0, 8)
-		for _, p := range plans {
+		now := time.Now()
+		for i := range plans {
+			p := &plans[i]
 			if !p.Enabled {
 				continue
 			}
-			next, err := s.nextFireFor(ctx, p.ID)
+			next, err := nextFireFromPlan(p, now)
 			if err != nil || next.IsZero() {
 				continue
 			}
@@ -95,6 +97,20 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			list = append(list, rc)
 		}
 		out["repos_needing_check"] = list
+	}
+
+	// 处于 error 的仓库必须让仪表盘知道：否则「待检查仓库」为空时会谎报
+	// 「所有仓库状态正常」，而实际上有仓库已不可用。
+	if all, err := s.ST.ListRepositories(ctx); err == nil {
+		errCount := 0
+		for i := range all {
+			if all[i].Status == "error" {
+				errCount++
+			}
+		}
+		out["repos_error"] = errCount
+	} else {
+		out["repos_error"] = 0
 	}
 
 	writeJSON(w, http.StatusOK, out)

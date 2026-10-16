@@ -1,0 +1,61 @@
+# Agent 部署模板：在每台受管 Linux 主机上独立运行。
+# 挂载规范：备份源目录以只读挂载，恢复目录单独以读写挂载；状态卷不可多主机共享。
+services:
+  bmc-agent:
+    container_name: bmc-agent
+    # Agent 镜像地址
+    image: ${BMC_AGENT_IMAGE:-wdjoys/backup-management-center-agent:latest}
+    build:
+      context: ..
+      dockerfile: Dockerfile.agent
+      args:
+        # 构建版本号
+        VERSION: ${VERSION:-0.1.0}
+    user: "0:0"
+    restart: unless-stopped
+    # 优雅关闭宽限：Agent 收到 SIGTERM 后先让在途 run 收尾（最多 20s），再取消并等
+    # 取消触发的回滚结束（最多 90s）——空闲时会立即退出，不会白等。Docker 默认只等
+    # 10s 就 SIGKILL，会把这两段都腰斩（在途恢复被硬中断并留在半导入状态），故放到
+    # 150s 覆盖最坏情况。
+    stop_grace_period: 150s
+    # network_mode: host
+    environment:
+      # 必填：Server gRPC 服务端地址，必须带 scheme（如 https://backup.example.com:9090 或 http://host:9090）
+      BMC_SERVER_GRPC_URL: ${BMC_SERVER_GRPC_URL:?set Server gRPC endpoint}
+      # 首次注册令牌（从 Server Web UI 生成的一次性注册令牌；注册完成后建议清空并重启）
+      BMC_ENROLLMENT_TOKEN: ${BMC_ENROLLMENT_TOKEN:-}
+      # 重新安装接管：配合 Web UI 生成的接管令牌，复用原 Agent 身份与仓库（留空为普通注册）。
+      # 必须在此透传，否则容器内取不到该变量，注册会以 "target agent does not match enrollment token" 被拒。
+      BMC_TARGET_AGENT_ID: ${BMC_TARGET_AGENT_ID:-}
+      # 本地暂存目录所需的最小可用空间阈值（单位字节，0 表示不检查，空间不足时拒绝执行任务）
+      BMC_SCRATCH_MIN_FREE_BYTES: ${BMC_SCRATCH_MIN_FREE_BYTES:-0}
+      # Agent 并发执行任务的最大数量限制
+      BMC_AGENT_MAX_CONCURRENCY: ${BMC_AGENT_MAX_CONCURRENCY:-2}
+      # 能力探测（restic/rclone/数据库客户端版本）与上报间隔，单位秒
+      BMC_AGENT_PROBE_INTERVAL: ${BMC_AGENT_PROBE_INTERVAL:-600}
+      # restic check 的 --read-data-subset（默认 1/10；设为 0 关闭数据校验，只做结构校验）
+      BMC_RESTIC_CHECK_READ_DATA_SUBSET: ${BMC_RESTIC_CHECK_READ_DATA_SUBSET:-1/10}
+      #--------------------------------------------------------------------------------------------------------------------
+      # 备份源根目录（容器内路径，可多个逗号分隔，默认 /backup-sources）：计划里的源路径统一位于此目录下
+      BMC_SOURCE_ROOTS: ${BMC_SOURCE_ROOTS:-/backup-sources}
+      # 恢复根目录（单个绝对路径，默认 /backup-restore）：恢复文件都写入该目录，容器内固定为 /backup-restore
+      BMC_RESTORE_ROOT: ${BMC_RESTORE_ROOT:-/backup-restore}
+    volumes:
+      # 状态卷：持久化身份凭据（identity.json）、restic 缓存（.cache/restic）与暂存目录（scratch）
+      - bmc-agent-state:/var/lib/bmc-agent
+      # 宿主机待备份目录挂载到容器内（只读）：约定挂到 /backup-sources/<同名路径>，
+      # 计划的源路径可直接写宿主机路径（如 /etc），Agent 自动映射为 /backup-sources/etc
+      - ${BMC_SOURCE_ETC:-/etc}:/backup-sources/etc:ro
+      - ${BMC_SOURCE_SRV:-/srv}:/backup-sources/srv:ro
+      # 宿主机恢复目标目录挂载到容器内（读写），恢复操作只写入 /backup-restore
+      - ${BMC_RESTORE_ROOT:-./backup-restore}:/backup-restore
+    read_only: true
+    # tmpfs 显式指定 uid/gid 并收紧到 0700：本模板以 root 运行，但若改回镜像默认的
+    # nonroot(65532)，tmpfs 默认归 root:root，只写 mode=0700 而不写 uid/gid 就会不可写。
+    tmpfs:
+      - /tmp:uid=65532,gid=65532,mode=0700
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  bmc-agent-state:

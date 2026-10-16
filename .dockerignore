@@ -10,3 +10,12 @@ internal/server/webui/dist/*
 *.out
 .env
 .env.*
+agent-state/
+.e2e-data/
+.smoke/
+web/node_modules/
+**/node_modules/
+.tmp-*/
+.tmp-restore*/
+.omp/
+CROSS_AGENT_RESTORE_PLAN.md

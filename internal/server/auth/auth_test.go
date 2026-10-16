@@ -63,3 +63,23 @@ func TestWriteErrShape(t *testing.T) {
 		t.Fatalf("unexpected body: %s", w.Body.String())
 	}
 }
+
+// 只有公网入口确实是 https 时才强制 Secure cookie：此前 BMC_PUBLIC_URL 非空即强制，
+// 明文 http 部署下浏览器丢弃会话 cookie，登录成功后每个请求 401（登录循环）。
+func TestForceSecureOnlyForHTTPSPublicURL(t *testing.T) {
+	cases := []struct {
+		publicURL string
+		want      bool
+	}{
+		{"https://backup.example.com", true},
+		{"http://192.168.105.62:18080", false},
+		{"", false},
+		{"ftp://example.com", false},
+	}
+	for _, c := range cases {
+		r := WithRequestPolicy(httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil), c.publicURL)
+		if got := secureRequest(r); got != c.want {
+			t.Fatalf("publicURL=%q: secureRequest() = %v, want %v", c.publicURL, got, c.want)
+		}
+	}
+}

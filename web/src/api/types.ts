@@ -1,6 +1,13 @@
-export interface ApiError {
+export interface ApiErrorPayload {
   code: string
   message: string
+  status?: number
+}
+
+export interface PathMapping {
+  host_path: string
+  runtime_path: string
+  read_only: boolean
 }
 
 export interface Agent {
@@ -11,9 +18,12 @@ export interface Agent {
   arch: string
   version: string
   status: 'online' | 'offline'
+  revoked?: boolean
   last_seen_at: string
   enrolled_at: string
   capabilities: ToolCapability[]
+  source_path_mappings: PathMapping[]
+  restore_path_mappings: PathMapping[]
 }
 
 export interface ToolCapability {
@@ -37,10 +47,13 @@ export interface Repository {
   agent_id: string
   storage_target_id: string
   repository_path: string
-  status: 'ready' | 'pending'
+  status: 'ready' | 'pending' | 'error'
+  error_message?: string
   last_check_at: string | null
   agent_name?: string
   storage_target_name?: string
+  created_at: string
+  updated_at: string
 }
 
 export interface Snapshot {
@@ -51,9 +64,15 @@ export interface Snapshot {
   paths: string[]
 }
 
+export interface SnapshotDeletionResponse {
+  deletion_id: string
+  status: 'pending' | 'running' | 'succeeded'
+}
+
 export interface TreeEntry {
   name: string
-  type: 'dir' | 'file'
+  type: 'dir' | 'file' | 'symlink'
+  path?: string
   size: number
   mtime: string
 }
@@ -71,17 +90,19 @@ export interface PlanSource {
   port?: number
   username?: string
   database?: string
+  auth_source?: string
   extra_args?: string[]
   estimated_dump_bytes?: number
   path?: string
   capture_oplog?: boolean
 }
 
+/** 后端 model.Retention 四个字段都带 omitempty：为 0 的保留规则不会出现在 JSON 中。 */
 export interface Retention {
-  keep_last: number
-  keep_daily: number
-  keep_weekly: number
-  keep_monthly: number
+  keep_last?: number
+  keep_daily?: number
+  keep_weekly?: number
+  keep_monthly?: number
 }
 
 export interface Plan {
@@ -93,43 +114,81 @@ export interface Plan {
   timezone: string
   enabled: boolean
   source: PlanSource
+  credentials?: { password_set: boolean }
   repository_id: string
   retention: Retention
   timeout_seconds: number
+  last_run_at: string | null
+  next_fire_at: string | null
   created_at: string
   updated_at: string
 }
 
+/** 后端 Progress 的每个字段都带 omitempty：没有进度的运行（snapshots/check 等）
+    返回 `{}`，因此这里全部可选，读取时必须给默认值。 */
 export interface RunProgress {
-  phase: string
-  percent: number
-  bytes_done: number
-  bytes_total: number
-  files_done: number
-  files_total: number
+  phase?: string
+  percent?: number
+  bytes_done?: number
+  bytes_total?: number
+  files_done?: number
+  files_total?: number
 }
+
+/** 取值须与 internal/model/model.go 的 Op* 常量（runs.operation 的 CHECK 约束）一致。 */
+export type RunOperation =
+  | 'backup'
+  | 'restore'
+  | 'restore_dry_run'
+  | 'check'
+  | 'forget'
+  | 'snapshots'
+  | 'snapshot_ls'
+  | 'verify_storage_remote'
+  | 'validate_paths'
+  | 'probe_capabilities'
 
 export interface Run {
   id: string
-  plan_id: string
+  /** 系统运行（快照浏览/仓库检查/校验等）不绑定计划，后端省略该字段。 */
+  plan_id?: string
   agent_id: string
-  operation: 'backup' | 'restore' | 'check' | 'forget'
+  operation: RunOperation
   status: 'queued' | 'dispatched' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   queued_at: string
-  started_at: string | null
-  finished_at: string | null
+  /** 以下字段后端均为 omitempty：未开始/未结束/无快照/无错误时不出现。 */
+  started_at?: string | null
+  finished_at?: string | null
   progress: RunProgress | null
-  snapshot_id: string | null
-  error_code: string | null
-  error_message: string | null
+  snapshot_id?: string | null
+  error_code?: string | null
+  error_message?: string | null
+  attempt?: number
+  lease_expires_at?: string | null
+  /** 计划调度槽位，仅定时触发的运行有值。 */
+  scheduled_at?: string | null
+  /** 系统运行所属仓库（后台创建/校验/浏览）。 */
+  repository_id?: string
 }
 
 export interface RunLog {
-  seq: number
+  id: number
+  source: string
+  source_seq: number
   timestamp: string
   level: string
   message: string
 }
+export interface SystemLog {
+  id: number
+  agent_id?: string
+  source_seq?: number
+  timestamp: string
+  type: string
+  level: 'debug' | 'info' | 'warn' | 'error' | string
+  message: string
+}
+
 
 export interface RestoreRequest {
   id: string
@@ -143,18 +202,36 @@ export interface RestoreRequest {
 
 export type RestoreTarget =
   | { target_path: string; include_paths: string[]; overwrite_mode: 'never' | 'if-changed' | 'always' }
-  | { host: string; port: number; username: string; database: string }
+  | { host: string; port: number; username: string; database: string; auth_source?: string }
 
 export interface RestoreDryRun {
   add: number
   changed: number
+  skipped: number
   delete: number
   sample: string[]
 }
 
 export interface RestoreResponse {
   restore_request_id: string
+  // 服务端返回完整的 run 对象（与运行详情页共用结构），用 run.id 跳转。
+  run: Run
+  pre_restore_run_id?: string
+  rollback_snapshot_id?: string
+  phase?: string
+}
+
+export interface RestoreRequestItem {
+  id: string
   run_id: string
+  snapshot_id: string
+  restore_kind: 'filesystem' | 'postgresql' | 'mysql' | 'mongodb' | 'sqlite'
+  target: RestoreTarget
+  overwrite: boolean
+  pre_restore_run_id?: string
+  rollback_snapshot_id?: string
+  phase?: string
+  created_at: string
 }
 
 export interface Dashboard {
@@ -164,6 +241,7 @@ export interface Dashboard {
   runs_24h_failed: number
   next_scheduled: ScheduledPlan[]
   repos_needing_check: RepoCheck[]
+  repos_error: number
 }
 
 export interface ScheduledPlan {
@@ -174,19 +252,22 @@ export interface ScheduledPlan {
 
 export interface RepoCheck {
   id: string
-  name: string
+  /** 后端 /dashboard 的 repos_needing_check 项回传的是仓库路径，不是显示名。 */
+  repository_path: string
   last_check_at: string | null
 }
 
 export interface EnrollmentToken {
   id: string
   expires_at: string
-  used_at: string | null
+  /** 未使用的 token 后端不返回该字段（omitempty）。 */
+  used_at?: string | null
 }
 
 export interface EnrollmentTokenResponse {
   token: string
   expires_at: string
+  target_agent_id?: string
 }
 
 export interface SetupStatus {
@@ -194,13 +275,22 @@ export interface SetupStatus {
 }
 
 export interface AuthUser {
+  /** 仅 GET /auth/me 返回；POST /auth/login 的响应没有该字段。 */
+  id?: string
   username: string
+  /** 服务端构建版本（后端注入），取不到时省略。 */
+  version?: string
 }
 
-export interface PaginationParams {
-  limit?: number
-  offset?: number
-  before_seq?: number
+export interface TelegramSettings {
+  configured: boolean
+  chat_id?: string
+  updated_at?: string
+}
+
+export interface TelegramSettingsUpdate {
+  bot_token: string
+  chat_id: string
 }
 
 export interface AgentQueryParams {
@@ -234,7 +324,8 @@ export interface StorageTargetValidateRequest {
 
 export interface StorageTargetValidateResponse {
   remote_type: string
-  lsd_entries: Array<{ name: string; is_dir: boolean }>
+  /** rclone lsd 的条目数；服务端只回传计数，不回传条目明细。 */
+  entries: number
 }
 
 export interface CreatePlanRequest {
@@ -268,4 +359,5 @@ export interface DryRunRequest {
   snapshot_id: string
   include_paths: string[]
   target_path: string
+  overwrite_mode: 'never' | 'if-changed' | 'always'
 }

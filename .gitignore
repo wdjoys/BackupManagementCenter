@@ -7,5 +7,11 @@
 .env
 *.local
 node_modules/
+/agent-state/
+/.e2e-data/
+/.tmp-*/
+**/__debug_bin*
 web/dist/
 .DS_Store
+.vscode/settings.json
+.gocache

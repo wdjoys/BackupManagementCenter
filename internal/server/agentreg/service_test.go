@@ -1,0 +1,765 @@
+package agentreg
+
+import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
+	bmcv1 "backupmanagementcenter/api/proto/v1"
+	"backupmanagementcenter/internal/model"
+	"backupmanagementcenter/internal/secrets"
+	"backupmanagementcenter/internal/server/events"
+	"backupmanagementcenter/internal/server/store"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+)
+
+// ---------------------------------------------------------------------------
+// Fakes
+// ---------------------------------------------------------------------------
+
+// fakeStore embeds the nil Store interface: only methods exercised by
+// handleRunResult are implemented; any other call panics loudly.
+type fakeStore struct {
+	store.Store
+	mu           sync.Mutex
+	runs         map[string]*model.Run
+	repoStatuses map[string]string
+	repoChecks   map[string]time.Time
+	agents       map[string]*model.Agent
+	tokens       map[string]*model.EnrollmentToken
+	logs         []model.RunLog
+	nextLogID    int64
+}
+
+// AppendRunLogs 复刻真实 store 的 ID 回填语义：插入的行拿到递增 ID。
+func (f *fakeStore) PruneHistory(context.Context, time.Time) (store.HistoryPruneResult, error) {
+	return store.HistoryPruneResult{}, nil
+}
+
+func (f *fakeStore) AppendRunLogs(_ context.Context, logs []model.RunLog) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range logs {
+		f.nextLogID++
+		logs[i].ID = f.nextLogID
+		f.logs = append(f.logs, logs[i])
+	}
+	return nil
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		runs:         make(map[string]*model.Run),
+		repoStatuses: make(map[string]string),
+		repoChecks:   make(map[string]time.Time),
+		agents:       make(map[string]*model.Agent),
+		tokens:       make(map[string]*model.EnrollmentToken),
+	}
+}
+
+func (f *fakeStore) FinishRestoreRun(_ context.Context, in store.FinishRestoreRunInput) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.runs[in.RunID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if r.Status == model.RunSucceeded || r.Status == model.RunFailed || r.Status == model.RunCancelled {
+		return nil
+	}
+	r.Status = in.ToStatus
+	finished := in.FinishedAt
+	r.FinishedAt = &finished
+	r.ErrorCode = in.ErrorCode
+	r.ErrorMessage = in.ErrorMessage
+	if in.ResultJSON != "" {
+		r.ProgressJSON = in.ResultJSON
+	}
+	return nil
+}
+
+func (f *fakeStore) addRun(r model.Run) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := r
+	f.runs[r.ID] = &cp
+}
+func (f *fakeStore) GetAgent(_ context.Context, id string) (*model.Agent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a, ok := f.agents[id]; ok {
+		cp := *a
+		return &cp, nil
+	}
+	return nil, store.ErrNotFound
+}
+
+func (f *fakeStore) ConsumeEnrollmentToken(_ context.Context, tokenHash string, _ time.Time) (*model.EnrollmentToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if tok, ok := f.tokens[tokenHash]; ok {
+		if tok.UsedAt != nil {
+			return nil, store.ErrTokenInvalid
+		}
+		now := time.Now().UTC()
+		tok.UsedAt = &now
+		cp := *tok
+		return &cp, nil
+	}
+	return nil, store.ErrTokenInvalid
+}
+
+func (f *fakeStore) ListRunsByStatus(_ context.Context, _ []string) ([]model.Run, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) ReEnrollAgent(_ context.Context, agentID string, tokenHash string, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a, ok := f.agents[agentID]; ok {
+		if a.Revoked {
+			return fmt.Errorf("%s", model.ErrAgentRevoked)
+		}
+		a.TokenHash = tokenHash
+		a.Status = model.AgentOffline
+		return nil
+	}
+	return store.ErrNotFound
+}
+
+func (f *fakeStore) UpsertAgentOnConnect(_ context.Context, a *model.Agent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := *a
+	f.agents[a.ID] = &cp
+	return nil
+}
+
+func (f *fakeStore) GetPlan(_ context.Context, _ string) (*model.Plan, error) {
+	return nil, store.ErrNotFound
+}
+
+func (f *fakeStore) snapshot(id string) *model.Run {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r, ok := f.runs[id]; ok {
+		cp := *r
+		return &cp
+	}
+	return nil
+}
+
+func (f *fakeStore) GetRun(_ context.Context, id string) (*model.Run, error) {
+	if r := f.snapshot(id); r != nil {
+		return r, nil
+	}
+	return nil, store.ErrNotFound
+}
+
+func (f *fakeStore) TransitionRun(_ context.Context, id, from, to string, mutate func(*model.Run)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.runs[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if r.Status != from {
+		return store.ErrInvalidTransition
+	}
+	mutate(r)
+	r.Status = to
+	return nil
+}
+
+func (f *fakeStore) UpdateRepositoryStatus(_ context.Context, id, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.repoStatuses[id] = status
+	return nil
+}
+
+func (f *fakeStore) MarkRepositoryChecked(_ context.Context, id string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.repoChecks[id] = at
+	return nil
+}
+
+type recordingNotifier struct {
+	mu  sync.Mutex
+	ids []string
+	err error
+}
+
+func (r *recordingNotifier) NotifyPlanFailure(_ context.Context, runID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ids = append(r.ids, runID)
+	return r.err
+}
+
+func (r *recordingNotifier) calls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.ids...)
+}
+
+func newTestService(st *fakeStore) (*Service, *recordingNotifier) {
+	rec := &recordingNotifier{}
+	svc := NewService(st, NewRegistry(), events.New(), DefaultConfig(), rec, nil)
+	return svc, rec
+}
+
+func failedResult(runID string) *bmcv1.RunResult {
+	return &bmcv1.RunResult{
+		RunId:        runID,
+		Status:       bmcv1.RunResult_FAILED,
+		ErrorCode:    "restic_backup_failed",
+		ErrorMessage: "snapshot exited 3",
+	}
+}
+
+func TestIsRepositoryInitRun(t *testing.T) {
+	initRun := model.Run{
+		Operation:    model.OpForget,
+		RepositoryID: "repo-1",
+		ProgressJSON: `{"repository":{"repository_path":"rclone:remote:/bmc"},"restic_init":true}`,
+	}
+	if !isRepositoryInitRun(&initRun) {
+		t.Fatal("expected restic init run to be recognized")
+	}
+
+	retentionRun := initRun
+	retentionRun.ProgressJSON = `{"repository":{"repository_path":"rclone:remote:/bmc"},"retention":{"keep_last":3}}`
+	if isRepositoryInitRun(&retentionRun) {
+		t.Fatal("retention run must not be treated as repository init")
+	}
+
+	missingRepo := initRun
+	missingRepo.RepositoryID = ""
+	if isRepositoryInitRun(&missingRepo) {
+		t.Fatal("init without repository must not be reconciled")
+	}
+}
+
+func TestHandleInitRunReconcilesRepositoryStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   bmcv1.RunResult_Status
+		expected string
+	}{
+		{name: "success", status: bmcv1.RunResult_SUCCEEDED, expected: "ready"},
+		{name: "failure", status: bmcv1.RunResult_FAILED, expected: "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			run := model.Run{
+				ID:           "init-run-" + tc.name,
+				AgentID:      "agent-1",
+				Operation:    model.OpForget,
+				Status:       model.RunRunning,
+				RepositoryID: "repo-1",
+				ProgressJSON: `{"repository":{"repository_path":"rclone:remote:/bmc"},"restic_init":true}`,
+				QueuedAt:     time.Now().UTC(),
+			}
+			st.addRun(run)
+			svc, _ := newTestService(st)
+			result := &bmcv1.RunResult{RunId: run.ID, Status: tc.status}
+			if err := svc.handleRunResult(context.Background(), "agent-1", result); err != nil {
+				t.Fatalf("handleRunResult: %v", err)
+			}
+			st.mu.Lock()
+			got := st.repoStatuses[run.RepositoryID]
+			st.mu.Unlock()
+			if got != tc.expected {
+				t.Fatalf("repository status = %q, want %q", got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestHandleRunResultCheckMarksSystemRepository(t *testing.T) {
+	st := newFakeStore()
+	run := model.Run{
+		ID:           "check-run-1",
+		AgentID:      "agent-1",
+		Operation:    model.OpCheck,
+		RepositoryID: "repo-1",
+		Status:       model.RunRunning,
+		QueuedAt:     time.Now().UTC(),
+		ProgressJSON: `{"repository":{"repository_path":"rclone:remote:/bmc"}}`,
+	}
+	st.addRun(run)
+	svc, _ := newTestService(st)
+	if err := svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:  run.ID,
+		Status: bmcv1.RunResult_SUCCEEDED,
+	}); err != nil {
+		t.Fatalf("handleRunResult: %v", err)
+	}
+	st.mu.Lock()
+	_, ok := st.repoChecks[run.RepositoryID]
+	st.mu.Unlock()
+	if !ok {
+		t.Fatalf("successful system check did not update repository %s", run.RepositoryID)
+	}
+}
+
+func baseRun(id, planID, status string) model.Run {
+	now := time.Now().UTC()
+	return model.Run{
+		ID: id, PlanID: planID, AgentID: "agent-1",
+		Operation: model.OpBackup, Status: status,
+		QueuedAt: now, ProgressJSON: "{}",
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+func TestHandleRunResultRunningFailureNotifies(t *testing.T) {
+	st := newFakeStore()
+	st.addRun(baseRun("run-1", "plan-1", model.RunRunning))
+	svc, notifier := newTestService(st)
+
+	if err := svc.handleRunResult(context.Background(), "agent-1", failedResult("run-1")); err != nil {
+		t.Fatalf("handleRunResult: %v", err)
+	}
+
+	run := st.snapshot("run-1")
+	if run == nil || run.Status != model.RunFailed || run.ErrorCode != "restic_backup_failed" {
+		t.Fatalf("run not persisted as failed: %+v", run)
+	}
+	got := notifier.calls()
+	if len(got) != 1 || got[0] != "run-1" {
+		t.Fatalf("expected exactly one notification for run-1, got %v", got)
+	}
+}
+
+func TestHandleRunResultFastFinishedDispatchedFailureNotifies(t *testing.T) {
+	st := newFakeStore()
+	st.addRun(baseRun("run-2", "plan-1", model.RunDispatched))
+	svc, notifier := newTestService(st)
+
+	if err := svc.handleRunResult(context.Background(), "agent-1", failedResult("run-2")); err != nil {
+		t.Fatalf("handleRunResult: %v", err)
+	}
+
+	run := st.snapshot("run-2")
+	if run == nil || run.Status != model.RunFailed {
+		t.Fatalf("fast-finished run not persisted as failed: %+v", run)
+	}
+	if run.StartedAt == nil || run.FinishedAt == nil {
+		t.Fatalf("fast-finish timestamps not set: %+v", run)
+	}
+	got := notifier.calls()
+	if len(got) != 1 || got[0] != "run-2" {
+		t.Fatalf("expected exactly one notification for run-2, got %v", got)
+	}
+}
+
+func TestHandleRunResultDuplicateResultNotifiesOnce(t *testing.T) {
+	st := newFakeStore()
+	st.addRun(baseRun("run-3", "plan-1", model.RunRunning))
+	svc, notifier := newTestService(st)
+
+	if err := svc.handleRunResult(context.Background(), "agent-1", failedResult("run-3")); err != nil {
+		t.Fatalf("first handleRunResult: %v", err)
+	}
+	// Duplicate delivery (e.g. agent retry): idempotent no-op.
+	if err := svc.handleRunResult(context.Background(), "agent-1", failedResult("run-3")); err != nil {
+		t.Fatalf("duplicate handleRunResult must be nil, got %v", err)
+	}
+
+	run := st.snapshot("run-3")
+	if run.ErrorCode != "restic_backup_failed" {
+		t.Fatalf("duplicate result mutated stored run: %+v", run)
+	}
+	if got := notifier.calls(); len(got) != 1 {
+		t.Fatalf("expected exactly one notification across duplicates, got %v", got)
+	}
+}
+
+func TestHandleRunResultSuccessDoesNotNotify(t *testing.T) {
+	st := newFakeStore()
+	st.addRun(baseRun("run-4", "plan-1", model.RunRunning))
+	svc, notifier := newTestService(st)
+
+	res := failedResult("run-4")
+	res.Status = bmcv1.RunResult_SUCCEEDED
+	if err := svc.handleRunResult(context.Background(), "agent-1", res); err != nil {
+		t.Fatalf("handleRunResult: %v", err)
+	}
+	if got := notifier.calls(); len(got) != 0 {
+		t.Fatalf("succeeded run must not notify, got %v", got)
+	}
+}
+
+func TestHandleRunResultNotifierErrorKeepsStoredFailure(t *testing.T) {
+	st := newFakeStore()
+	st.addRun(baseRun("run-5", "plan-1", model.RunRunning))
+	svc, notifier := newTestService(st)
+	notifier.err = context.DeadlineExceeded
+
+	if err := svc.handleRunResult(context.Background(), "agent-1", failedResult("run-5")); err != nil {
+		t.Fatalf("notification failure must not fail the result handler, got %v", err)
+	}
+	run := st.snapshot("run-5")
+	if run.Status != model.RunFailed || run.ErrorMessage != "snapshot exited 3" {
+		t.Fatalf("stored failure changed after notifier error: %+v", run)
+	}
+}
+
+func TestHandleRunResult_WarmSnapshotCache(t *testing.T) {
+	st := newFakeStore()
+	run := model.Run{
+		ID:           "run-backup-1",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpBackup,
+		Status:       model.RunRunning,
+	}
+	st.addRun(run)
+
+	type warmCall struct {
+		repoID     string
+		agentID    string
+		snapshotID string
+		ctxErr     error
+	}
+	var mu sync.Mutex
+	var calls []warmCall
+	warmCh := make(chan struct{}, 10)
+
+	warmFn := func(ctx context.Context, repoID, agentID, snapshotID string) error {
+		mu.Lock()
+		calls = append(calls, warmCall{
+			repoID:     repoID,
+			agentID:    agentID,
+			snapshotID: snapshotID,
+			ctxErr:     ctx.Err(),
+		})
+		mu.Unlock()
+		warmCh <- struct{}{}
+		return nil
+	}
+
+	rec := &recordingNotifier{}
+	svc := NewService(st, NewRegistry(), events.New(), DefaultConfig(), rec, warmFn)
+
+	// 1. 成功备份携带 snapshot ID：请求 context 立即取消，回调 context 仍可正常执行
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	res := &bmcv1.RunResult{
+		RunId:       run.ID,
+		Status:      bmcv1.RunResult_SUCCEEDED,
+		SnapshotIds: []string{"snap-123", "snap-456"},
+	}
+	if err := svc.handleRunResult(reqCtx, "agent-1", res); err != nil {
+		t.Fatalf("handleRunResult failed: %v", err)
+	}
+	cancelReq()
+
+	select {
+	case <-warmCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for warmSnapshotCache callback")
+	}
+
+	mu.Lock()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 warm call, got %d", len(calls))
+	}
+	if calls[0].repoID != "repo-1" || calls[0].agentID != "agent-1" || calls[0].snapshotID != "snap-123" {
+		t.Fatalf("unexpected call args: %+v", calls[0])
+	}
+	if calls[0].ctxErr != nil {
+		t.Fatalf("warmCtx should not be cancelled by reqCtx: %v", calls[0].ctxErr)
+	}
+	mu.Unlock()
+
+	// 2. 重复回调：幂等忽略，不再调用预热
+	if err := svc.handleRunResult(context.Background(), "agent-1", res); err != nil {
+		t.Fatalf("duplicate handleRunResult failed: %v", err)
+	}
+	select {
+	case <-warmCh:
+		t.Fatal("duplicate result must not trigger warmSnapshotCache")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// 3. 失败/取消运行：不预热
+	failedRun := model.Run{
+		ID:           "run-backup-fail",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpBackup,
+		Status:       model.RunRunning,
+	}
+	st.addRun(failedRun)
+	_ = svc.handleRunResult(context.Background(), "agent-1", failedResult("run-backup-fail"))
+
+	cancelledRun := model.Run{
+		ID:           "run-backup-cancel",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpBackup,
+		Status:       model.RunRunning,
+	}
+	st.addRun(cancelledRun)
+	_ = svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:  "run-backup-cancel",
+		Status: bmcv1.RunResult_CANCELLED,
+	})
+
+	// 4. 非备份操作：不预热
+	restoreRun := model.Run{
+		ID:           "run-restore",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpRestore,
+		Status:       model.RunRunning,
+	}
+	st.addRun(restoreRun)
+	_ = svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:  "run-restore",
+		Status: bmcv1.RunResult_SUCCEEDED,
+	})
+
+	select {
+	case <-warmCh:
+		t.Fatal("failed/cancelled/non-backup runs must not trigger warm")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// 5. Service.Stop() 取消在途预热并等待退出
+	blockingRun := model.Run{
+		ID:           "run-blocking",
+		AgentID:      "agent-1",
+		RepositoryID: "repo-1",
+		Operation:    model.OpBackup,
+		Status:       model.RunRunning,
+	}
+	st.addRun(blockingRun)
+
+	stopStarted := make(chan struct{})
+	stopExited := make(chan struct{})
+	blockingSvc := NewService(st, NewRegistry(), events.New(), DefaultConfig(), rec, func(ctx context.Context, repoID, agentID, snapshotID string) error {
+		close(stopStarted)
+		<-ctx.Done()
+		close(stopExited)
+		return ctx.Err()
+	})
+
+	_ = blockingSvc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:       "run-blocking",
+		Status:      bmcv1.RunResult_SUCCEEDED,
+		SnapshotIds: []string{"snap-block"},
+	})
+	<-stopStarted
+
+	stopDone := make(chan struct{})
+	go func() {
+		blockingSvc.Stop()
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking warm worker was not cancelled by Stop()")
+	}
+
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not wait for warm worker to finish")
+	}
+}
+func TestEnrollTakeoverSuccessAndOfflineCheck(t *testing.T) {
+	st := newFakeStore()
+	targetID := "agent-takeover-target"
+	st.agents[targetID] = &model.Agent{
+		ID:        targetID,
+		Name:      "test-agent",
+		Status:    model.AgentOffline,
+		TokenHash: "old-token-hash",
+	}
+	tokenVal := "valid-takeover-token"
+	tokenHash := secrets.HashToken(tokenVal)
+	st.tokens[tokenHash] = &model.EnrollmentToken{
+		ID:            "tok-1",
+		TokenHash:     tokenHash,
+		TargetAgentID: targetID,
+	}
+
+	svc, _ := newTestService(st)
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i + 1)
+	}
+
+	// 1. 成功接管
+	resp, err := svc.Enroll(context.Background(), &bmcv1.EnrollRequest{
+		EnrollmentToken: tokenVal,
+		TargetAgentId:   targetID,
+		Hostname:        "reinstalled-host",
+		Secret:          secret,
+	})
+	if err != nil {
+		t.Fatalf("Enroll takeover failed: %v", err)
+	}
+	if resp.AgentId != targetID {
+		t.Fatalf("expected AgentId=%s, got %s", targetID, resp.AgentId)
+	}
+
+	// 验证 token_hash 轮换
+	expectedHash := secrets.HashToken(hex.EncodeToString(secret))
+	if st.agents[targetID].TokenHash != expectedHash {
+		t.Fatalf("expected TokenHash=%s, got %s", expectedHash, st.agents[targetID].TokenHash)
+	}
+
+	// 2. 目标 Agent 在线时尝试接管应被拒绝
+	token2Val := "valid-takeover-token-2"
+	token2Hash := secrets.HashToken(token2Val)
+	st.tokens[token2Hash] = &model.EnrollmentToken{
+		ID:            "tok-2",
+		TokenHash:     token2Hash,
+		TargetAgentID: targetID,
+	}
+	// 模拟该 Agent 在线 (在注册表中有 stream)
+	_, _ = svc.reg.Register(context.Background(), targetID)
+	_, err = svc.Enroll(context.Background(), &bmcv1.EnrollRequest{
+		EnrollmentToken: token2Val,
+		TargetAgentId:   targetID,
+		Hostname:        "reinstalled-host",
+		Secret:          secret,
+	})
+	if err == nil || status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition when agent is online, got: %v", err)
+	}
+}
+
+func TestConnectRejectsSpoofedAgentID(t *testing.T) {
+	st := newFakeStore()
+	agentA := "agent-a"
+	agentB := "agent-b"
+	secretA := "secret-of-agent-a"
+	secretB := "secret-of-agent-b"
+
+	st.agents[agentA] = &model.Agent{
+		ID:        agentA,
+		Status:    model.AgentOffline,
+		TokenHash: secrets.HashToken(secretA),
+	}
+	st.agents[agentB] = &model.Agent{
+		ID:        agentB,
+		Status:    model.AgentOffline,
+		TokenHash: secrets.HashToken(secretB),
+	}
+
+	// 尝试以 Agent A 的 ID 声明，但携带 Agent B 的 Secret
+	md := metadata.Pairs(
+		"bmc-agent-id", agentA,
+		"bmc-agent-secret", secretB,
+	)
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	stream := &fakeConnectServer{ctx: ctx}
+	svc, _ := newTestService(st)
+	err := svc.Connect(stream)
+	if err == nil || status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for spoofed agent secret, got: %v", err)
+	}
+}
+
+type fakeConnectServer struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (f *fakeConnectServer) Context() context.Context {
+	return f.ctx
+}
+func (f *fakeConnectServer) Send(*bmcv1.ServerMessage) error { return nil }
+func (f *fakeConnectServer) Recv() (*bmcv1.AgentMessage, error) {
+	return nil, context.Canceled
+}
+
+// TestHandleRunResultLogsBeforeTerminalState 覆盖两点：结束日志先于终态事件推送，
+// 且日志落库后带真实 ID（前端靠 ID 去重，ID 为 0 会互相覆盖）。
+func TestHandleRunResultLogsBeforeTerminalState(t *testing.T) {
+	st := newFakeStore()
+	run := model.Run{
+		ID:        "run-log-order",
+		AgentID:   "agent-1",
+		Operation: model.OpBackup,
+		Status:    model.RunRunning,
+		QueuedAt:  time.Now().UTC(),
+	}
+	st.addRun(run)
+
+	bus := events.New()
+	svc := NewService(st, NewRegistry(), bus, DefaultConfig(), &recordingNotifier{}, nil)
+	ch, cancel := bus.Subscribe(run.ID)
+	defer cancel()
+
+	if err := svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:       run.ID,
+		Status:      bmcv1.RunResult_SUCCEEDED,
+		SnapshotIds: []string{"snap-123"},
+	}); err != nil {
+		t.Fatalf("handleRunResult: %v", err)
+	}
+
+	first := <-ch
+	if first.Type != events.Log {
+		t.Fatalf("first event type = %q, want log", first.Type)
+	}
+	if first.Entry == nil {
+		t.Fatal("log event without entry")
+	}
+	if first.Entry.Message != "运行成功，快照 snap-123" {
+		t.Errorf("log message = %q, want %q", first.Entry.Message, "运行成功，快照 snap-123")
+	}
+	if first.Entry.Source != model.RunLogSourceServer {
+		t.Errorf("log source = %q, want %q", first.Entry.Source, model.RunLogSourceServer)
+	}
+	if first.Entry.ID == 0 {
+		t.Error("log entry must carry the persisted ID")
+	}
+
+	second := <-ch
+	if second.Type != events.State {
+		t.Fatalf("second event type = %q, want state", second.Type)
+	}
+}
+
+// 备份成功不得更新"最近一次校验时间"：last_check_at 决定周检是否触发
+// （ListRepositoriesNeedingCheck 要求 last_check_at > 7 天），若备份也写它，
+// 有日常备份的仓库永远不会被校验，完整性检查等于被关掉。
+func TestHandleRunResultBackupDoesNotMarkRepositoryChecked(t *testing.T) {
+	st := newFakeStore()
+	run := baseRun("backup-run-1", "plan-1", model.RunRunning)
+	run.RepositoryID = "repo-1"
+	st.addRun(run)
+	svc, _ := newTestService(st)
+	if err := svc.handleRunResult(context.Background(), "agent-1", &bmcv1.RunResult{
+		RunId:  run.ID,
+		Status: bmcv1.RunResult_SUCCEEDED,
+	}); err != nil {
+		t.Fatalf("handleRunResult: %v", err)
+	}
+	st.mu.Lock()
+	_, ok := st.repoChecks[run.RepositoryID]
+	st.mu.Unlock()
+	if ok {
+		t.Fatalf("successful backup must not mark repository %s as checked", run.RepositoryID)
+	}
+}

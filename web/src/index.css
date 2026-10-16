@@ -1,0 +1,128 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: hsl(210 20% 98%);
+  --foreground: hsl(222.2 84% 4.9%);
+
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(222.2 84% 4.9%);
+
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(222.2 84% 4.9%);
+
+  /* 32% 亮度：白字于其上 5.5:1、其作为链接/徽标文字于白底及 primary 淡色底上 ≥4.7:1（原 44% 仅 2.7:1/3.3:1） */
+  --primary: hsl(199 89% 32%);
+  --primary-foreground: hsl(210 40% 98%);
+
+  --secondary: hsl(214.3 31.8% 91.4%);
+  --secondary-foreground: hsl(222.2 47.4% 11.2%);
+
+  --muted: hsl(210 20% 95%);
+  --muted-foreground: hsl(215.4 16.3% 44%);
+
+  --accent: hsl(214.3 31.8% 91.4%);
+  --accent-foreground: hsl(222.2 47.4% 11.2%);
+
+  /* 45% 亮度：白字于其上 5.6:1、其作为错误文字于白底 5.8:1（原 51% 为 4.6:1，叠加 /90 透明度后不足 4.5） */
+  --destructive: hsl(0 72% 45%);
+  --destructive-foreground: hsl(210 40% 98%);
+
+  --border: hsl(214.3 31.8% 88.5%);
+  --input: hsl(214.3 31.8% 85%);
+  --ring: hsl(199 89% 44%);
+
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: hsl(222.2 84% 4.9%);
+  --foreground: hsl(210 40% 98%);
+
+  --card: hsl(222.2 84% 6.5%);
+  --card-foreground: hsl(210 40% 98%);
+
+  --popover: hsl(222.2 84% 6.5%);
+  --popover-foreground: hsl(210 40% 98%);
+
+  --primary: hsl(199 89% 48%);
+  /* 深色主题下 primary 同时用作背景与文字：背景需深色前景（7.0:1），文字需保持浅蓝（7.0:1） */
+  --primary-foreground: hsl(222.2 84% 4.9%);
+
+  --secondary: hsl(217.2 32.6% 17.5%);
+  --secondary-foreground: hsl(210 40% 98%);
+
+  --muted: hsl(217.2 32.6% 17.5%);
+  --muted-foreground: hsl(215 20.2% 65.1%);
+
+  --accent: hsl(217.2 32.6% 17.5%);
+  --accent-foreground: hsl(210 40% 98%);
+
+  /* 与 primary 同理：深色主题下 destructive 兼作背景与错误文字，浅红 + 深色前景两者均达标 */
+  --destructive: hsl(0 84% 65%);
+  --destructive-foreground: hsl(222.2 84% 4.9%);
+
+  --border: hsl(217.2 32.6% 17.5%);
+  --input: hsl(217.2 32.6% 17.5%);
+  --ring: hsl(199 89% 48%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "rlig" 1, "calt" 1;
+    min-height: 100vh;
+    margin: 0;
+  }
+}
+
+@layer components {
+  /* 运行日志控制台：时间/来源/消息三列由 grid 固定列宽对齐；消息单行截断，悬停查看全文，横向不得溢出。 */
+  .run-log-console {
+    overflow-x: hidden;
+  }
+  .run-log-console .log-row {
+    min-width: 0;
+  }
+}

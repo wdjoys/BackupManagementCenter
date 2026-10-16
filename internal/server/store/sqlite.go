@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,42 +19,84 @@ import (
 
 	"backupmanagementcenter/internal/model"
 
+	"backupmanagementcenter/internal/secrets"
 	_ "modernc.org/sqlite"
 )
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-type sqliteStore struct {
-	db *sql.DB
-	mu sync.Mutex
+// RunObserver 在每个运行**成功**转入终态后各调用一次（可选；未设置时无行为）。
+// 指标侧用它统计「按操作与终态的运行数」，避免在十来个调用点逐个埋点。
+type RunObserver interface {
+	ObserveRunTerminal(run model.Run)
 }
 
-// New opens or creates a SQLite database at path and returns a Store.
-// The database is opened with WAL journalling, foreign keys enabled,
-// a 5-second busy timeout, and NORMAL synchronous mode.
+type sqliteStore struct {
+	db   *sql.DB
+	mu   sync.Mutex
+	seal secrets.Sealer
+
+	runObserver RunObserver
+}
+
+// BackupSQLite creates a consistent point-in-time copy using SQLite's online
+// backup primitive. It is used before migrations or secret-format upgrades so
+// an operator always has a recoverable copy of the control database.
+//
+// VACUUM INTO 的目标文件权限取自进程 umask：systemd 单元设置了 UMask=0077 时为
+// 0600，但容器默认 umask 0022 会得到 0644。该文件是完整数据库副本（含口令哈希
+// 与密封配置），必须与 bmc.db 一样仅属主可读，因此这里显式收紧为 0600。
+func BackupSQLite(ctx context.Context, dbPath, backupPath string) error {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", backupPath); err != nil {
+		return fmt.Errorf("sqlite online backup: %w", err)
+	}
+	if err := os.Chmod(backupPath, 0o600); err != nil {
+		return fmt.Errorf("restrict sqlite backup permissions: %w", err)
+	}
+	return nil
+}
+
+// New opens or creates a SQLite database at path with a no-op sealer (dev).
 func New(path string) (Store, error) {
+	return NewWithSealer(path, secrets.NewNoopSealer())
+}
+
+// NewWithSealer opens or creates a SQLite database at path. The sealer
+// encrypts secret columns (currently the Telegram bot token).
+func NewWithSealer(path string, seal secrets.Sealer) (Store, error) {
+	if seal == nil {
+		return nil, fmt.Errorf("nil sealer")
+	}
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	// 连接级 pragma（busy_timeout/foreign_keys/synchronous）必须写在 DSN 里：
+	// db.Exec 只作用于连接池中的一条连接，其余连接会缺失这些设置，写竞争时
+	// 立刻返回 SQLITE_BUSY 而不是等待（实测并发下 POST /plans/{id}/backups/delete
+	// 报 500 "database is locked (5)"）。WAL 是文件级持久设置，仍单独设置一次。
+	//
+	// _txlock=immediate 让所有 BeginTx 以 BEGIN IMMEDIATE 开局：WAL 下"先读后写"的
+	// 延迟事务一旦读快照过期，SQLite 会立刻返回 SQLITE_BUSY_SNAPSHOT(517)，而
+	// busy_timeout 对这种冲突无效——只能靠调用方整事务重放（retryOnBusy）。开局即取
+	// 写锁可以从根上避免这类冲突，写入本身已由 s.mu 串行化，不引入额外争用。
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	// Set pragmas. WAL mode must be set while no other connections exist.
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA synchronous=NORMAL",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("set pragma %s: %w", pragma, err)
-		}
+	// WAL mode must be set while no other connections exist.
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set pragma journal_mode: %w", err)
 	}
 
 	// Allow up to 4 connections for concurrent reads; the write mutex
@@ -62,7 +105,7 @@ func New(path string) (Store, error) {
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxIdleTime(30 * time.Second)
 
-	s := &sqliteStore{db: db}
+	s := &sqliteStore{db: db, seal: seal}
 	return s, nil
 }
 
@@ -217,6 +260,29 @@ func (s *sqliteStore) UpdateAdminLastLogin(ctx context.Context, adminID string, 
 	return nil
 }
 
+func (s *sqliteStore) ResetAdmin(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("reset admin begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions"); err != nil {
+		return fmt.Errorf("reset admin delete sessions: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM admins"); err != nil {
+		return fmt.Errorf("reset admin delete admins: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("reset admin commit: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
@@ -280,9 +346,9 @@ func (s *sqliteStore) DeleteExpiredSessions(ctx context.Context, now time.Time) 
 
 func (s *sqliteStore) CreateEnrollmentToken(ctx context.Context, t *model.EnrollmentToken) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO enrollment_tokens (id, token_hash, expires_at, used_at)
-		 VALUES (?, ?, ?, ?)`,
-		t.ID, t.TokenHash, t.ExpiresAt.Format(time.RFC3339), nullTime(t.UsedAt),
+		`INSERT INTO enrollment_tokens (id, token_hash, expires_at, used_at, target_agent_id)
+		 VALUES (?, ?, ?, ?, ?)`,
+		t.ID, t.TokenHash, t.ExpiresAt.Format(time.RFC3339), nullTime(t.UsedAt), nullString(t.TargetAgentID),
 	)
 	if err != nil {
 		return fmt.Errorf("create enrollment token: %w", err)
@@ -292,7 +358,7 @@ func (s *sqliteStore) CreateEnrollmentToken(ctx context.Context, t *model.Enroll
 
 func (s *sqliteStore) ListEnrollmentTokens(ctx context.Context) ([]model.EnrollmentToken, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, token_hash, expires_at, used_at FROM enrollment_tokens ORDER BY expires_at DESC",
+		"SELECT id, token_hash, expires_at, used_at, target_agent_id FROM enrollment_tokens ORDER BY expires_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list enrollment tokens: %w", err)
@@ -329,7 +395,7 @@ func (s *sqliteStore) ConsumeEnrollmentToken(ctx context.Context, tokenHash stri
 	}
 
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, token_hash, expires_at, used_at FROM enrollment_tokens WHERE token_hash = ?",
+		"SELECT id, token_hash, expires_at, used_at, target_agent_id FROM enrollment_tokens WHERE token_hash = ?",
 		tokenHash,
 	)
 	return scanEnrollmentToken(row)
@@ -369,8 +435,13 @@ func (s *sqliteStore) SetAgentStatus(ctx context.Context, agentID string, st mod
 	return nil
 }
 
-func (s *sqliteStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, at time.Time) error {
-	data, err := json.Marshal(tools)
+func (s *sqliteStore) SaveAgentCapabilities(ctx context.Context, agentID string, tools []model.ToolInfo, sourceMappings []model.PathMapping, restoreMappings []model.PathMapping, safeDatabaseRestore bool, at time.Time) error {
+	data, err := json.Marshal(struct {
+		Tools               []model.ToolInfo    `json:"tools"`
+		SourcePathMappings  []model.PathMapping `json:"source_path_mappings"`
+		RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
+		SafeDatabaseRestore bool                `json:"safe_database_restore"`
+	}{Tools: tools, SourcePathMappings: sourceMappings, RestorePathMappings: restoreMappings, SafeDatabaseRestore: safeDatabaseRestore})
 	if err != nil {
 		return fmt.Errorf("marshal capabilities: %w", err)
 	}
@@ -425,9 +496,139 @@ func (s *sqliteStore) ListAgents(ctx context.Context) ([]model.Agent, error) {
 }
 
 func (s *sqliteStore) RevokeAgent(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE agents SET revoked = 1 WHERE id = ?", id)
+	res, err := s.db.ExecContext(ctx, "UPDATE agents SET revoked = 1 WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("revoke agent: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+func (s *sqliteStore) ReEnrollAgent(ctx context.Context, agentID string, tokenHash string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("re-enroll agent begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	var revoked int
+	if err := tx.QueryRowContext(ctx, "SELECT revoked FROM agents WHERE id = ?", agentID).Scan(&revoked); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("re-enroll agent lookup: %w", err)
+	}
+	if revoked != 0 {
+		return fmt.Errorf("%s", model.ErrAgentRevoked)
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE agents SET token_hash = ?, status = 'offline', last_seen_at = ? WHERE id = ? AND revoked = 0", tokenHash, now.UTC().Format(time.RFC3339), agentID)
+	if err != nil {
+		return fmt.Errorf("re-enroll agent update: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("re-enroll agent commit: %w", err)
+	}
+	return nil
+}
+func (s *sqliteStore) UnrevokeAgent(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE agents SET revoked = 0, status = 'offline' WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("unrevoke agent: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sqliteStore) RenameAgent(ctx context.Context, id, name string) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE agents SET name = ? WHERE id = ?", name, id)
+	if err != nil {
+		return fmt.Errorf("rename agent: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Telegram settings (single row, web-configured)
+// ---------------------------------------------------------------------------
+
+func (s *sqliteStore) GetTelegramSettings(ctx context.Context) (*model.TelegramSettings, error) {
+	var (
+		encToken []byte
+		chatID   string
+		updated  string
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT encrypted_token, chat_id, updated_at FROM telegram_settings WHERE id = 1`,
+	).Scan(&encToken, &chatID, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get telegram settings: %w", err)
+	}
+	token, err := s.seal.Open(model.TelegramSettingsTable, model.TelegramSettingsRow, model.TelegramTokenColumn, encToken)
+	if err != nil {
+		// Installations created before the master-key boundary used the
+		// development NoopSealer. Migrate that legacy payload on first read so
+		// it is immediately rewritten with the configured AES-GCM sealer.
+		if legacy, ok := decodeLegacyNoop(encToken); ok {
+			migrated := &model.TelegramSettings{BotToken: legacy, ChatID: chatID, UpdatedAt: parseTime(updated)}
+			if saveErr := s.SaveTelegramSettings(ctx, migrated); saveErr != nil {
+				return nil, fmt.Errorf("migrate telegram token: %w", saveErr)
+			}
+			return migrated, nil
+		}
+		return nil, fmt.Errorf("unseal telegram token: %w", err)
+	}
+	return &model.TelegramSettings{BotToken: token, ChatID: chatID, UpdatedAt: parseTime(updated)}, nil
+}
+
+func decodeLegacyNoop(data []byte) (string, bool) {
+	if len(data) == 0 {
+		return "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(string(data))
+	const prefix = "noop:"
+	if err != nil || len(raw) < len(prefix) || string(raw[:len(prefix)]) != prefix {
+		return "", false
+	}
+	return string(raw[len(prefix):]), true
+}
+
+func (s *sqliteStore) SaveTelegramSettings(ctx context.Context, ts *model.TelegramSettings) error {
+	encToken, err := s.seal.Seal(model.TelegramSettingsTable, model.TelegramSettingsRow, model.TelegramTokenColumn, ts.BotToken)
+	if err != nil {
+		return fmt.Errorf("seal telegram token: %w", err)
+	}
+	now := nowUTC()
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO telegram_settings (id, encrypted_token, chat_id, updated_at)
+		 VALUES (1, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET encrypted_token = excluded.encrypted_token,
+		   chat_id = excluded.chat_id, updated_at = excluded.updated_at`,
+		encToken, ts.ChatID, now.Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("save telegram settings: %w", err)
+	}
+	ts.UpdatedAt = now
+	return nil
+}
+
+func (s *sqliteStore) DeleteTelegramSettings(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM telegram_settings WHERE id = 1`)
+	if err != nil {
+		return fmt.Errorf("delete telegram settings: %w", err)
 	}
 	return nil
 }
@@ -444,21 +645,39 @@ func (s *sqliteStore) CreateStorageTarget(ctx context.Context, t *model.StorageT
 		t.CreatedAt.Format(time.RFC3339), t.UpdatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
+		if isUniqueConstraint(err) {
+			return ErrDuplicateStorageTarget
+		}
 		return fmt.Errorf("create storage target: %w", err)
 	}
 	return nil
 }
 
 func (s *sqliteStore) UpdateStorageTarget(ctx context.Context, t *model.StorageTarget) error {
-	_, err := s.db.ExecContext(ctx,
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("update storage target begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE storage_targets SET name=?, remote_name=?, remote_path=?,
-		   encrypted_config=?, updated_at=?
-		 WHERE id=?`,
+		   encrypted_config=?, updated_at=? WHERE id=?`,
 		t.Name, t.RemoteName, t.RemotePath, t.EncryptedConfig,
 		t.UpdatedAt.Format(time.RFC3339), t.ID,
-	)
-	if err != nil {
+	); err != nil {
+		if isUniqueConstraint(err) {
+			return ErrDuplicateStorageTarget
+		}
 		return fmt.Errorf("update storage target: %w", err)
+	}
+	if err := invalidateTargetCaches(ctx, tx, t.ID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("update storage target commit: %w", err)
 	}
 	return nil
 }
@@ -467,10 +686,18 @@ func (s *sqliteStore) DeleteStorageTarget(ctx context.Context, id string) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check for repository references.
+	// Only active bindings block deletion. Records left behind by an unbind
+	// (detached_at set) can no longer adopt remote data once the target's
+	// credentials are gone, so they are removed together with the target.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete storage target begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	var count int
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM repositories WHERE storage_target_id = ?", id,
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM repositories WHERE storage_target_id = ? AND detached_at IS NULL", id,
 	).Scan(&count); err != nil {
 		return fmt.Errorf("delete storage target check repos: %w", err)
 	}
@@ -478,9 +705,22 @@ func (s *sqliteStore) DeleteStorageTarget(ctx context.Context, id string) error 
 		return ErrInUse
 	}
 
-	_, err := s.db.ExecContext(ctx, "DELETE FROM storage_targets WHERE id = ?", id)
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM repositories WHERE storage_target_id = ? AND detached_at IS NOT NULL", id,
+	); err != nil {
+		return fmt.Errorf("delete storage target detached repositories: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, "DELETE FROM storage_targets WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete storage target: %w", err)
+	}
+	// 删除不存在的 id 必须报 ErrNotFound（映射为 404），与计划/仓库的删除保持一致：
+	// 静默 204 会让调用方以为删掉了一个并不存在的资源。
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete storage target commit: %w", err)
 	}
 	return nil
 }
@@ -519,7 +759,15 @@ func (s *sqliteStore) ListStorageTargets(ctx context.Context) ([]model.StorageTa
 // ---------------------------------------------------------------------------
 
 func (s *sqliteStore) CreateRepository(ctx context.Context, r *model.Repository) error {
-	_, err := s.db.ExecContext(ctx,
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create repository begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO repositories (id, agent_id, storage_target_id, repository_path,
 		   encrypted_password, status, last_check_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -530,13 +778,21 @@ func (s *sqliteStore) CreateRepository(ctx context.Context, r *model.Repository)
 	if err != nil {
 		return fmt.Errorf("create repository: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO repository_cache_state (repository_id, generation, updated_at)
+		 VALUES (?, 0, ?)`, r.ID, nowUTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("create repository cache state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create repository commit: %w", err)
+	}
 	return nil
 }
 
 func (s *sqliteStore) GetRepository(ctx context.Context, id string) (*model.Repository, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, agent_id, storage_target_id, repository_path,
-		        encrypted_password, status, last_check_at, created_at, updated_at
+		        encrypted_password, status, last_check_at, detached_at, created_at, updated_at
 		 FROM repositories WHERE id = ?`, id,
 	)
 	return scanRepository(row)
@@ -545,7 +801,7 @@ func (s *sqliteStore) GetRepository(ctx context.Context, id string) (*model.Repo
 func (s *sqliteStore) GetRepositoryByAgentAndTarget(ctx context.Context, agentID, targetID string) (*model.Repository, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, agent_id, storage_target_id, repository_path,
-		        encrypted_password, status, last_check_at, created_at, updated_at
+		        encrypted_password, status, last_check_at, detached_at, created_at, updated_at
 		 FROM repositories WHERE agent_id = ? AND storage_target_id = ?`,
 		agentID, targetID,
 	)
@@ -555,8 +811,8 @@ func (s *sqliteStore) GetRepositoryByAgentAndTarget(ctx context.Context, agentID
 func (s *sqliteStore) ListRepositories(ctx context.Context) ([]model.Repository, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, agent_id, storage_target_id, repository_path,
-		        encrypted_password, status, last_check_at, created_at, updated_at
-		 FROM repositories ORDER BY repository_path`,
+		        encrypted_password, status, last_check_at, detached_at, created_at, updated_at
+		 FROM repositories WHERE detached_at IS NULL ORDER BY repository_path`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list repositories: %w", err)
@@ -578,9 +834,9 @@ func (s *sqliteStore) ListRepositoriesNeedingCheck(ctx context.Context, olderTha
 	ot := olderThan.Format(time.RFC3339)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, agent_id, storage_target_id, repository_path,
-		        encrypted_password, status, last_check_at, created_at, updated_at
+		        encrypted_password, status, last_check_at, detached_at, created_at, updated_at
 		 FROM repositories
-		 WHERE status = 'ready' AND (last_check_at IS NULL OR last_check_at < ?)
+		 WHERE detached_at IS NULL AND status = 'ready' AND (last_check_at IS NULL OR last_check_at < ?)
 		 ORDER BY COALESCE(last_check_at, '1970-01-01T00:00:00Z') ASC`,
 		ot,
 	)
@@ -600,15 +856,117 @@ func (s *sqliteStore) ListRepositoriesNeedingCheck(ctx context.Context, olderTha
 	return out, rows.Err()
 }
 
+// DetachRepository removes the binding from normal server listings while
+// retaining its encrypted password. Restic data in the remote remains
+// untouched and can be adopted again by a later bind.
+func (s *sqliteStore) DetachRepository(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("detach repository begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	at := nowUTC().Format(time.RFC3339)
+	result, err := tx.ExecContext(ctx,
+		"UPDATE repositories SET detached_at = ?, updated_at = ? WHERE id = ?",
+		at, at, id)
+	if err != nil {
+		return fmt.Errorf("detach repository: %w", err)
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("detach repository rows affected: %w", err)
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	if err := invalidateSnapshotCacheTx(ctx, tx, id, true); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("detach repository commit: %w", err)
+	}
+	return nil
+}
+
 func (s *sqliteStore) UpdateRepositoryStatus(ctx context.Context, id, status string) error {
-	_, err := s.db.ExecContext(ctx,
-		"UPDATE repositories SET status = ?, updated_at = ? WHERE id = ?",
-		status, nowUTC().Format(time.RFC3339), id,
+	var (
+		err error
+		at  = nowUTC().Format(time.RFC3339)
 	)
+	if status == "ready" {
+		_, err = s.db.ExecContext(ctx,
+			"UPDATE repositories SET status = ?, detached_at = NULL, updated_at = ? WHERE id = ?",
+			status, at, id,
+		)
+	} else {
+		_, err = s.db.ExecContext(ctx,
+			"UPDATE repositories SET status = ?, updated_at = ? WHERE id = ?",
+			status, at, id,
+		)
+	}
 	if err != nil {
 		return fmt.Errorf("update repository status: %w", err)
 	}
 	return nil
+}
+
+// PruneHistory 见 store.Store 的说明。删除顺序：先删已终结的恢复请求（它们以
+// run_id 引用 runs 且无级联），再删终态 runs（logs/secrets 级联、snapshot_deletions
+// 置 NULL），最后删审计事件。
+// ClearRunProgress 把 run 的 progress_json 复位为 '{}'。系统运行（快照列表/树）
+// 用它把结果传给调用方，调用方解析并写入缓存表后这份 JSON 再无用途 —— 实测
+// 974 条 snapshots 运行贡献 18.58MB（占全库 54%），且历史默认永久保留。
+func (s *sqliteStore) ClearRunProgress(ctx context.Context, runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.ExecContext(ctx, "UPDATE runs SET progress_json = '{}' WHERE id = ?", runID); err != nil {
+		return fmt.Errorf("clear run progress: %w", err)
+	}
+	return nil
+}
+
+// DeleteRun 删除单条运行（run_logs / run_secrets 级联删除、snapshot_deletions 置
+// NULL）。用于丢弃内部探测运行：它们的失败属于预期控制流（如新装首次绑定前的
+// 仓库探测，restic exit 10 = 仓库尚不存在），留在历史里只会让用户以为初始化失败。
+func (s *sqliteStore) DeleteRun(ctx context.Context, runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM runs WHERE id = ?", runID); err != nil {
+		return fmt.Errorf("delete run: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) PruneHistory(ctx context.Context, cutoff time.Time) (HistoryPruneResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out HistoryPruneResult
+	at := cutoff.UTC().Format(time.RFC3339)
+
+	safe := restoreSafePhaseArgs()
+	resReq, err := s.db.ExecContext(ctx,
+		"DELETE FROM restore_requests WHERE created_at < ? AND phase IN ("+restorePlaceholders(len(safe))+")",
+		append([]any{at}, safe...)...)
+	if err != nil {
+		return out, fmt.Errorf("prune restore requests: %w", err)
+	}
+	out.RestoreRequests, _ = resReq.RowsAffected()
+
+	resRuns, err := s.db.ExecContext(ctx,
+		"DELETE FROM runs WHERE COALESCE(finished_at, queued_at) < ? AND status IN (?, ?, ?)",
+		at, model.RunSucceeded, model.RunFailed, model.RunCancelled)
+	if err != nil {
+		return out, fmt.Errorf("prune runs: %w", err)
+	}
+	out.Runs, _ = resRuns.RowsAffected()
+
+	resAudit, err := s.db.ExecContext(ctx, "DELETE FROM audit_events WHERE occurred_at < ?", at)
+	if err != nil {
+		return out, fmt.Errorf("prune audit events: %w", err)
+	}
+	out.AuditEvents, _ = resAudit.RowsAffected()
+	return out, nil
 }
 
 func (s *sqliteStore) MarkRepositoryChecked(ctx context.Context, id string, at time.Time) error {
@@ -662,20 +1020,40 @@ func (s *sqliteStore) DeletePlan(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check for runs referencing this plan.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete plan begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 活跃运行和已有快照都依赖计划配置，删除前必须先处理完毕；历史运行则可解绑计划后保留。
 	var count int
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM runs WHERE plan_id = ?", id,
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM runs
+     WHERE plan_id = ? AND status IN (?, ?, ?)`,
+		id, model.RunQueued, model.RunDispatched, model.RunRunning,
 	).Scan(&count); err != nil {
-		return fmt.Errorf("delete plan check runs: %w", err)
+		return fmt.Errorf("delete plan check active runs: %w", err)
 	}
 	if count > 0 {
 		return ErrInUse
 	}
 
-	_, err := s.db.ExecContext(ctx, "DELETE FROM backup_plans WHERE id = ?", id)
+	if _, err := tx.ExecContext(ctx, "UPDATE runs SET plan_id = NULL WHERE plan_id = ?", id); err != nil {
+		return fmt.Errorf("delete plan detach runs: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, "DELETE FROM backup_plans WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete plan: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("delete plan rows affected: %w", err)
+	} else if affected == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete plan commit: %w", err)
 	}
 	return nil
 }
@@ -755,28 +1133,18 @@ func (s *sqliteStore) ListEnabledPlans(ctx context.Context) ([]model.Plan, error
 // ---------------------------------------------------------------------------
 
 func (s *sqliteStore) CreateRun(ctx context.Context, r *model.Run) error {
-	planID := nullString(r.PlanID)
-	repoID := nullString(r.RepositoryID)
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs (id, plan_id, agent_id, operation, status,
-		   queued_at, started_at, finished_at, progress_json, snapshot_id,
-		   error_code, error_message, repository_id, scheduled_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, planID, r.AgentID, r.Operation, r.Status,
-		r.QueuedAt.Format(time.RFC3339),
-		nullTime(r.StartedAt),
-		nullTime(r.FinishedAt),
-		r.ProgressJSON, r.SnapshotID,
-		r.ErrorCode, r.ErrorMessage,
-		repoID,
-		nullTime(r.ScheduledAt),
-	)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		if isUniqueConstraint(err) {
-			return ErrDuplicateRun
-		}
-		return fmt.Errorf("create run: %w", err)
+		return fmt.Errorf("create run begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := insertRunTx(ctx, tx, r); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create run commit: %w", err)
 	}
 	return nil
 }
@@ -785,8 +1153,27 @@ func (s *sqliteStore) GetRun(ctx context.Context, id string) (*model.Run, error)
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
-		        error_code, error_message, repository_id, scheduled_at
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at, dedup_key
 		 FROM runs WHERE id = ?`, id,
+	)
+	return scanRun(row)
+}
+
+// FindActiveRunByDedupKey 返回占用 dedupKey 的未终结 run（队列去重的复用目标）。
+// 去重键只保证未终结期间唯一，因此该查询最多返回一行。
+func (s *sqliteStore) FindActiveRunByDedupKey(ctx context.Context, dedupKey string) (*model.Run, error) {
+	if dedupKey == "" {
+		return nil, ErrNotFound
+	}
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, plan_id, agent_id, operation, status,
+		        queued_at, started_at, finished_at, progress_json, snapshot_id,
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at, dedup_key
+		 FROM runs
+		 WHERE dedup_key = ? AND status IN ('queued','dispatched','running')
+		 ORDER BY queued_at DESC LIMIT 1`, dedupKey,
 	)
 	return scanRun(row)
 }
@@ -803,6 +1190,10 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 		where = append(where, "plan_id = ?")
 		args = append(args, f.PlanID)
 	}
+	if f.RepositoryID != "" {
+		where = append(where, "repository_id = ?")
+		args = append(args, f.RepositoryID)
+	}
 	if f.Operation != "" {
 		where = append(where, "operation = ?")
 		args = append(args, f.Operation)
@@ -815,6 +1206,10 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 		}
 		where = append(where, fmt.Sprintf("status IN (%s)", strings.Join(placeholders, ",")))
 	}
+	for _, sub := range f.ExcludeDedupKeySubstrings {
+		where = append(where, "INSTR(dedup_key, ?) = 0")
+		args = append(args, sub)
+	}
 
 	if f.Limit <= 0 {
 		f.Limit = 100
@@ -823,7 +1218,8 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 	query := fmt.Sprintf(
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
-		        error_code, error_message, repository_id, scheduled_at
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at, dedup_key
 		 FROM runs WHERE %s ORDER BY queued_at DESC LIMIT ? OFFSET ?`,
 		strings.Join(where, " AND "),
 	)
@@ -846,20 +1242,73 @@ func (s *sqliteStore) ListRuns(ctx context.Context, f RunFilter) ([]model.Run, e
 	return out, rows.Err()
 }
 
+// Early failure exits are legal: the dispatcher fails permanently
+// un-buildable jobs straight from queued, fast-finished runs may report a
+// terminal state while still dispatched, and both watchdogs force-fail from
+// dispatched/running. Cancel may also hit a still-queued run (jobs.CancelRun
+// and Dispatcher.Cancel both do). Terminal states remain final.
 var validTransitions = map[string]map[string]bool{
-	model.RunQueued:     {model.RunDispatched: true},
-	model.RunDispatched: {model.RunRunning: true},
-	model.RunRunning:    {model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
+	model.RunQueued:     {model.RunDispatched: true, model.RunFailed: true, model.RunCancelled: true},
+	model.RunDispatched: {model.RunQueued: true, model.RunRunning: true, model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
+	model.RunRunning:    {model.RunQueued: true, model.RunSucceeded: true, model.RunFailed: true, model.RunCancelled: true},
 }
 
 func isTerminal(status string) bool {
 	return status == model.RunSucceeded || status == model.RunFailed || status == model.RunCancelled
 }
 
+// SetRunObserver 注入终态观察者。调用方按接口断言设置（st 的动态类型是本类型），
+// 因此不会像"包装 store"那样破坏其它可选接口的能力断言。
+func (s *sqliteStore) SetRunObserver(obs RunObserver) { s.runObserver = obs }
+
+// busyRetryAttempts/busyRetryBackoff 控制写事务遇到 SQLite 写锁冲突时的重试次数与退避。
+// WAL 下"先读后写"的延迟事务一旦快照过期就立刻返回 SQLITE_BUSY_SNAPSHOT(517)，
+// busy_timeout 对它无效——只能整事务重放。实测并发下发备份时终态转换曾因此被丢弃：
+// 备份成功、快照已入库，run 却停在 running 并被 watchdog 判成 run_timeout。
+const (
+	busyRetryAttempts = 8
+	busyRetryBackoff  = 25 * time.Millisecond
+)
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
+}
+
+// retryOnBusy 在写锁冲突时重放整个事务：fn 必须可安全重放（幂等的整事务）。
+// 非冲突错误立即返回；ctx 取消时返回最后一次错误。
+func retryOnBusy(ctx context.Context, attempts int, backoff time.Duration, fn func() error) error {
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return err
+			case <-time.After(time.Duration(attempt) * backoff):
+			}
+		}
+		if err = fn(); err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+	}
+	return err
+}
+
+// TransitionRun 重放整个事务以跨越写锁冲突。mutate 必须是幂等的字段赋值：
+// 所有调用方都只设置 run 的字段，不追加外部切片。
 func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mutate func(*model.Run)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return retryOnBusy(ctx, busyRetryAttempts, busyRetryBackoff, func() error {
+		return s.transitionRunOnce(ctx, id, from, to, mutate)
+	})
+}
+
+func (s *sqliteStore) transitionRunOnce(ctx context.Context, id, from, to string, mutate func(*model.Run)) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("transition run begin tx: %w", err)
@@ -870,7 +1319,8 @@ func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mu
 	row := tx.QueryRowContext(ctx,
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
-		        error_code, error_message, repository_id, scheduled_at
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at, dedup_key
 		 FROM runs WHERE id = ?`, id,
 	)
 	run, err := scanRun(row)
@@ -900,13 +1350,13 @@ func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mu
 	// Write back.
 	_, err = tx.ExecContext(ctx,
 		`UPDATE runs SET status=?, started_at=?, finished_at=?, progress_json=?,
-		   snapshot_id=?, error_code=?, error_message=?
+		   snapshot_id=?, error_code=?, error_message=?, attempt=?, lease_expires_at=?
 		 WHERE id=?`,
 		run.Status,
 		nullTime(run.StartedAt),
 		nullTime(run.FinishedAt),
 		run.ProgressJSON, run.SnapshotID,
-		run.ErrorCode, run.ErrorMessage,
+		run.ErrorCode, run.ErrorMessage, run.Attempt, nullTime(run.LeaseExpiresAt),
 		run.ID,
 	)
 	if err != nil {
@@ -916,7 +1366,46 @@ func (s *sqliteStore) TransitionRun(ctx context.Context, id, from, to string, mu
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("transition run commit: %w", err)
 	}
+	// 仅在事务提交成功后通知，且只在进入终态时；重复转换会在上面以
+	// ErrInvalidTransition 提前返回，因此每个 run 至多通知一次。
+	if s.runObserver != nil && isTerminal(run.Status) {
+		s.runObserver.ObserveRunTerminal(*run)
+	}
 	return nil
+}
+
+// ReconcileCancelledRunSuccess 用 Agent 的终态结果修正"抢跑"的取消：取消是尽力而为
+// （见 dispatcher.Cancel：不等 Agent 确认就把运行写成 cancelled），而 Agent 可能随后
+// 上报 succeeded——备份只有在快照提交后才返回成功，其它操作同样只有在真正完成时才
+// 返回成功。丢弃这个结果会留下"cancelled 但仓库里已有该次运行的快照、snapshot_id
+// 为空"的不一致终态，运行详情页的「快照」列也永远是占位符。
+//
+// 仅在当前状态仍为 cancelled 时改写；返回 ErrInvalidTransition 表示无需修正（状态
+// 已被其它路径推进）。终态观察者不重复通知：该 run 的终态事件在进入 cancelled 时已
+// 计数一次，再通知会重复计入指标。
+func (s *sqliteStore) ReconcileCancelledRunSuccess(ctx context.Context, runID, snapshotID, progressJSON string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return retryOnBusy(ctx, busyRetryAttempts, busyRetryBackoff, func() error {
+		res, err := s.db.ExecContext(ctx,
+			`UPDATE runs SET status = ?, error_code = '', error_message = NULL,
+			   snapshot_id = CASE WHEN ? = '' THEN snapshot_id ELSE ? END,
+			   progress_json = CASE WHEN ? = '' THEN progress_json ELSE ? END,
+			   lease_expires_at = NULL
+			 WHERE id = ? AND status = ?`,
+			model.RunSucceeded, snapshotID, snapshotID, progressJSON, progressJSON, runID, model.RunCancelled)
+		if err != nil {
+			return fmt.Errorf("reconcile cancelled run success: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("reconcile cancelled run success: %w", err)
+		}
+		if n == 0 {
+			return ErrInvalidTransition
+		}
+		return nil
+	})
 }
 
 func (s *sqliteStore) ListRunsByStatus(ctx context.Context, statuses []string) ([]model.Run, error) {
@@ -933,7 +1422,8 @@ func (s *sqliteStore) ListRunsByStatus(ctx context.Context, statuses []string) (
 	query := fmt.Sprintf(
 		`SELECT id, plan_id, agent_id, operation, status,
 		        queued_at, started_at, finished_at, progress_json, snapshot_id,
-		        error_code, error_message, repository_id, scheduled_at
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at, dedup_key
 		 FROM runs WHERE status IN (%s) ORDER BY queued_at DESC`,
 		strings.Join(placeholders, ","),
 	)
@@ -955,9 +1445,26 @@ func (s *sqliteStore) ListRunsByStatus(ctx context.Context, statuses []string) (
 	return out, rows.Err()
 }
 
-func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, errorCode string, at time.Time) (int64, error) {
+// UpdateRunProgress persists a progress snapshot without changing the run
+// state. Progress messages are high frequency and must not go through the
+// terminal-state transition function.
+func (s *sqliteStore) UpdateRunProgress(ctx context.Context, id, progressJSON string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET progress_json = ?
+		 WHERE id = ? AND status IN ('queued','dispatched','running')`,
+		progressJSON, id)
+	if err != nil {
+		return fmt.Errorf("update run progress: %w", err)
+	}
+	return nil
+}
+
+// FailStaleRuns force-fails runs stuck in the given non-terminal statuses
+// and returns the IDs actually moved to failed, enabling per-run failure
+// notifications without a read-then-write race.
+func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, errorCode string, at time.Time) ([]string, error) {
 	if len(statuses) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	placeholders := make([]string, 0, len(statuses))
 	for range statuses {
@@ -965,8 +1472,8 @@ func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, erro
 	}
 
 	query := fmt.Sprintf(
-		`UPDATE runs SET status='failed', error_code=?, finished_at=?
-		 WHERE status IN (%s)`,
+		`UPDATE runs SET status='failed', error_code=?, finished_at=?, lease_expires_at=NULL
+		 WHERE status IN (%s) RETURNING id`,
 		strings.Join(placeholders, ","),
 	)
 
@@ -976,19 +1483,36 @@ func (s *sqliteStore) FailStaleRuns(ctx context.Context, statuses []string, erro
 		args = append(args, st)
 	}
 
-	res, err := s.db.ExecContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return 0, fmt.Errorf("fail stale runs: %w", err)
+		return nil, fmt.Errorf("fail stale runs: %w", err)
 	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("fail stale runs: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // ---------------------------------------------------------------------------
 // Run logs
 // ---------------------------------------------------------------------------
 
+// AppendRunLogs 幂等写入：id 由 SQLite 自增分配，source+source_seq 相同的历史行被忽略。
+// 成功插入的行回填 ID；被幂等忽略的行 ID 置 0。
+// 重复投递（Agent 重连重放、Server 重试）不会失败，也不会产生重复行。
 func (s *sqliteStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) error {
+	// 与其它写方法一致地串行化：这是唯一一处用事务写库却不取 s.mu 的路径，
+	// 与受锁的写方法并发时会互相撞 SQLITE_BUSY（实测：Agent 重建后大量写入期间，
+	// 快照树缓存的写入以 500 "database is locked (5)" 失败）。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(logs) == 0 {
 		return nil
 	}
@@ -1000,23 +1524,34 @@ func (s *sqliteStore) AppendRunLogs(ctx context.Context, logs []model.RunLog) er
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO run_logs (run_id, seq, timestamp, level, message) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO run_logs
+		 (run_id, source, source_seq, timestamp, level, message)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("append run logs prepare: %w", err)
 	}
 	defer stmt.Close()
 
-	for _, l := range logs {
-		if _, err := stmt.ExecContext(ctx, l.RunID, l.Seq, l.Timestamp.Format(time.RFC3339), l.Level, l.Message); err != nil {
+	for i := range logs {
+		l := &logs[i]
+		res, err := stmt.ExecContext(ctx, l.RunID, l.Source, int64(l.SourceSeq), l.Timestamp.Format(time.RFC3339Nano), l.Level, l.Message)
+		if err != nil {
 			return fmt.Errorf("append run log: %w", err)
+		}
+		// INSERT OR IGNORE 忽略重复行时 RowsAffected 为 0，此时没有可回填的 id。
+		if n, affErr := res.RowsAffected(); affErr == nil && n == 1 {
+			l.ID, _ = res.LastInsertId()
+		} else {
+			l.ID = 0
 		}
 	}
 
 	return tx.Commit()
 }
 
-func (s *sqliteStore) ListRunLogs(ctx context.Context, runID string, beforeSeq uint64, limit int) ([]model.RunLog, error) {
+// ListRunLogs 按 id 倒序返回 run 日志；beforeID > 0 时只返回更早的行。
+func (s *sqliteStore) ListRunLogs(ctx context.Context, runID string, beforeID int64, limit int) ([]model.RunLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1025,18 +1560,18 @@ func (s *sqliteStore) ListRunLogs(ctx context.Context, runID string, beforeSeq u
 		rows *sql.Rows
 		err  error
 	)
-	if beforeSeq > 0 {
+	if beforeID > 0 {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT run_id, seq, timestamp, level, message
-			 FROM run_logs WHERE run_id = ? AND seq < ?
-			 ORDER BY seq DESC LIMIT ?`,
-			runID, beforeSeq, limit,
+			`SELECT id, run_id, source, source_seq, timestamp, level, message
+			 FROM run_logs WHERE run_id = ? AND id < ?
+			 ORDER BY id DESC LIMIT ?`,
+			runID, beforeID, limit,
 		)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT run_id, seq, timestamp, level, message
+			`SELECT id, run_id, source, source_seq, timestamp, level, message
 			 FROM run_logs WHERE run_id = ?
-			 ORDER BY seq DESC LIMIT ?`,
+			 ORDER BY id DESC LIMIT ?`,
 			runID, limit,
 		)
 	}
@@ -1056,18 +1591,177 @@ func (s *sqliteStore) ListRunLogs(ctx context.Context, runID string, beforeSeq u
 	return out, rows.Err()
 }
 
-func (s *sqliteStore) MaxRunLogSeq(ctx context.Context, runID string) (uint64, error) {
-	var seq sql.NullInt64
-	err := s.db.QueryRowContext(ctx,
-		"SELECT MAX(seq) FROM run_logs WHERE run_id = ?", runID,
-	).Scan(&seq)
+// ---------------------------------------------------------------------------
+// 进程日志
+// ---------------------------------------------------------------------------
+
+const processLogRetention = 20000
+
+func (s *sqliteStore) AppendServerLogs(ctx context.Context, logs []model.SystemLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("max run log seq: %w", err)
+		return fmt.Errorf("append server logs begin tx: %w", err)
 	}
-	if seq.Valid {
-		return uint64(seq.Int64), nil
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO server_logs (timestamp, type, level, message) VALUES (?, ?, ?, ?)`,
+	)
+	if err != nil {
+		return fmt.Errorf("append server logs prepare: %w", err)
 	}
-	return 0, nil
+	defer stmt.Close()
+
+	for _, entry := range logs {
+		logType := entry.Type
+		if logType == "" {
+			logType = "system"
+		}
+		if _, err := stmt.ExecContext(ctx, entry.Timestamp.UTC().Format(time.RFC3339Nano), logType, entry.Level, entry.Message); err != nil {
+			return fmt.Errorf("append server log: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM server_logs
+		 WHERE id <= (SELECT COALESCE(MAX(id), 0) - ? FROM server_logs)`,
+		processLogRetention,
+	); err != nil {
+		return fmt.Errorf("prune server logs: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *sqliteStore) ListServerLogs(ctx context.Context, filter ProcessLogFilter) ([]model.SystemLog, error) {
+	filter.Limit = normalizeProcessLogLimit(filter.Limit)
+	where, args := processLogWhere(filter, "")
+	query := `SELECT id, type, timestamp, level, message
+		FROM server_logs WHERE ` + where + ` ORDER BY id DESC LIMIT ?`
+	args = append(args, filter.Limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list server logs: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]model.SystemLog, 0, filter.Limit)
+	for rows.Next() {
+		entry, err := scanSystemLog(rows, false)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *entry)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) AppendAgentLogs(ctx context.Context, agentID string, logs []model.SystemLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("append agent logs begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO agent_logs (agent_id, source_seq, timestamp, type, level, message)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+	)
+	if err != nil {
+		return fmt.Errorf("append agent logs prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, entry := range logs {
+		logType := entry.Type
+		if logType == "" {
+			logType = "system"
+		}
+		if _, err := stmt.ExecContext(ctx, agentID, int64(entry.SourceSeq), entry.Timestamp.UTC().Format(time.RFC3339Nano), logType, entry.Level, entry.Message); err != nil {
+			return fmt.Errorf("append agent log: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM agent_logs
+		 WHERE agent_id = ?
+		   AND id NOT IN (
+		     SELECT id FROM agent_logs
+		     WHERE agent_id = ?
+		     ORDER BY id DESC LIMIT ?
+		   )`,
+		agentID, agentID, processLogRetention,
+	); err != nil {
+		return fmt.Errorf("prune agent logs: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *sqliteStore) ListAgentLogs(ctx context.Context, agentID string, filter ProcessLogFilter) ([]model.SystemLog, error) {
+	filter.Limit = normalizeProcessLogLimit(filter.Limit)
+	where, args := processLogWhere(filter, agentID)
+	query := `SELECT id, agent_id, source_seq, type, timestamp, level, message
+		FROM agent_logs WHERE ` + where + ` ORDER BY id DESC LIMIT ?`
+	args = append(args, filter.Limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list agent logs: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]model.SystemLog, 0, filter.Limit)
+	for rows.Next() {
+		entry, err := scanSystemLog(rows, true)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *entry)
+	}
+	return out, rows.Err()
+}
+
+func processLogWhere(filter ProcessLogFilter, agentID string) (string, []any) {
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 1+len(filter.Levels)+len(filter.Types))
+	if agentID != "" {
+		conditions = append(conditions, "agent_id = ?")
+		args = append(args, agentID)
+	}
+	if filter.BeforeID > 0 {
+		conditions = append(conditions, "id < ?")
+		args = append(args, filter.BeforeID)
+	}
+	appendProcessLogInFilter(&conditions, &args, "level", filter.Levels)
+	appendProcessLogInFilter(&conditions, &args, "type", filter.Types)
+	return strings.Join(conditions, " AND "), args
+}
+
+func appendProcessLogInFilter(conditions *[]string, args *[]any, column string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	placeholders := make([]string, len(values))
+	for i, value := range values {
+		placeholders[i] = "?"
+		*args = append(*args, value)
+	}
+	*conditions = append(*conditions, column+" IN ("+strings.Join(placeholders, ",")+")")
+}
+
+func normalizeProcessLogLimit(limit int) int {
+	if limit <= 0 || limit > 500 {
+		return 200
+	}
+	return limit
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,25 +1769,127 @@ func (s *sqliteStore) MaxRunLogSeq(ctx context.Context, runID string) (uint64, e
 // ---------------------------------------------------------------------------
 
 func (s *sqliteStore) CreateRestoreRequest(ctx context.Context, rr *model.RestoreRequest) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO restore_requests (id, run_id, snapshot_id, restore_kind,
-		   target_json, overwrite, confirmation_hash, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		rr.ID, rr.RunID, rr.SnapshotID, rr.RestoreKind,
-		rr.TargetJSON, boolInt(rr.Overwrite), rr.ConfirmationHash,
-		rr.CreatedAt.Format(time.RFC3339),
-	)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("create restore request begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 文件系统恢复直接写入共享目录：同一 Agent、同一目标路径上不得存在另一个未终结的
+	// 文件系统恢复。两个并发恢复写同一目录会产生非确定结果，并可能同时通过
+	// overwrite_mode=never 的"目标为空"前置检查。数据库恢复由
+	// CreateDatabaseRestoreRun 的全局占用在同一事务内保护，这里对文件系统做同样的
+	// 目标级保护（校验与插入同事务，避免 TOCTOU）。
+	if rr.RestoreKind == model.KindFilesystem {
+		busy, err := filesystemTargetBusy(ctx, tx, rr)
+		if err != nil {
+			return err
+		}
+		if busy {
+			return ErrRestoreTargetBusy
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO restore_requests (id, run_id, snapshot_id, restore_kind,
+		       target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		       rollback_snapshot_id, phase, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rr.ID, rr.RunID, rr.SnapshotID, rr.RestoreKind,
+		rr.TargetJSON, boolInt(rr.Overwrite), rr.ConfirmationHash, rr.PreRestoreRunID,
+		rr.RollbackSnapshotID, rr.Phase,
+		rr.CreatedAt.Format(time.RFC3339),
+	); err != nil {
 		return fmt.Errorf("create restore request: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create restore request commit: %w", err)
+	}
 	return nil
+}
+
+// activeRestorePhases 是"恢复请求尚未终结"的阶段集合（其余阶段一律视为已终结）。
+var activeRestorePhases = []string{
+	model.RestorePhaseQueued, model.RestorePhasePreBackup, model.RestorePhaseRestoring,
+	model.RestorePhaseRollingBack, model.RestorePhaseCancelling,
+}
+
+// filesystemTargetsOverlap 判断两个恢复目标是否会写入同一片目录：完全相同，或
+// 一个是另一个的祖先目录（如 /restore 与 /restore/sub —— 父目录的恢复会写到子目录里）。
+// 仅按路径边界比较，避免把 /restore 与 /restore-other 误判为重叠。
+func filesystemTargetsOverlap(a, b string) bool {
+	// 目标是 Agent 上的 POSIX 路径，必须用 path（而非 filepath）规整：后者在 Windows
+	// 上会把 "/a/b" 变成 "\a\b"，使边界比较失效。
+	a = strings.TrimSuffix(path.Clean(a), "/")
+	b = strings.TrimSuffix(path.Clean(b), "/")
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	return strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
+// filesystemTargetBusy 判断同一 Agent 是否已有未终结的文件系统恢复指向同一目标路径。
+// 目标路径从 target_json 解析（该列无独立索引，故在 Go 侧比较；活跃请求数量很小）。
+func filesystemTargetBusy(ctx context.Context, tx *sql.Tx, rr *model.RestoreRequest) (bool, error) {
+	var want struct {
+		TargetPath string `json:"target_path"`
+	}
+	if err := json.Unmarshal([]byte(rr.TargetJSON), &want); err != nil || want.TargetPath == "" {
+		return false, nil
+	}
+	placeholders := make([]string, len(activeRestorePhases))
+	args := []any{model.KindFilesystem}
+	for i, ph := range activeRestorePhases {
+		placeholders[i] = "?"
+		args = append(args, ph)
+	}
+	args = append(args, rr.RunID)
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(
+		`SELECT rr.target_json FROM restore_requests rr
+		 JOIN runs r ON r.id = rr.run_id
+		 WHERE rr.restore_kind = ? AND rr.phase IN (%s)
+		   AND r.agent_id = (SELECT agent_id FROM runs WHERE id = ?)`,
+		strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return false, fmt.Errorf("check busy restore target: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var targetJSON string
+		if err := rows.Scan(&targetJSON); err != nil {
+			return false, fmt.Errorf("scan busy restore target: %w", err)
+		}
+		var other struct {
+			TargetPath string `json:"target_path"`
+		}
+		if json.Unmarshal([]byte(targetJSON), &other) == nil && filesystemTargetsOverlap(want.TargetPath, other.TargetPath) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (s *sqliteStore) GetRestoreRequest(ctx context.Context, id string) (*model.RestoreRequest, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, run_id, snapshot_id, restore_kind,
-		        target_json, overwrite, confirmation_hash, created_at
+		        target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		        rollback_snapshot_id, phase, created_at
 		 FROM restore_requests WHERE id = ?`, id,
+	)
+	return scanRestoreRequest(row)
+}
+
+func (s *sqliteStore) GetRestoreRequestByRunID(ctx context.Context, runID string) (*model.RestoreRequest, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, run_id, snapshot_id, restore_kind,
+		        target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		        rollback_snapshot_id, phase, created_at
+		 FROM restore_requests WHERE run_id = ? ORDER BY created_at DESC LIMIT 1`, runID,
 	)
 	return scanRestoreRequest(row)
 }
@@ -1104,7 +1900,8 @@ func (s *sqliteStore) ListRestoreRequests(ctx context.Context, limit int) ([]mod
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, run_id, snapshot_id, restore_kind,
-		        target_json, overwrite, confirmation_hash, created_at
+		        target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		        rollback_snapshot_id, phase, created_at
 		 FROM restore_requests ORDER BY created_at DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -1121,6 +1918,427 @@ func (s *sqliteStore) ListRestoreRequests(ctx context.Context, limit int) ([]mod
 		out = append(out, *rr)
 	}
 	return out, rows.Err()
+}
+
+// UpdateRestorePhase 只在恢复仍未进入终态时更新 phase：终态阶段（含人工解除）
+// 不能被迟到的进度或结果改写。
+func (s *sqliteStore) UpdateRestorePhase(ctx context.Context, runID, phase string) error {
+	blocked := append(model.RestoreSafePhases(),
+		model.RestorePhaseRollbackFailed, model.RestorePhaseManualRecoveryNeeded, model.RestorePhaseManualRecoveryDone)
+	args := []any{phase, runID}
+	for _, p := range blocked {
+		args = append(args, p)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE restore_requests SET phase = ? WHERE run_id = ? AND phase NOT IN (`+restorePlaceholders(len(blocked))+`)`,
+		args...)
+	if err != nil {
+		return fmt.Errorf("update restore phase: %w", err)
+	}
+	return nil
+}
+
+// restoreSafePhaseArgs 返回 "NOT IN" 安全终态列表的查询参数。
+func restoreSafePhaseArgs() []any {
+	safe := model.RestoreSafePhases()
+	args := make([]any, len(safe))
+	for i, p := range safe {
+		args[i] = p
+	}
+	return args
+}
+
+func restorePlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// databaseRestoreKindArgs 返回数据库恢复 kind 的查询参数（filesystem 不占用互斥）。
+func databaseRestoreKindArgs() []any {
+	return []any{model.KindPostgreSQL, model.KindMySQL, model.KindMongoDB, model.KindSQLite}
+}
+
+// CreateDatabaseRestoreRun 在单写事务内校验数据库恢复的全局占用并创建 run+request。
+func (s *sqliteStore) CreateDatabaseRestoreRun(ctx context.Context, run *model.Run, rr *model.RestoreRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create database restore run begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	kinds := databaseRestoreKindArgs()
+	safe := restoreSafePhaseArgs()
+	query := "SELECT rr.run_id, COALESCE(r.dedup_key, ''), COALESCE(rr.phase, '') FROM restore_requests rr " +
+		"JOIN runs r ON r.id = rr.run_id WHERE rr.restore_kind IN (" + restorePlaceholders(len(kinds)) + ") " +
+		"AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ") ORDER BY rr.created_at LIMIT 1"
+	args := append(append([]any{}, kinds...), safe...)
+	var activeRunID, activeDedupKey, activePhase string
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&activeRunID, &activeDedupKey, &activePhase)
+	switch {
+	case err == nil:
+		// 等价任务且它仍在正常推进时才能复用；若它停在需要人工处理的占用型终态
+		// （manual_recovery_required / rollback_failed），复用一个已 failed 的 run
+		// 毫无意义——真正要做的是先 resolve。此处必须回占用中，否则调用方拿到
+		// duplicate_slot（"run already queued for this slot"）这一不实的文案。
+		if activeDedupKey != "" && activeDedupKey == run.DedupKey && !model.RestorePhaseNeedsManualResolution(activePhase) {
+			// 等价任务：复用已有 run，由调用方 join。
+			return ErrDuplicateRun
+		}
+		return ErrDatabaseRestoreBusy
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("check database restore occupancy: %w", err)
+	}
+
+	if err := insertRunTx(ctx, tx, run); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO restore_requests (id, run_id, snapshot_id, restore_kind,
+		       target_json, overwrite, confirmation_hash, pre_restore_run_id,
+		       rollback_snapshot_id, phase, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rr.ID, rr.RunID, rr.SnapshotID, rr.RestoreKind,
+		rr.TargetJSON, boolInt(rr.Overwrite), rr.ConfirmationHash, rr.PreRestoreRunID,
+		rr.RollbackSnapshotID, rr.Phase, rr.CreatedAt.Format(time.RFC3339),
+	); err != nil {
+		return fmt.Errorf("create restore request: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create database restore run commit: %w", err)
+	}
+	return nil
+}
+
+// insertRunTx 插入 runs 行并处理快照缓存失效，供 CreateRun 与恢复专用创建共用。
+func insertRunTx(ctx context.Context, tx *sql.Tx, r *model.Run) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO runs (id, plan_id, agent_id, operation, status,
+		   queued_at, started_at, finished_at, progress_json, snapshot_id,
+		   error_code, error_message, repository_id, scheduled_at, attempt, lease_expires_at,
+		   dedup_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, nullString(r.PlanID), r.AgentID, r.Operation, r.Status,
+		r.QueuedAt.Format(time.RFC3339),
+		nullTime(r.StartedAt),
+		nullTime(r.FinishedAt),
+		r.ProgressJSON, r.SnapshotID,
+		r.ErrorCode, r.ErrorMessage,
+		nullString(r.RepositoryID),
+		nullTime(r.ScheduledAt),
+		r.Attempt,
+		nullTime(r.LeaseExpiresAt),
+		nullString(r.DedupKey),
+	)
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return ErrDuplicateRun
+		}
+		return fmt.Errorf("create run: %w", err)
+	}
+	if r.RepositoryID != "" && invalidatesSnapshotCache(r.Operation) {
+		clearTrees := r.Operation == model.OpForget
+		if err := invalidateSnapshotCacheTx(ctx, tx, r.RepositoryID, clearTrees); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ActiveDatabaseRestoreRunID 返回当前占用数据库恢复全局互斥的 run ID。
+func (s *sqliteStore) ActiveDatabaseRestoreRunID(ctx context.Context) (string, error) {
+	kinds := databaseRestoreKindArgs()
+	safe := restoreSafePhaseArgs()
+	query := "SELECT rr.run_id FROM restore_requests rr " +
+		"WHERE rr.restore_kind IN (" + restorePlaceholders(len(kinds)) + ") " +
+		"AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ") ORDER BY rr.created_at LIMIT 1"
+	args := append(append([]any{}, kinds...), safe...)
+	var runID string
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("active database restore: %w", err)
+	}
+	return runID, nil
+}
+
+// RepositoryRestoreBlocked 报告仓库是否被未安全终结的恢复阻塞。
+func (s *sqliteStore) RepositoryRestoreBlocked(ctx context.Context, repositoryID, exceptRunID string) (bool, error) {
+	safe := restoreSafePhaseArgs()
+	query := "SELECT 1 FROM restore_requests rr JOIN runs r ON r.id = rr.run_id " +
+		"WHERE r.repository_id = ? AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ")"
+	args := append([]any{repositoryID}, safe...)
+	if exceptRunID != "" {
+		query += " AND rr.run_id <> ?"
+		args = append(args, exceptRunID)
+	}
+	query += " LIMIT 1"
+	var one int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("repository restore block: %w", err)
+	}
+	return true, nil
+}
+
+// RequestRestoreStop 请求停止已下发的恢复：写 cancelling 阶段并记录取消宽限截止。
+// 已存在的截止不会被改写，避免重复 tick 重置期限。
+func (s *sqliteStore) RequestRestoreStop(ctx context.Context, runID string, deadline time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("request restore stop begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	blocked := append(model.RestoreSafePhases(),
+		model.RestorePhaseRollbackFailed, model.RestorePhaseManualRecoveryNeeded, model.RestorePhaseManualRecoveryDone)
+	args := []any{model.RestorePhaseCancelling, runID}
+	for _, p := range blocked {
+		args = append(args, p)
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE restore_requests SET phase = ? WHERE run_id = ? AND phase NOT IN (`+restorePlaceholders(len(blocked))+`)`,
+		args...)
+	if err != nil {
+		return fmt.Errorf("request restore stop phase: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("request restore stop rows affected: %w", err)
+	} else if n == 0 {
+		// 已请求停止或已进入终态：不重置宽限期限。
+		return nil
+	}
+	// 仅在首次请求停止时写入宽限截止，重复 tick 不会延长期限。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE runs SET lease_expires_at = ? WHERE id = ?`,
+		deadline.UTC().Format(time.RFC3339), runID); err != nil {
+		return fmt.Errorf("request restore stop: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("request restore stop commit: %w", err)
+	}
+	return nil
+}
+
+// ProtectedRestoreSnapshotIDs 返回该仓库中未安全终结的恢复所引用的保护快照 ID。
+func (s *sqliteStore) ProtectedRestoreSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error) {
+	safe := restoreSafePhaseArgs()
+	// 未终结的恢复同时保护两类快照：它正在读取的**源快照**(rr.snapshot_id)与回滚来源
+	// (rr.rollback_snapshot_id)。此前只保护后者——实测恢复进行中可请求删除源快照并返回
+	// 202（快照随即从列表消失），当前仅靠 dispatcher 的"未终结恢复阻塞同仓库后续命令"
+	// 兜住；一旦该阻塞放宽，forget+prune 可能在恢复读盘期间删掉源快照的数据包，导致
+	// 恢复失败或回滚来源缺失。
+	query := "SELECT rr.snapshot_id, COALESCE(rr.rollback_snapshot_id, '') FROM restore_requests rr JOIN runs r ON r.id = rr.run_id " +
+		"WHERE r.repository_id = ? AND rr.phase NOT IN (" + restorePlaceholders(len(safe)) + ")"
+	args := append([]any{repositoryID}, safe...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("protected restore snapshots: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var sourceID, rollbackID string
+		if err := rows.Scan(&sourceID, &rollbackID); err != nil {
+			return nil, fmt.Errorf("scan protected restore snapshot: %w", err)
+		}
+		if sourceID != "" {
+			out[sourceID] = struct{}{}
+		}
+		if rollbackID != "" {
+			out[rollbackID] = struct{}{}
+		}
+	}
+	return out, rows.Err()
+}
+
+// UpdateRestoreRollbackSnapshot 同步保护快照 ID，不覆盖已记录的非空值。
+func (s *sqliteStore) UpdateRestoreRollbackSnapshot(ctx context.Context, runID, snapshotID string) error {
+	if snapshotID == "" {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE restore_requests SET rollback_snapshot_id = ?
+		 WHERE run_id = ? AND (rollback_snapshot_id IS NULL OR rollback_snapshot_id = '')`,
+		snapshotID, runID); err != nil {
+		return fmt.Errorf("update restore rollback snapshot: %w", err)
+	}
+	return nil
+}
+
+// FinishRestoreRun 在单事务内终结恢复 run 并同步 request 的 phase/rollback_snapshot_id。
+func (s *sqliteStore) FinishRestoreRun(ctx context.Context, in FinishRestoreRunInput) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("finish restore begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	run, err := getRunTx(ctx, tx, in.RunID)
+	if err != nil {
+		return err
+	}
+	alreadyTerminal := run.Status == model.RunSucceeded || run.Status == model.RunFailed || run.Status == model.RunCancelled
+	if alreadyTerminal && run.Status != in.ToStatus {
+		// 已确认的终态不被迟到/冲突结果覆盖；仅允许补全保护快照 ID。
+		if err := updateRestoreRequestTx(ctx, tx, in); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("finish restore commit: %w", err)
+		}
+		return nil
+	}
+	if !alreadyTerminal {
+		froms := in.FromStatuses
+		if len(froms) == 0 {
+			froms = []string{model.RunQueued, model.RunDispatched, model.RunRunning}
+		}
+		query := "UPDATE runs SET status = ?, finished_at = ?, error_code = ?, error_message = ?, " +
+			"snapshot_id = CASE WHEN ? = '' THEN snapshot_id ELSE ? END, " +
+			"progress_json = CASE WHEN ? = '' THEN progress_json ELSE ? END, lease_expires_at = NULL " +
+			"WHERE id = ? AND status IN (" + restorePlaceholders(len(froms)) + ")"
+		args := []any{in.ToStatus, in.FinishedAt.UTC().Format(time.RFC3339), in.ErrorCode, in.ErrorMessage,
+			in.SnapshotID, in.SnapshotID, in.ResultJSON, in.ResultJSON, in.RunID}
+		for _, f := range froms {
+			args = append(args, f)
+		}
+		res, err := tx.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("finish restore run: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return fmt.Errorf("finish restore rows affected: %w", err)
+		} else if n == 0 {
+			return ErrInvalidTransition
+		}
+	}
+	if err := updateRestoreRequestTx(ctx, tx, in); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("finish restore commit: %w", err)
+	}
+	return nil
+}
+
+// updateRestoreRequestTx 写入恢复 phase 与保护快照 ID。
+// 人工解除结论不可覆盖；已确认的安全终态不被不同结果改写。
+func updateRestoreRequestTx(ctx context.Context, tx *sql.Tx, in FinishRestoreRunInput) error {
+	var currentPhase, currentSnapshot sql.NullString
+	err := tx.QueryRowContext(ctx,
+		"SELECT phase, rollback_snapshot_id FROM restore_requests WHERE run_id = ?", in.RunID,
+	).Scan(&currentPhase, &currentSnapshot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read restore request: %w", err)
+	}
+
+	snapshot := in.RollbackSnapshotID
+	if snapshot == "" {
+		snapshot = currentSnapshot.String
+	}
+	phase := in.Phase
+	switch {
+	case phase == "":
+		phase = currentPhase.String
+	case currentPhase.String == model.RestorePhaseManualRecoveryDone:
+		// 人工结论优先，迟到结果只补证据。
+		phase = currentPhase.String
+	case model.RestorePhaseReleasesOccupancy(currentPhase.String) && currentPhase.String != phase:
+		// 已确认的安全终态保持原值。
+		phase = currentPhase.String
+	case model.RestorePhaseNeedsManualResolution(currentPhase.String):
+		// 需要人工确认的终态（占用型）同样不可被迟到/冲突结果改写：它们正是"等人
+		// 核验目标后再解除占用"的门槛，覆盖会绕过核验、静默释放全局数据库恢复占用，
+		// 并使 POST /restores/{id}/resolve 变成 409 restore_conflict（实测 Server
+		// 重启后 Agent 的迟到成功结果把 manual_recovery_required 改成 succeeded）。
+		phase = currentPhase.String
+	}
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE restore_requests SET phase = ?, rollback_snapshot_id = ? WHERE run_id = ?",
+		phase, snapshot, in.RunID); err != nil {
+		return fmt.Errorf("update restore request: %w", err)
+	}
+	return nil
+}
+
+// getRunTx 在事务内按 ID 读取 run。
+func getRunTx(ctx context.Context, tx *sql.Tx, id string) (*model.Run, error) {
+	row := tx.QueryRowContext(ctx,
+		`SELECT id, plan_id, agent_id, operation, status,
+		        queued_at, started_at, finished_at, progress_json, snapshot_id,
+		        error_code, error_message, repository_id, scheduled_at,
+		        attempt, lease_expires_at, dedup_key
+		 FROM runs WHERE id = ?`, id)
+	return scanRun(row)
+}
+
+// ResolveRestoreRequest 人工解除阻塞：写入 manual_recovery_resolved 并终结 run。
+func (s *sqliteStore) ResolveRestoreRequest(ctx context.Context, requestID, runID, actorID, note string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("resolve restore begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var currentPhase, currentRunID string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT phase, run_id FROM restore_requests WHERE id = ?", requestID,
+	).Scan(&currentPhase, &currentRunID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("read restore request: %w", err)
+	}
+	if runID != "" && currentRunID != runID {
+		return ErrRestoreConflict
+	}
+	if currentPhase != model.RestorePhaseManualRecoveryNeeded && currentPhase != model.RestorePhaseRollbackFailed {
+		return ErrRestoreConflict
+	}
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE restore_requests SET phase = ? WHERE id = ?",
+		model.RestorePhaseManualRecoveryDone, requestID); err != nil {
+		return fmt.Errorf("resolve restore request: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE runs SET status = ?, finished_at = ?, error_code = ?, error_message = ?, lease_expires_at = NULL
+		 WHERE id = ? AND status NOT IN (?, ?, ?)`,
+		model.RunFailed, at.UTC().Format(time.RFC3339), currentPhase,
+		"operator resolved blocked restore: "+note, currentRunID,
+		model.RunSucceeded, model.RunFailed, model.RunCancelled,
+	); err != nil {
+		return fmt.Errorf("resolve restore run: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO audit_events (id, occurred_at, actor_type, actor_id, action, resource_type, resource_id, detail_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		model.NewUUIDv7(), at.UTC().Format(time.RFC3339), "admin", actorID,
+		"restore.resolve", "restore_request", requestID,
+		fmt.Sprintf(`{"run_id":%q,"phase":%q,"note":%q}`, currentRunID, currentPhase, note),
+	); err != nil {
+		return fmt.Errorf("resolve restore audit: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("resolve restore commit: %w", err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1172,7 +2390,7 @@ func (s *sqliteStore) ListAuditEvents(ctx context.Context, limit int) ([]model.A
 func scanAdmin(row interface{ Scan(dest ...any) error }) (*model.Admin, error) {
 	var (
 		id, username, passwordHash, createdAt string
-		lastLoginAt                          sql.NullString
+		lastLoginAt                           sql.NullString
 	)
 	if err := row.Scan(&id, &username, &passwordHash, &createdAt, &lastLoginAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1208,18 +2426,16 @@ func scanSession(row interface{ Scan(dest ...any) error }) (*model.Session, erro
 
 func scanEnrollmentToken(row interface{ Scan(dest ...any) error }) (*model.EnrollmentToken, error) {
 	var id, tokenHash, expiresAt string
-	var usedAt sql.NullString
-	if err := row.Scan(&id, &tokenHash, &expiresAt, &usedAt); err != nil {
+	var usedAt, targetAgentID sql.NullString
+	if err := row.Scan(&id, &tokenHash, &expiresAt, &usedAt, &targetAgentID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("scan enrollment token: %w", err)
 	}
 	return &model.EnrollmentToken{
-		ID:        id,
-		TokenHash: tokenHash,
-		ExpiresAt: parseTime(expiresAt),
-		UsedAt:    parseTimePtr(usedAt),
+		ID: id, TokenHash: tokenHash, ExpiresAt: parseTime(expiresAt),
+		UsedAt: parseTimePtr(usedAt), TargetAgentID: targetAgentID.String,
 	}, nil
 }
 
@@ -1238,27 +2454,49 @@ func scanAgent(row interface{ Scan(dest ...any) error }) (*model.Agent, error) {
 	}
 
 	var tools []model.ToolInfo
+	var mappings []model.PathMapping
+	var restoreMappings []model.PathMapping
+	safeDatabaseRestore := false
 	if capsJSON != "" && capsJSON != "[]" {
-		_ = json.Unmarshal([]byte(capsJSON), &tools)
+		if strings.HasPrefix(strings.TrimSpace(capsJSON), "[") {
+			_ = json.Unmarshal([]byte(capsJSON), &tools)
+		} else {
+			var caps struct {
+				Tools               []model.ToolInfo    `json:"tools"`
+				SourcePathMappings  []model.PathMapping `json:"source_path_mappings"`
+				RestorePathMappings []model.PathMapping `json:"restore_path_mappings"`
+				SafeDatabaseRestore bool                `json:"safe_database_restore"`
+			}
+			_ = json.Unmarshal([]byte(capsJSON), &caps)
+			tools, mappings, restoreMappings = caps.Tools, caps.SourcePathMappings, caps.RestorePathMappings
+			safeDatabaseRestore = caps.SafeDatabaseRestore
+		}
 	}
 	if tools == nil {
 		tools = []model.ToolInfo{}
 	}
+	if mappings == nil {
+		mappings = []model.PathMapping{}
+	}
+	if restoreMappings == nil {
+		restoreMappings = []model.PathMapping{}
+	}
 
 	return &model.Agent{
-		ID:               id,
-		Name:             name,
-		Hostname:         hostname,
-		OS:               os,
-		Arch:             arch,
-		Version:          version,
-		Status:           model.AgentStatus(status),
-		LastSeenAt:       parseTimePtr(lastSeenNull),
-		EnrolledAt:       parseTime(enrolledAt),
-		TokenHash:        tokenHash,
-		Capabilities:     tools,
-		CapabilitiesJSON: capsJSON,
-		Revoked:          revoked != 0,
+		ID:           id,
+		Name:         name,
+		Hostname:     hostname,
+		OS:           os,
+		Arch:         arch,
+		Version:      version,
+		Status:       model.AgentStatus(status),
+		LastSeenAt:   parseTimePtr(lastSeenNull),
+		Capabilities: tools, SourcePathMappings: mappings, RestorePathMappings: restoreMappings,
+		SafeDatabaseRestore: safeDatabaseRestore,
+		CapabilitiesJSON:    capsJSON,
+		EnrolledAt:          parseTime(enrolledAt),
+		TokenHash:           tokenHash,
+		Revoked:             revoked != 0,
 	}, nil
 }
 
@@ -1291,10 +2529,10 @@ func scanRepository(row interface{ Scan(dest ...any) error }) (*model.Repository
 		id, agentID, targetID, repoPath string
 		encPass                         []byte
 		status                          string
-		lastCheckAt                     sql.NullString
+		lastCheckAt, detachedAt         sql.NullString
 		createdAt, updatedAt            string
 	)
-	if err := row.Scan(&id, &agentID, &targetID, &repoPath, &encPass, &status, &lastCheckAt, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&id, &agentID, &targetID, &repoPath, &encPass, &status, &lastCheckAt, &detachedAt, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1308,6 +2546,7 @@ func scanRepository(row interface{ Scan(dest ...any) error }) (*model.Repository
 		EncryptedPassword: encPass,
 		Status:            status,
 		LastCheckAt:       parseTimePtr(lastCheckAt),
+		DetachedAt:        parseTimePtr(detachedAt),
 		CreatedAt:         parseTime(createdAt),
 		UpdatedAt:         parseTime(updatedAt),
 	}, nil
@@ -1330,6 +2569,15 @@ func scanPlan(row interface{ Scan(dest ...any) error }) (*model.Plan, error) {
 
 	var src model.PlanSource
 	_ = json.Unmarshal([]byte(sourceJSON), &src)
+	// 归一化非法估算值：负值只可能来自旧版本写入（当前校验要求 > 0）。
+	// 必须同时回写 sourceJSON —— planToView 等调用方直接反序列化
+	// SourceJSON，只改 src 会被它们覆盖。
+	if src.EstimatedDumpBytes < 0 {
+		src.EstimatedDumpBytes = 0
+		if clean, err := json.Marshal(src); err == nil {
+			sourceJSON = string(clean)
+		}
+	}
 
 	var ret model.Retention
 	_ = json.Unmarshal([]byte(retentionJSON), &ret)
@@ -1358,12 +2606,16 @@ func scanRun(row interface{ Scan(dest ...any) error }) (*model.Run, error) {
 		id, agentID, operation, status string
 		queuedAt                       string
 		startedAt, finishedAt          sql.NullString
-		progressJSON, snapshotID       string
+		progressJSON                   string
+		snapshotID                     sql.NullString
 		errorCode, errorMessage        sql.NullString
 		planID, repositoryID           sql.NullString
 		scheduledAt                    sql.NullString
+		attempt                        int
+		leaseExpiresAt                 sql.NullString
+		dedupKey                       sql.NullString
 	)
-	if err := row.Scan(&id, &planID, &agentID, &operation, &status, &queuedAt, &startedAt, &finishedAt, &progressJSON, &snapshotID, &errorCode, &errorMessage, &repositoryID, &scheduledAt); err != nil {
+	if err := row.Scan(&id, &planID, &agentID, &operation, &status, &queuedAt, &startedAt, &finishedAt, &progressJSON, &snapshotID, &errorCode, &errorMessage, &repositoryID, &scheduledAt, &attempt, &leaseExpiresAt, &dedupKey); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1374,34 +2626,72 @@ func scanRun(row interface{ Scan(dest ...any) error }) (*model.Run, error) {
 	_ = json.Unmarshal([]byte(progressJSON), &prog)
 
 	return &model.Run{
-		ID:           id,
-		PlanID:       planID.String,
-		AgentID:      agentID,
-		Operation:    operation,
-		Status:       status,
-		QueuedAt:     parseTime(queuedAt),
-		StartedAt:    parseTimePtr(startedAt),
-		FinishedAt:   parseTimePtr(finishedAt),
-		Progress:     prog,
-		ProgressJSON: progressJSON,
-		SnapshotID:   snapshotID,
-		ErrorCode:    errorCode.String,
-		ErrorMessage: errorMessage.String,
-		RepositoryID: repositoryID.String,
-		ScheduledAt:  parseTimePtr(scheduledAt),
+		ID:             id,
+		PlanID:         planID.String,
+		AgentID:        agentID,
+		Operation:      operation,
+		Status:         status,
+		QueuedAt:       parseTime(queuedAt),
+		StartedAt:      parseTimePtr(startedAt),
+		FinishedAt:     parseTimePtr(finishedAt),
+		Progress:       prog,
+		ProgressJSON:   progressJSON,
+		SnapshotID:     snapshotID.String,
+		ErrorCode:      errorCode.String,
+		ErrorMessage:   errorMessage.String,
+		RepositoryID:   repositoryID.String,
+		Attempt:        attempt,
+		LeaseExpiresAt: parseTimePtr(leaseExpiresAt),
+		ScheduledAt:    parseTimePtr(scheduledAt),
+		DedupKey:       dedupKey.String,
 	}, nil
 }
 
 func scanRunLog(row interface{ Scan(dest ...any) error }) (*model.RunLog, error) {
-	var runID, timestamp, level, message string
-	var seq int64
-	if err := row.Scan(&runID, &seq, &timestamp, &level, &message); err != nil {
+	var runID, source, timestamp, level, message string
+	var id, sourceSeq int64
+	if err := row.Scan(&id, &runID, &source, &sourceSeq, &timestamp, &level, &message); err != nil {
 		return nil, fmt.Errorf("scan run log: %w", err)
 	}
 	return &model.RunLog{
+		ID:        id,
 		RunID:     runID,
-		Seq:       uint64(seq),
+		Source:    source,
+		SourceSeq: uint64(sourceSeq),
 		Timestamp: parseTime(timestamp),
+		Level:     level,
+		Message:   message,
+	}, nil
+}
+func scanSystemLog(row interface{ Scan(dest ...any) error }, withAgent bool) (*model.SystemLog, error) {
+	var (
+		id        int64
+		agentID   string
+		sourceSeq int64
+		logType   string
+		timestamp string
+		level     string
+		message   string
+	)
+	if withAgent {
+		if err := row.Scan(&id, &agentID, &sourceSeq, &logType, &timestamp, &level, &message); err != nil {
+			return nil, fmt.Errorf("scan agent log: %w", err)
+		}
+	} else {
+		if err := row.Scan(&id, &logType, &timestamp, &level, &message); err != nil {
+			return nil, fmt.Errorf("scan server log: %w", err)
+		}
+	}
+	var seq uint64
+	if sourceSeq > 0 {
+		seq = uint64(sourceSeq)
+	}
+	return &model.SystemLog{
+		ID:        id,
+		AgentID:   agentID,
+		SourceSeq: seq,
+		Timestamp: parseTime(timestamp),
+		Type:      logType,
 		Level:     level,
 		Message:   message,
 	}, nil
@@ -1409,13 +2699,14 @@ func scanRunLog(row interface{ Scan(dest ...any) error }) (*model.RunLog, error)
 
 func scanRestoreRequest(row interface{ Scan(dest ...any) error }) (*model.RestoreRequest, error) {
 	var (
-		id, runID, snapshotID, restoreKind string
-		targetJSON                         string
-		overwrite                          int
-		confirmationHash                   sql.NullString
-		createdAt                          string
+		id, runID, snapshotID, restoreKind         string
+		targetJSON                                 string
+		overwrite                                  int
+		confirmationHash                           sql.NullString
+		preRestoreRunID, rollbackSnapshotID, phase sql.NullString
+		createdAt                                  string
 	)
-	if err := row.Scan(&id, &runID, &snapshotID, &restoreKind, &targetJSON, &overwrite, &confirmationHash, &createdAt); err != nil {
+	if err := row.Scan(&id, &runID, &snapshotID, &restoreKind, &targetJSON, &overwrite, &confirmationHash, &preRestoreRunID, &rollbackSnapshotID, &phase, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1426,15 +2717,18 @@ func scanRestoreRequest(row interface{ Scan(dest ...any) error }) (*model.Restor
 	_ = json.Unmarshal([]byte(targetJSON), &target)
 
 	return &model.RestoreRequest{
-		ID:               id,
-		RunID:            runID,
-		SnapshotID:       snapshotID,
-		RestoreKind:      restoreKind,
-		Target:           target,
-		TargetJSON:       targetJSON,
-		Overwrite:        overwrite != 0,
-		ConfirmationHash: confirmationHash.String,
-		CreatedAt:        parseTime(createdAt),
+		ID:                 id,
+		RunID:              runID,
+		SnapshotID:         snapshotID,
+		RestoreKind:        restoreKind,
+		Target:             target,
+		TargetJSON:         targetJSON,
+		Overwrite:          overwrite != 0,
+		ConfirmationHash:   confirmationHash.String,
+		PreRestoreRunID:    preRestoreRunID.String,
+		RollbackSnapshotID: rollbackSnapshotID.String,
+		Phase:              phase.String,
+		CreatedAt:          parseTime(createdAt),
 	}, nil
 }
 
@@ -1456,6 +2750,943 @@ func scanAuditEvent(row interface{ Scan(dest ...any) error }) (*model.AuditEvent
 		ResourceID:   resourceID,
 		DetailJSON:   detailJSON,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// 快照缓存
+// ---------------------------------------------------------------------------
+
+func (s *sqliteStore) GetSnapshotListCache(ctx context.Context, repositoryID string) (*SnapshotListCache, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT l.repository_id, l.generation, l.snapshots_json, l.fingerprint, l.verified_at
+		FROM snapshot_list_cache l
+		JOIN repository_cache_state c ON c.repository_id = l.repository_id
+		WHERE l.repository_id = ? AND c.generation = l.generation
+		  AND c.list_verified_at = l.verified_at`, repositoryID)
+	var out SnapshotListCache
+	var verified string
+	if err := row.Scan(&out.RepositoryID, &out.Generation, &out.SnapshotsJSON, &out.Fingerprint, &verified); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get snapshot list cache: %w", err)
+	}
+	out.VerifiedAt = parseTime(verified)
+	return &out, nil
+}
+
+func (s *sqliteStore) GetSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string) (*SnapshotTreeCache, error) {
+	cachePath = NormalizeSnapshotPath(cachePath)
+	row := s.db.QueryRowContext(ctx, `
+		SELECT t.repository_id, t.snapshot_id, t.path, t.generation, t.tree_json, t.verified_at
+		FROM snapshot_tree_cache t
+		JOIN repository_cache_state c ON c.repository_id = t.repository_id
+		WHERE t.repository_id = ? AND t.snapshot_id = ? AND t.path = ?
+		  AND c.generation = t.generation AND c.list_verified_at IS NOT NULL`, repositoryID, snapshotID, cachePath)
+	var out SnapshotTreeCache
+	var verified string
+	if err := row.Scan(&out.RepositoryID, &out.SnapshotID, &out.Path, &out.Generation, &out.TreeJSON, &verified); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get snapshot tree cache: %w", err)
+	}
+	out.VerifiedAt = parseTime(verified)
+	return &out, nil
+}
+
+func (s *sqliteStore) GetSnapshotListBrowseCache(ctx context.Context, repositoryID string) (*SnapshotListCache, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT l.repository_id, l.generation, l.snapshots_json, l.fingerprint, l.verified_at,
+		       c.generation, c.list_verified_at
+		FROM snapshot_list_cache l
+		JOIN repository_cache_state c ON c.repository_id = l.repository_id
+		WHERE l.repository_id = ?`, repositoryID)
+	var out SnapshotListCache
+	var verified string
+	var currGen int64
+	var currVerified sql.NullString
+	if err := row.Scan(&out.RepositoryID, &out.Generation, &out.SnapshotsJSON, &out.Fingerprint, &verified, &currGen, &currVerified); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, fmt.Errorf("get snapshot list browse cache: %w", err)
+	}
+	out.VerifiedAt = parseTime(verified)
+	stale := out.Generation != currGen || !currVerified.Valid || currVerified.String != verified
+	return &out, stale, nil
+}
+
+func (s *sqliteStore) GetSnapshotTreeBrowseCache(ctx context.Context, repositoryID, snapshotID, cachePath string) (*SnapshotTreeCache, bool, error) {
+	cachePath = NormalizeSnapshotPath(cachePath)
+	row := s.db.QueryRowContext(ctx, `
+		SELECT t.repository_id, t.snapshot_id, t.path, t.generation, t.tree_json, t.verified_at,
+		       c.generation, c.list_verified_at
+		FROM snapshot_tree_cache t
+		JOIN repository_cache_state c ON c.repository_id = t.repository_id
+		WHERE t.repository_id = ? AND t.snapshot_id = ? AND t.path = ?`, repositoryID, snapshotID, cachePath)
+	var out SnapshotTreeCache
+	var verified string
+	var currGen int64
+	var currListVerified sql.NullString
+	if err := row.Scan(&out.RepositoryID, &out.SnapshotID, &out.Path, &out.Generation, &out.TreeJSON, &verified, &currGen, &currListVerified); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, fmt.Errorf("get snapshot tree browse cache: %w", err)
+	}
+	out.VerifiedAt = parseTime(verified)
+	stale := out.Generation != currGen || !currListVerified.Valid
+	return &out, stale, nil
+}
+
+func (s *sqliteStore) SnapshotCacheGeneration(ctx context.Context, repositoryID string) (int64, error) {
+	var generation int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT generation FROM repository_cache_state WHERE repository_id = ?", repositoryID,
+	).Scan(&generation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("get snapshot cache generation: %w", err)
+	}
+	return generation, nil
+}
+
+// SaveSnapshotListCache 写入已验证快照列表缓存。并发刷新（多个仓库同时 refresh，
+// 或删除计划时内部强制刷新）实测会撞 WAL 快照过期：SQLITE_BUSY 在 busy_timeout
+// 到期后直接冒泡成 500，导致 DELETE /plans/{id} 失败。与其它写事务一样整事务重放。
+func (s *sqliteStore) SaveSnapshotListCache(ctx context.Context, repositoryID string, generation int64, snapshotsJSON, fingerprint string, verifiedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return retryOnBusy(ctx, busyRetryAttempts, busyRetryBackoff, func() error {
+		return s.saveSnapshotListCacheOnce(ctx, repositoryID, generation, snapshotsJSON, fingerprint, verifiedAt)
+	})
+}
+
+func (s *sqliteStore) saveSnapshotListCacheOnce(ctx context.Context, repositoryID string, generation int64, snapshotsJSON, fingerprint string, verifiedAt time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save snapshot list cache begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := ensureCacheGeneration(ctx, tx, repositoryID, generation); err != nil {
+		return err
+	}
+	verified := verifiedAt.UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO snapshot_list_cache (repository_id, generation, snapshots_json, fingerprint, verified_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(repository_id) DO UPDATE SET generation=excluded.generation,
+		  snapshots_json=excluded.snapshots_json, fingerprint=excluded.fingerprint,
+		  verified_at=excluded.verified_at`,
+		repositoryID, generation, snapshotsJSON, fingerprint, verified); err != nil {
+		return fmt.Errorf("save snapshot list cache: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE repository_cache_state SET list_verified_at=?, list_fingerprint=?, updated_at=?
+		WHERE repository_id=? AND generation=?`,
+		verified, fingerprint, verified, repositoryID, generation); err != nil {
+		return fmt.Errorf("mark snapshot list cache verified: %w", err)
+	}
+	var snaps []model.Snapshot
+	if err := json.Unmarshal([]byte(snapshotsJSON), &snaps); err != nil {
+		return fmt.Errorf("parse snapshot list cache: %w", err)
+	}
+	if len(snaps) == 0 {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM snapshot_tree_cache WHERE repository_id = ?", repositoryID); err != nil {
+			return fmt.Errorf("reconcile snapshot tree cache: %w", err)
+		}
+	} else {
+		placeholders := make([]string, len(snaps))
+		ids := make([]any, len(snaps))
+		for i, snap := range snaps {
+			placeholders[i] = "?"
+			ids[i] = snap.ID
+		}
+		markQuery := "UPDATE snapshot_tree_cache SET generation=? WHERE repository_id=? AND snapshot_id IN (" + strings.Join(placeholders, ",") + ")"
+		markArgs := []any{generation, repositoryID}
+		markArgs = append(markArgs, ids...)
+		if _, err := tx.ExecContext(ctx, markQuery, markArgs...); err != nil {
+			return fmt.Errorf("promote snapshot tree cache: %w", err)
+		}
+		deleteQuery := "DELETE FROM snapshot_tree_cache WHERE repository_id=? AND snapshot_id NOT IN (" + strings.Join(placeholders, ",") + ")"
+		deleteArgs := []any{repositoryID}
+		deleteArgs = append(deleteArgs, ids...)
+		if _, err := tx.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
+			return fmt.Errorf("reconcile snapshot tree cache: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("save snapshot list cache commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) SaveSnapshotTreeCache(ctx context.Context, repositoryID, snapshotID, cachePath string, generation int64, treeJSON string, verifiedAt time.Time) error {
+	cachePath = NormalizeSnapshotPath(cachePath)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save snapshot tree cache begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := ensureCacheGeneration(ctx, tx, repositoryID, generation); err != nil {
+		return err
+	}
+	var verifiedList string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT list_verified_at FROM repository_cache_state WHERE repository_id = ?", repositoryID,
+	).Scan(&verifiedList); err != nil {
+		return fmt.Errorf("check snapshot list cache: %w", err)
+	}
+	if verifiedList == "" {
+		return ErrCacheGenerationChanged
+	}
+	verified := verifiedAt.UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO snapshot_tree_cache (repository_id, snapshot_id, path, generation, tree_json, verified_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(repository_id, snapshot_id, path) DO UPDATE SET generation=excluded.generation,
+		  tree_json=excluded.tree_json, verified_at=excluded.verified_at`,
+		repositoryID, snapshotID, cachePath, generation, treeJSON, verified); err != nil {
+		return fmt.Errorf("save snapshot tree cache: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("save snapshot tree cache commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) InvalidateSnapshotCache(ctx context.Context, repositoryID string, clearTrees bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("invalidate snapshot cache begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := invalidateSnapshotCacheTx(ctx, tx, repositoryID, clearTrees); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("invalidate snapshot cache commit: %w", err)
+	}
+	return nil
+}
+
+func ensureCacheGeneration(ctx context.Context, tx *sql.Tx, repositoryID string, expected int64) error {
+	var actual int64
+	err := tx.QueryRowContext(ctx,
+		"SELECT generation FROM repository_cache_state WHERE repository_id = ?", repositoryID,
+	).Scan(&actual)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read snapshot cache generation: %w", err)
+	}
+	if actual != expected {
+		return ErrCacheGenerationChanged
+	}
+	return nil
+}
+
+func invalidateSnapshotCacheTx(ctx context.Context, tx *sql.Tx, repositoryID string, clearTrees bool) error {
+	now := nowUTC().Format(time.RFC3339)
+	result, err := tx.ExecContext(ctx, `
+		UPDATE repository_cache_state
+		SET generation=generation+1, list_verified_at=NULL, updated_at=?
+		WHERE repository_id=?`, now, repositoryID)
+	if err != nil {
+		return fmt.Errorf("invalidate snapshot cache state: %w", err)
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("invalidate snapshot cache rows affected: %w", err)
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	if clearTrees {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM snapshot_tree_cache WHERE repository_id = ?", repositoryID); err != nil {
+			return fmt.Errorf("clear snapshot tree cache: %w", err)
+		}
+	}
+	return nil
+}
+
+func invalidateTargetCaches(ctx context.Context, tx *sql.Tx, targetID string) error {
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM repositories WHERE storage_target_id = ?", targetID)
+	if err != nil {
+		return fmt.Errorf("list target repositories for cache invalidation: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scan target repository: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("list target repositories: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close target repositories: %w", err)
+	}
+	for _, id := range ids {
+		if err := invalidateSnapshotCacheTx(ctx, tx, id, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func invalidatesSnapshotCache(operation string) bool {
+	return operation == model.OpBackup || operation == model.OpForget
+}
+
+// ---------------------------------------------------------------------------
+// 快照删除意图与孤儿扫描
+// ---------------------------------------------------------------------------
+
+func scanSnapshotDeletion(row interface{ Scan(dest ...any) error }) (*model.SnapshotDeletion, error) {
+	var (
+		id, repositoryID, agentID, snapshotID, source, state string
+		firstSeenAt, lastSeenAt, createdAt, updatedAt        string
+		nextAttemptAt, leaseExpiresAt, completedAt           sql.NullString
+		runID, errorCode, errorMessage, requestedBy          sql.NullString
+		seenCount, attempt                                   int
+	)
+	if err := row.Scan(&id, &repositoryID, &agentID, &snapshotID, &source, &state,
+		&firstSeenAt, &lastSeenAt, &seenCount, &nextAttemptAt, &attempt,
+		&runID, &leaseExpiresAt, &errorCode, &errorMessage, &requestedBy,
+		&createdAt, &updatedAt, &completedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("scan snapshot deletion: %w", err)
+	}
+	return &model.SnapshotDeletion{
+		ID:             id,
+		RepositoryID:   repositoryID,
+		AgentID:        agentID,
+		SnapshotID:     snapshotID,
+		Source:         model.SnapshotDeletionSource(source),
+		State:          model.SnapshotDeletionState(state),
+		FirstSeenAt:    parseTime(firstSeenAt),
+		LastSeenAt:     parseTime(lastSeenAt),
+		SeenCount:      seenCount,
+		NextAttemptAt:  parseTimePtr(nextAttemptAt),
+		Attempt:        attempt,
+		RunID:          runID.String,
+		LeaseExpiresAt: parseTimePtr(leaseExpiresAt),
+		ErrorCode:      errorCode.String,
+		ErrorMessage:   errorMessage.String,
+		RequestedBy:    requestedBy.String,
+		CreatedAt:      parseTime(createdAt),
+		UpdatedAt:      parseTime(updatedAt),
+		CompletedAt:    parseTimePtr(completedAt),
+	}, nil
+}
+
+func (s *sqliteStore) QueueManualSnapshotDeletion(ctx context.Context, repositoryID, agentID, snapshotID, actorID string, now time.Time) (*model.SnapshotDeletion, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("queue manual deletion begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 读取既有意图。
+	var existing *model.SnapshotDeletion
+	row := tx.QueryRowContext(ctx,
+		`SELECT id, repository_id, agent_id, snapshot_id, source, state,
+		        first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+		        run_id, lease_expires_at, error_code, error_message, requested_by,
+		        created_at, updated_at, completed_at
+		 FROM snapshot_deletions WHERE repository_id = ? AND snapshot_id = ?`,
+		repositoryID, snapshotID,
+	)
+	existing, err = scanSnapshotDeletion(row)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, false, fmt.Errorf("queue manual deletion read: %w", err)
+	}
+
+	nowStr := now.UTC().Format(time.RFC3339)
+
+	// 已进入 pending|running|succeeded 的意图直接返回原记录，不重复创建。
+	if existing != nil {
+		switch existing.State {
+		case model.SnapshotDeletionPending, model.SnapshotDeletionRunning, model.SnapshotDeletionSucceeded:
+			return existing, false, nil
+		}
+		// candidate 原子升级为 manual/pending。
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE snapshot_deletions
+			 SET source='manual', state='pending', agent_id=?, requested_by=?,
+			     next_attempt_at=NULL, error_code=NULL, error_message=NULL,
+			     updated_at=?
+			 WHERE id=?`,
+			agentID, actorID, nowStr, existing.ID); err != nil {
+			return nil, false, fmt.Errorf("upgrade manual deletion: %w", err)
+		}
+		existing.Source = model.SnapshotDeletionManual
+		existing.State = model.SnapshotDeletionPending
+		existing.AgentID = agentID
+		existing.RequestedBy = actorID
+		existing.NextAttemptAt = nil
+		existing.ErrorCode = ""
+		existing.ErrorMessage = ""
+		existing.UpdatedAt = now.UTC()
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("upgrade manual deletion commit: %w", err)
+		}
+		return existing, true, nil
+	}
+
+	// 新建 manual/pending 意图。
+	id := model.NewUUIDv7()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO snapshot_deletions
+		   (id, repository_id, agent_id, snapshot_id, source, state,
+		    first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+		    run_id, lease_expires_at, error_code, error_message, requested_by,
+		    created_at, updated_at, completed_at)
+		 VALUES (?, ?, ?, ?, 'manual', 'pending', ?, ?, 1, NULL, 0,
+		         NULL, NULL, NULL, NULL, ?, ?, ?, NULL)`,
+		id, repositoryID, agentID, snapshotID, nowStr, nowStr, actorID, nowStr, nowStr); err != nil {
+		return nil, false, fmt.Errorf("insert manual deletion: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("insert manual deletion commit: %w", err)
+	}
+	return &model.SnapshotDeletion{
+		ID:           id,
+		RepositoryID: repositoryID,
+		AgentID:      agentID,
+		SnapshotID:   snapshotID,
+		Source:       model.SnapshotDeletionManual,
+		State:        model.SnapshotDeletionPending,
+		FirstSeenAt:  now.UTC(),
+		LastSeenAt:   now.UTC(),
+		SeenCount:    1,
+		RequestedBy:  actorID,
+		CreatedAt:    now.UTC(),
+		UpdatedAt:    now.UTC(),
+	}, true, nil
+}
+
+func (s *sqliteStore) HiddenSnapshotIDs(ctx context.Context, repositoryID string) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT snapshot_id FROM snapshot_deletions
+		 WHERE repository_id = ?
+		   AND (
+		     (source = 'manual' AND state IN ('pending', 'running', 'succeeded'))
+		     OR (source = 'orphan' AND state IN ('pending', 'running', 'succeeded'))
+		   )`,
+		repositoryID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("hidden snapshot ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan hidden snapshot id: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) ListRunningSnapshotDeletions(ctx context.Context) ([]model.SnapshotDeletion, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, repository_id, agent_id, snapshot_id, source, state,
+		        first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+		        run_id, lease_expires_at, error_code, error_message, requested_by,
+		        created_at, updated_at, completed_at
+		 FROM snapshot_deletions
+		 WHERE state = 'running'
+		 ORDER BY updated_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list running snapshot deletions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []model.SnapshotDeletion
+	for rows.Next() {
+		d, err := scanSnapshotDeletion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) ListDueSnapshotDeletions(ctx context.Context, now time.Time, limit int) ([]model.SnapshotDeletion, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	nowStr := now.UTC().Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, repository_id, agent_id, snapshot_id, source, state,
+		        first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+		        run_id, lease_expires_at, error_code, error_message, requested_by,
+		        created_at, updated_at, completed_at
+		 FROM snapshot_deletions
+		 WHERE state = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+		 ORDER BY next_attempt_at ASC NULLS FIRST, updated_at ASC
+		 LIMIT ?`,
+		nowStr, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list due snapshot deletions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []model.SnapshotDeletion
+	for rows.Next() {
+		d, err := scanSnapshotDeletion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) ClaimSnapshotDeletionRun(ctx context.Context, deletionID string, run *model.Run, leaseUntil time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("claim deletion run begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 读取意图，确认仍为 pending。
+	var state string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT state FROM snapshot_deletions WHERE id = ?", deletionID,
+	).Scan(&state); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("claim deletion read state: %w", err)
+	}
+	if state != string(model.SnapshotDeletionPending) {
+		return ErrInvalidTransition
+	}
+
+	// 插入 queued run。
+	planID := nullString(run.PlanID)
+	repoID := nullString(run.RepositoryID)
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO runs (id, plan_id, agent_id, operation, status,
+		   queued_at, started_at, finished_at, progress_json, snapshot_id,
+		   error_code, error_message, repository_id, scheduled_at, attempt, lease_expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.ID, planID, run.AgentID, run.Operation, run.Status,
+		run.QueuedAt.Format(time.RFC3339),
+		nullTime(run.StartedAt),
+		nullTime(run.FinishedAt),
+		run.ProgressJSON, run.SnapshotID,
+		run.ErrorCode, run.ErrorMessage,
+		repoID,
+		nullTime(run.ScheduledAt),
+		run.Attempt,
+		nullTime(run.LeaseExpiresAt),
+	); err != nil {
+		return fmt.Errorf("claim deletion insert run: %w", err)
+	}
+
+	// 意图置 running 并绑定 run_id/lease_expires_at。
+	leaseStr := leaseUntil.UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE snapshot_deletions
+		 SET state='running', run_id=?, lease_expires_at=?, attempt=attempt+1,
+		     error_code=NULL, error_message=NULL, updated_at=?
+		 WHERE id=?`,
+		run.ID, leaseStr, nowUTC().Format(time.RFC3339), deletionID); err != nil {
+		return fmt.Errorf("claim deletion set running: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("claim deletion run commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) CompleteSnapshotDeletion(ctx context.Context, deletionID string, now time.Time) error {
+	nowStr := now.UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE snapshot_deletions
+		 SET state='succeeded', completed_at=?, error_code=NULL, error_message=NULL,
+		     next_attempt_at=NULL, updated_at=?
+		 WHERE id=?`,
+		nowStr, nowStr, deletionID)
+	if err != nil {
+		return fmt.Errorf("complete snapshot deletion: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sqliteStore) RetrySnapshotDeletion(ctx context.Context, deletionID, errorCode, errorMessage string, nextAttemptAt time.Time) error {
+	nextStr := nextAttemptAt.UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE snapshot_deletions
+		 SET state='pending', run_id=NULL, lease_expires_at=NULL,
+		     error_code=?, error_message=?, next_attempt_at=?, updated_at=?
+		 WHERE id=?`,
+		errorCode, errorMessage, nextStr, nowUTC().Format(time.RFC3339), deletionID)
+	if err != nil {
+		return fmt.Errorf("retry snapshot deletion: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sqliteStore) GetSnapshotCleanupState(ctx context.Context, repositoryID string) (*model.SnapshotCleanupState, error) {
+	var (
+		scanRunID, lastStarted, lastCompleted, nextAttempt sql.NullString
+		updated                                            string
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT repository_id, scan_run_id, last_scan_started_at, last_scan_completed_at, next_attempt_at, updated_at
+		 FROM snapshot_cleanup_state WHERE repository_id = ?`, repositoryID,
+	).Scan(&repositoryID, &scanRunID, &lastStarted, &lastCompleted, &nextAttempt, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get snapshot cleanup state: %w", err)
+	}
+	return &model.SnapshotCleanupState{
+		RepositoryID:        repositoryID,
+		ScanRunID:           scanRunID.String,
+		LastScanStartedAt:   parseTimePtr(lastStarted),
+		LastScanCompletedAt: parseTimePtr(lastCompleted),
+		NextAttemptAt:       parseTimePtr(nextAttempt),
+		UpdatedAt:           parseTime(updated),
+	}, nil
+}
+
+func (s *sqliteStore) FinishSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, snapshots []model.Snapshot, completedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("finish cleanup scan begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 空 runID 仅用于存储层直接 reconciliation；后台路径始终传入真实 run ID。
+	var currentRunID string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT scan_run_id FROM snapshot_cleanup_state WHERE repository_id = ?", repositoryID,
+	).Scan(&currentRunID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			if runID != "" {
+				return ErrNotFound
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO snapshot_cleanup_state (repository_id, updated_at) VALUES (?, ?)`,
+				repositoryID, completedAt.UTC().Format(time.RFC3339)); err != nil {
+				return fmt.Errorf("create cleanup scan state: %w", err)
+			}
+			currentRunID = ""
+		} else {
+			return fmt.Errorf("finish cleanup scan read run: %w", err)
+		}
+	}
+	if runID != "" && currentRunID != runID {
+		return ErrInvalidTransition
+	}
+
+	completedStr := completedAt.UTC().Format(time.RFC3339)
+
+	// 孤儿 reconciliation：对每个远端快照，若标签完整且无权威匹配 run，则写/递增 candidate。
+	for _, snap := range snapshots {
+		planID, kind, runTag, ok := parseSnapshotTags(snap.Tags)
+		if !ok {
+			continue // 标签不完整或异常，跳过
+		}
+		_ = planID
+		_ = kind
+		_ = runTag
+		// 权威匹配：runs.id = run: 标签、operation='backup'、status='succeeded'、
+		// repository_id 一致、snapshot_id 一致。
+		var matched int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM runs
+			 WHERE id = ? AND operation = 'backup' AND status = 'succeeded'
+			   AND repository_id = ? AND snapshot_id = ?`,
+			runTag, repositoryID, snap.ID,
+		).Scan(&matched); err != nil {
+			return fmt.Errorf("finish cleanup scan match run: %w", err)
+		}
+		if matched > 0 {
+			// 有权威匹配：删除候选记录（若存在）。
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM snapshot_deletions
+				 WHERE repository_id = ? AND snapshot_id = ? AND source = 'orphan' AND state = 'candidate'`,
+				repositoryID, snap.ID); err != nil {
+				return fmt.Errorf("finish cleanup scan clear candidate: %w", err)
+			}
+			continue
+		}
+		// 无权威匹配：写 candidate 或递增 seen_count。
+		if err := upsertOrphanCandidateTx(ctx, tx, repositoryID, snap.ID, completedAt); err != nil {
+			return err
+		}
+	}
+
+	// 已从远端消失的候选记录删除。
+	if err := deleteAbsentCandidatesTx(ctx, tx, repositoryID, snapshots); err != nil {
+		return err
+	}
+
+	// 写完成时间并清活跃扫描（成功即清除退避，下次按 24h 周期正常扫描）。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE snapshot_cleanup_state
+		 SET scan_run_id=NULL, last_scan_completed_at=?, next_attempt_at=NULL, updated_at=?
+		 WHERE repository_id=?`,
+		completedStr, completedStr, repositoryID); err != nil {
+		return fmt.Errorf("finish cleanup scan complete: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("finish cleanup scan commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) StartSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, startedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("start cleanup scan begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if runID == "" {
+		return ErrInvalidTransition
+	}
+	startedStr := startedAt.UTC().Format(time.RFC3339)
+	// compare-and-set：首次无状态行时插入；仅当无活跃扫描或 run_id 相同（重启恢复）时更新。
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO snapshot_cleanup_state (repository_id, scan_run_id, last_scan_started_at, next_attempt_at, updated_at)
+		 VALUES (?, ?, ?, NULL, ?)
+		 ON CONFLICT(repository_id) DO UPDATE SET
+		   scan_run_id = excluded.scan_run_id,
+		   last_scan_started_at = excluded.last_scan_started_at,
+		   next_attempt_at = NULL,
+		   updated_at = excluded.updated_at
+		 WHERE snapshot_cleanup_state.scan_run_id IS NULL
+		    OR snapshot_cleanup_state.scan_run_id = excluded.scan_run_id`,
+		repositoryID, runID, startedStr, startedStr); err != nil {
+		return fmt.Errorf("start cleanup scan upsert: %w", err)
+	}
+	// 校验：若被另一 run 抢占（活跃扫描且 run_id 不同），返回冲突。
+	var finalRunID sql.NullString
+	if err := tx.QueryRowContext(ctx,
+		"SELECT scan_run_id FROM snapshot_cleanup_state WHERE repository_id = ?", repositoryID,
+	).Scan(&finalRunID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("start cleanup scan verify: %w", err)
+	}
+	if finalRunID.Valid && finalRunID.String != runID {
+		return ErrInvalidTransition
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("start cleanup scan commit: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) ClearSnapshotCleanupScan(ctx context.Context, repositoryID, runID string, nextAttemptAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("clear cleanup scan begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var currentRunID string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT scan_run_id FROM snapshot_cleanup_state WHERE repository_id = ?", repositoryID,
+	).Scan(&currentRunID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("clear cleanup scan read run: %w", err)
+	}
+	if currentRunID != runID {
+		return ErrInvalidTransition
+	}
+
+	// 失败只清活跃扫描，保留候选原状态，不增加 seen_count；同时写入退避时间，
+	// 否则下一次 scheduler tick 会立刻重发扫描（无上限重试）。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE snapshot_cleanup_state
+		 SET scan_run_id=NULL, next_attempt_at=?, updated_at=?
+		 WHERE repository_id=?`,
+		nextAttemptAt.UTC().Format(time.RFC3339), nowUTC().Format(time.RFC3339), repositoryID); err != nil {
+		return fmt.Errorf("clear cleanup scan update: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("clear cleanup scan commit: %w", err)
+	}
+	return nil
+}
+
+// parseSnapshotTags 校验快照标签：必须同时且各自恰好包含一个 plan:<id>、kind:<kind>、run:<id>。
+// 返回 (planID, kind, runID, ok)。重复同前缀标签、多个计划标签、缺失任一标签均视为不完整。
+func parseSnapshotTags(tags []string) (planID, kind, runID string, ok bool) {
+	var planCount, kindCount, runCount int
+	for _, tag := range tags {
+		switch {
+		case strings.HasPrefix(tag, "plan:"):
+			planCount++
+			planID = strings.TrimPrefix(tag, "plan:")
+		case strings.HasPrefix(tag, "kind:"):
+			kindCount++
+			kind = strings.TrimPrefix(tag, "kind:")
+		case strings.HasPrefix(tag, "run:"):
+			runCount++
+			runID = strings.TrimPrefix(tag, "run:")
+		}
+	}
+	if planCount != 1 || kindCount != 1 || runCount != 1 {
+		return "", "", "", false
+	}
+	if planID == "" || kind == "" || runID == "" {
+		return "", "", "", false
+	}
+	return planID, kind, runID, true
+}
+
+// upsertOrphanCandidateTx 写入或递增孤儿候选。仅当 seen_count>=2 且 now-first_seen_at>=7*24h 时转 pending。
+func upsertOrphanCandidateTx(ctx context.Context, tx *sql.Tx, repositoryID, snapshotID string, now time.Time) error {
+	nowStr := now.UTC().Format(time.RFC3339)
+	var (
+		id        string
+		source    string
+		state     string
+		firstSeen string
+		seenCount int
+	)
+	err := tx.QueryRowContext(ctx,
+		`SELECT id, source, state, first_seen_at, seen_count FROM snapshot_deletions
+		 WHERE repository_id = ? AND snapshot_id = ?`,
+		repositoryID, snapshotID,
+	).Scan(&id, &source, &state, &firstSeen, &seenCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 孤儿记录仍绑定仓库所属 Agent，避免 snapshot_deletions.agent_id 的外键为空。
+		var agentID string
+		if err := tx.QueryRowContext(ctx, "SELECT agent_id FROM repositories WHERE id = ?", repositoryID).Scan(&agentID); err != nil {
+			return fmt.Errorf("find repository agent: %w", err)
+		}
+		newID := model.NewUUIDv7()
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO snapshot_deletions
+			   (id, repository_id, agent_id, snapshot_id, source, state,
+			    first_seen_at, last_seen_at, seen_count, next_attempt_at, attempt,
+			    run_id, lease_expires_at, error_code, error_message, requested_by,
+			    created_at, updated_at, completed_at)
+			 VALUES (?, ?, ?, ?, 'orphan', 'candidate', ?, ?, 1, NULL, 0,
+			         NULL, NULL, NULL, NULL, '', ?, ?, NULL)`,
+			newID, repositoryID, agentID, snapshotID, nowStr, nowStr, nowStr, nowStr); err != nil {
+			return fmt.Errorf("insert orphan candidate: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read orphan candidate: %w", err)
+	}
+	// 已有 manual 意图或已进入删除流程的记录不被扫描回退或修改。
+	if source == string(model.SnapshotDeletionManual) || state != string(model.SnapshotDeletionCandidate) {
+		return nil
+	}
+	// 递增 seen_count，保留最初 first_seen_at。
+	seenCount++
+	nextState := string(model.SnapshotDeletionCandidate)
+	if seenCount >= 2 && now.Sub(parseTime(firstSeen)) >= 7*24*time.Hour {
+		nextState = string(model.SnapshotDeletionPending)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE snapshot_deletions
+		 SET seen_count=?, state=?, last_seen_at=?, updated_at=?
+		 WHERE id=?`,
+		seenCount, nextState, nowStr, nowStr, id); err != nil {
+		return fmt.Errorf("update orphan candidate: %w", err)
+	}
+	return nil
+}
+
+// deleteAbsentCandidatesTx 删除已从远端消失的候选记录。
+func deleteAbsentCandidatesTx(ctx context.Context, tx *sql.Tx, repositoryID string, snapshots []model.Snapshot) error {
+	// 收集远端存在的 snapshotID。
+	present := map[string]struct{}{}
+	for _, snap := range snapshots {
+		present[snap.ID] = struct{}{}
+	}
+	rows, err := tx.QueryContext(ctx,
+		`SELECT snapshot_id FROM snapshot_deletions
+		 WHERE repository_id = ? AND source = 'orphan' AND state = 'candidate'`,
+		repositoryID)
+	if err != nil {
+		return fmt.Errorf("list orphan candidates: %w", err)
+	}
+	var absent []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan orphan candidate: %w", err)
+		}
+		if _, ok := present[id]; !ok {
+			absent = append(absent, id)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close orphan candidates: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("list orphan candidates: %w", err)
+	}
+	for _, id := range absent {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM snapshot_deletions WHERE repository_id = ? AND snapshot_id = ? AND source = 'orphan' AND state = 'candidate'`,
+			repositoryID, id); err != nil {
+			return fmt.Errorf("delete absent orphan candidate: %w", err)
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

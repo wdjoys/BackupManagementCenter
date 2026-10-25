@@ -62,7 +62,15 @@ export default {
     "chat_id": "Chat ID",
     "chat_id_help": "目标群组、频道或个人的 Chat ID",
     "clear_confirm_title": "确认清除 Telegram 配置",
-    "clear_confirm_desc": "清除后将停止向 Telegram 推送备份失败通知，确认清除吗？"
+    "clear_confirm_desc": "清除后将停止向 Telegram 推送备份失败通知，确认清除吗？",
+    "password_title": "管理员密码",
+    "password_desc": "修改当前登录管理员的登录密码",
+    "current_password": "当前密码",
+    "new_password": "新密码",
+    "password_help": "至少 10 个字符；修改后其他设备上的登录会失效",
+    "change_password": "修改密码",
+    "password_changed": "密码已修改",
+    "password_change_failed": "修改密码失败"
   },
   "theme": {
     "toggle": "切换主题",
@@ -705,12 +713,14 @@ export default {
     "password_min_length": "密码长度至少为 8 个字符",
     "confirm_password_required": "请确认密码",
     "passwords_must_match": "两次输入的密码不一致",
+    "new_password_min_length": "新密码长度至少为 10 个字符",
     "bot_token_required": "请填写 Bot Token",
     "chat_id_required": "请填写 Chat ID"
   },
   "errors": {
     "unauthorized": "未登录或登录已过期，请重新登录",
     "invalid_credentials": "用户名或密码错误",
+    "invalid_current_password": "当前密码不正确",
     "rate_limited": "操作过于频繁，请稍后再试",
     "not_found": "请求的资源不存在",
     "validation_failed": "请求参数校验失败",

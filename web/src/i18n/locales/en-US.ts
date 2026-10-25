@@ -62,7 +62,15 @@ export default {
     "chat_id": "Chat ID",
     "chat_id_help": "Target chat, group, or channel ID",
     "clear_confirm_title": "Clear Telegram Configuration",
-    "clear_confirm_desc": "Are you sure you want to stop receiving Telegram failure alerts?"
+    "clear_confirm_desc": "Are you sure you want to stop receiving Telegram failure alerts?",
+    "password_title": "Administrator Password",
+    "password_desc": "Change the password of the signed-in administrator",
+    "current_password": "Current Password",
+    "new_password": "New Password",
+    "password_help": "At least 10 characters; other devices will be signed out",
+    "change_password": "Change Password",
+    "password_changed": "Password changed",
+    "password_change_failed": "Failed to change password"
   },
   "theme": {
     "toggle": "Toggle theme",
@@ -705,12 +713,14 @@ export default {
     "password_min_length": "Password must be at least 8 characters",
     "confirm_password_required": "Confirmation is required",
     "passwords_must_match": "Passwords do not match",
+    "new_password_min_length": "New password must be at least 10 characters",
     "bot_token_required": "Bot Token is required",
     "chat_id_required": "Chat ID is required"
   },
   "errors": {
     "unauthorized": "Not signed in or session expired, please sign in again",
     "invalid_credentials": "Invalid username or password",
+    "invalid_current_password": "Current password is incorrect",
     "rate_limited": "Too many requests, please try again later",
     "not_found": "The requested resource does not exist",
     "validation_failed": "Request validation failed",

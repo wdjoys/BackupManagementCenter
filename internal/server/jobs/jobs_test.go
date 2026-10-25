@@ -587,15 +587,19 @@ func (s *fakeStore) GetAdminByID(ctx context.Context, id string) (*model.Admin, 
 func (s *fakeStore) UpdateAdminLastLogin(ctx context.Context, id string, at time.Time) error {
 	return nil
 }
-func (s *fakeStore) ResetAdmin(ctx context.Context) error                       { return nil }
-func (s *fakeStore) CreateSession(ctx context.Context, s1 *model.Session) error { return nil }
+func (s *fakeStore) UpdateAdminPassword(ctx context.Context, id, hash string) error { return nil }
+func (s *fakeStore) ResetAdmin(ctx context.Context) error                           { return nil }
+func (s *fakeStore) CreateSession(ctx context.Context, s1 *model.Session) error     { return nil }
 func (s *fakeStore) GetSession(ctx context.Context, idHash string) (*model.Session, error) {
 	return nil, store.ErrNotFound
 }
 func (s *fakeStore) TouchSession(ctx context.Context, idHash string, lastSeen time.Time) error {
 	return nil
 }
-func (s *fakeStore) DeleteSession(ctx context.Context, idHash string) error         { return nil }
+func (s *fakeStore) DeleteSession(ctx context.Context, idHash string) error { return nil }
+func (s *fakeStore) DeleteOtherSessions(ctx context.Context, adminID, keep string) error {
+	return nil
+}
 func (s *fakeStore) DeleteExpiredSessions(ctx context.Context, now time.Time) error { return nil }
 func (s *fakeStore) CreateEnrollmentToken(ctx context.Context, t *model.EnrollmentToken) error {
 	return nil

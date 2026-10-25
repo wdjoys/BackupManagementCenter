@@ -215,6 +215,15 @@ func Logout(ctx context.Context, st SessionStore, r *http.Request) {
 	}
 }
 
+// SessionHash 返回当前请求会话 cookie 对应的存储哈希；无会话时返回空串。
+// 修改密码时用它保留当前会话、撤销其他会话。
+func SessionHash(r *http.Request) string {
+	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
+		return secrets.HashToken(c.Value)
+	}
+	return ""
+}
+
 func newToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {

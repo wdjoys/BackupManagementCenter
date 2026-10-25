@@ -260,6 +260,20 @@ func (s *sqliteStore) UpdateAdminLastLogin(ctx context.Context, adminID string, 
 	return nil
 }
 
+func (s *sqliteStore) UpdateAdminPassword(ctx context.Context, adminID, passwordHash string) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE admins SET password_hash = ? WHERE id = ?",
+		passwordHash, adminID,
+	)
+	if err != nil {
+		return fmt.Errorf("update admin password: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *sqliteStore) ResetAdmin(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -325,6 +339,17 @@ func (s *sqliteStore) DeleteSession(ctx context.Context, idHash string) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE id_hash = ?", idHash)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) DeleteOtherSessions(ctx context.Context, adminID, keepIDHash string) error {
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM sessions WHERE admin_id = ? AND id_hash <> ?",
+		adminID, keepIDHash,
+	)
+	if err != nil {
+		return fmt.Errorf("delete other sessions: %w", err)
 	}
 	return nil
 }

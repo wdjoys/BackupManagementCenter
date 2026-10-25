@@ -30,6 +30,7 @@ type Store interface {
 	GetAdminByUsername(ctx context.Context, username string) (*model.Admin, error)
 	GetAdminByID(ctx context.Context, id string) (*model.Admin, error)
 	UpdateAdminLastLogin(ctx context.Context, adminID string, at time.Time) error
+	UpdateAdminPassword(ctx context.Context, adminID, passwordHash string) error
 	ResetAdmin(ctx context.Context) error
 
 	// Sessions
@@ -37,6 +38,9 @@ type Store interface {
 	GetSession(ctx context.Context, idHash string) (*model.Session, error)
 	TouchSession(ctx context.Context, idHash string, lastSeen time.Time) error
 	DeleteSession(ctx context.Context, idHash string) error
+	// DeleteOtherSessions 删除该管理员的其余会话（保留 keepIDHash），
+	// 用于修改密码后让其他设备下线而当前会话继续可用。
+	DeleteOtherSessions(ctx context.Context, adminID, keepIDHash string) error
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
 
 	// Enrollment tokens (one-time, short-lived)

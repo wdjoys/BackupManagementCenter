@@ -124,6 +124,7 @@ func New(s *Server) http.Handler {
 			r.Use(func(next http.Handler) http.Handler {
 				return s.requireAuth(next.ServeHTTP)
 			})
+			r.Post("/auth/password", s.handleChangePassword)
 			r.Get("/dashboard", s.handleDashboard)
 			r.Get("/logs/server", s.handleListServerLogs)
 			r.Get("/logs/agent", s.handleListAgentLogs)

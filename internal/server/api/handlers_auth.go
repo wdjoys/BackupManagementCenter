@@ -150,7 +150,68 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// GET /auth/me
+// POST /auth/password — 修改当前管理员密码；成功后撤销其他会话，当前会话保留。
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	a, ok := auth.AdminFromContext(r.Context())
+	if !ok {
+		writeErr(w, http.StatusUnauthorized, "unauthorized", "login required")
+		return
+	}
+	if ok, retryAfter := s.allowAuthAttempt(r); !ok {
+		writeRateLimited(w, retryAfter)
+		return
+	}
+	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if body.CurrentPassword == "" || body.NewPassword == "" {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "current_password and new_password are required")
+		return
+	}
+	// 与 setup 保持一致的最小长度；拒绝与旧密码相同（无意义的重置）。
+	if len(body.NewPassword) < 10 {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "new password must be at least 10 chars")
+		return
+	}
+	if body.NewPassword == body.CurrentPassword {
+		writeErr(w, http.StatusBadRequest, "validation_failed", "new password must differ from current password")
+		return
+	}
+	admin, err := s.ST.GetAdminByID(r.Context(), a.ID)
+	if err != nil {
+		if !mapStoreErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		}
+		return
+	}
+	if !auth.VerifyPassword(body.CurrentPassword, admin.PasswordHash) {
+		writeErr(w, http.StatusUnauthorized, "invalid_current_password", "current password is incorrect")
+		return
+	}
+	hash, err := auth.HashPassword(body.NewPassword)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if err := s.ST.UpdateAdminPassword(r.Context(), admin.ID, hash); err != nil {
+		if !mapStoreErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		}
+		return
+	}
+	// 其他设备上的登录失效；当前设备的会话保留，避免改完密码就被踢回登录页。
+	if err := s.ST.DeleteOtherSessions(r.Context(), admin.ID, auth.SessionHash(r)); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	s.Jobs.Audit(r.Context(), "admin", admin.ID, "auth.change_password", "admin", admin.ID, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // GET /auth/me
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	a, ok := auth.AdminFromContext(r.Context())

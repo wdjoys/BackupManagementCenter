@@ -144,6 +144,7 @@ func (f *fakeStore) GetAdminByID(_ context.Context, _ string) (*model.Admin, err
 	return nil, store.ErrNotFound
 }
 func (f *fakeStore) UpdateAdminLastLogin(_ context.Context, _ string, _ time.Time) error { return nil }
+func (f *fakeStore) UpdateAdminPassword(_ context.Context, _, _ string) error            { return nil }
 func (f *fakeStore) ResetAdmin(_ context.Context) error                                  { return nil }
 func (f *fakeStore) CreateSession(_ context.Context, _ *model.Session) error             { return nil }
 func (f *fakeStore) GetSession(_ context.Context, _ string) (*model.Session, error) {
@@ -151,6 +152,7 @@ func (f *fakeStore) GetSession(_ context.Context, _ string) (*model.Session, err
 }
 func (f *fakeStore) TouchSession(_ context.Context, _ string, _ time.Time) error { return nil }
 func (f *fakeStore) DeleteSession(_ context.Context, _ string) error             { return nil }
+func (f *fakeStore) DeleteOtherSessions(_ context.Context, _, _ string) error    { return nil }
 func (f *fakeStore) DeleteExpiredSessions(_ context.Context, now time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -1,10 +1,10 @@
 package api
 
 import (
-	"errors"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -225,5 +225,87 @@ func TestLoginRateLimitSetsRetryAfter(t *testing.T) {
 	secs, err := strconv.Atoi(got)
 	if err != nil || secs < 1 || secs > 900 {
 		t.Fatalf("Retry-After = %q, want 1..900 seconds", got)
+	}
+}
+
+// 修改密码：校验当前密码、成功后新旧密码互换可用性，并只保留当前会话。
+func TestChangePassword(t *testing.T) {
+	s, st, cleanup := newTestServerWithAdmin(t)
+	defer cleanup()
+	handler := New(s)
+
+	login := func(password string) (*http.Cookie, *http.Cookie) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"username": "admin", "password": password})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			return nil, nil
+		}
+		var sessionCookie, csrfCookie *http.Cookie
+		for _, c := range rec.Result().Cookies() {
+			switch c.Name {
+			case auth.SessionCookie:
+				sessionCookie = c
+			case auth.CSRFCookie:
+				csrfCookie = c
+			}
+		}
+		return sessionCookie, csrfCookie
+	}
+	change := func(session, csrf *http.Cookie, current, next string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"current_password": current, "new_password": next})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/password", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://example.com")
+		req.Header.Set(auth.CSRFHeader, csrf.Value)
+		req.AddCookie(session)
+		req.AddCookie(csrf)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 两台设备各有一个会话：改密后旧设备的会话必须失效，当前设备保留。
+	oldSession, _ := login("AdminPassword123")
+	curSession, curCSRF := login("AdminPassword123")
+	if oldSession == nil || curSession == nil {
+		t.Fatal("login failed")
+	}
+
+	if rec := change(curSession, curCSRF, "WrongPassword123", "NewPassword456"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong current password: got %d, want 401: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := st.GetAdminByID(context.Background(), "admin-1"); err != nil {
+		t.Fatalf("GetAdminByID: %v", err)
+	}
+	admin, _ := st.GetAdminByID(context.Background(), "admin-1")
+	if !auth.VerifyPassword("AdminPassword123", admin.PasswordHash) {
+		t.Fatal("password must not change after a failed attempt")
+	}
+
+	if rec := change(curSession, curCSRF, "AdminPassword123", "NewPassword456"); rec.Code != http.StatusNoContent {
+		t.Fatalf("change password: got %d, want 204: %s", rec.Code, rec.Body.String())
+	}
+
+	admin, _ = st.GetAdminByID(context.Background(), "admin-1")
+	if !auth.VerifyPassword("NewPassword456", admin.PasswordHash) {
+		t.Fatal("new password not persisted")
+	}
+	if _, err := st.GetSession(context.Background(), secrets.HashToken(curSession.Value)); err != nil {
+		t.Fatalf("current session must survive password change: %v", err)
+	}
+	if _, err := st.GetSession(context.Background(), secrets.HashToken(oldSession.Value)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("other sessions must be revoked, got err=%v", err)
+	}
+
+	if oldSession, _ := login("AdminPassword123"); oldSession != nil {
+		t.Fatal("old password must stop working")
+	}
+	if newSession, _ := login("NewPassword456"); newSession == nil {
+		t.Fatal("new password must work")
 	}
 }

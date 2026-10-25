@@ -5,13 +5,13 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { apiGet, apiPut, isApiClientError } from '@/api/client'
+import { apiGet, apiPost, apiPut, isApiClientError } from '@/api/client'
 import type { TelegramSettings, TelegramSettingsUpdate } from '@/api/types'
 import { toastSuccess, toastError } from '@/lib/toast'
 import { AppErrorState } from '@/components/AppErrorState'
 import { PageLoadingState } from '@/components/PageLoadingState'
 import { ConfirmActionDialog } from '@/components/ConfirmActionDialog'
-import { Send, Trash2, CheckCircle2, Loader2, KeyRound, Save } from 'lucide-react'
+import { Send, Trash2, CheckCircle2, Loader2, KeyRound, Lock, Save } from 'lucide-react'
 
 export const SettingsView: React.FC = () => {
   const { t } = useTranslation()
@@ -26,6 +26,12 @@ export const SettingsView: React.FC = () => {
   const [validationError, setValidationError] = useState<string | null>(null)
 
   const [clearDialogOpen, setClearDialogOpen] = useState(false)
+
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [changingPassword, setChangingPassword] = useState(false)
+  const [passwordError, setPasswordError] = useState<string | null>(null)
 
   const loadSettings = async () => {
     setLoading(true)
@@ -72,6 +78,45 @@ export const SettingsView: React.FC = () => {
       toastError(isApiClientError(err) ? err.message : t('settings.save_failed'))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleChangePassword = async (e: React.SyntheticEvent) => {
+    e.preventDefault()
+    setPasswordError(null)
+
+    if (!currentPassword) {
+      setPasswordError(t('validation.password_required'))
+      return
+    }
+    // 服务端要求新密码至少 10 个字符（与初始 setup 一致）。
+    if (newPassword.length < 10) {
+      setPasswordError(t('validation.new_password_min_length'))
+      return
+    }
+    if (!confirmPassword) {
+      setPasswordError(t('validation.confirm_password_required'))
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError(t('validation.passwords_must_match'))
+      return
+    }
+
+    setChangingPassword(true)
+    try {
+      await apiPost('/auth/password', {
+        current_password: currentPassword,
+        new_password: newPassword,
+      })
+      toastSuccess(t('settings.password_changed'))
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+    } catch (err: unknown) {
+      setPasswordError(isApiClientError(err) ? err.message : t('settings.password_change_failed'))
+    } finally {
+      setChangingPassword(false)
     }
   }
 
@@ -202,6 +247,92 @@ export const SettingsView: React.FC = () => {
                   <Save className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
                 {t('common.save')}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border bg-card/60 shadow-md">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400">
+              <Lock className="h-4 w-4" aria-hidden="true" />
+            </div>
+            <div>
+              <CardTitle className="text-sm font-semibold">
+                {t('settings.password_title')}
+              </CardTitle>
+              <CardDescription className="text-xs">
+                {t('settings.password_desc')}
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleChangePassword} className="space-y-4 max-w-lg">
+            {passwordError && (
+              <Alert variant="destructive" className="py-2 text-xs">
+                <AlertDescription>{passwordError}</AlertDescription>
+              </Alert>
+            )}
+
+            <div className="space-y-1.5">
+              <Label htmlFor="currentPassword" className="text-xs">
+                {t('settings.current_password')}
+              </Label>
+              <Input
+                id="currentPassword"
+                type="password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                disabled={changingPassword}
+                className="h-9 text-xs"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="newPassword" className="text-xs">
+                {t('settings.new_password')}
+              </Label>
+              <Input
+                id="newPassword"
+                type="password"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                disabled={changingPassword}
+                className="h-9 text-xs"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                {t('settings.password_help')}
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="confirmNewPassword" className="text-xs">
+                {t('auth.confirm_password')}
+              </Label>
+              <Input
+                id="confirmNewPassword"
+                type="password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                disabled={changingPassword}
+                className="h-9 text-xs"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <Button type="submit" disabled={changingPassword} className="h-9 text-xs gap-1.5">
+                {changingPassword ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                {t('settings.change_password')}
               </Button>
             </div>
           </form>

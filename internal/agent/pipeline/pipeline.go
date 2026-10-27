@@ -94,6 +94,29 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.2f %s", v, units[i])
 }
 
+// uploadProgressGate 决定上传进度是否对外上报/记录：每跨过 10% 一档，
+// 或距上次上报满 1 分钟一次，以先到者为准。restic 扫描期间总量会增长，
+// 百分比可能回退，档位只前进不回退。
+type uploadProgressGate struct {
+	lastStep   int
+	lastReport time.Time
+	now        func() time.Time
+}
+
+func (g *uploadProgressGate) allow(percent float64) bool {
+	now := g.now()
+	if step := int(percent) / 10; step > g.lastStep && step < 10 {
+		g.lastStep = step
+		g.lastReport = now
+		return true
+	}
+	if !g.lastReport.IsZero() && now.Sub(g.lastReport) < time.Minute {
+		return false
+	}
+	g.lastReport = now
+	return true
+}
+
 // describeBackupSource 生成不含凭据的备份源描述，用于运行日志。
 func describeBackupSource(task model.BackupTask) string {
 	switch task.Kind {
@@ -282,18 +305,18 @@ func runBackup(ctx context.Context, d Deps, tempDir string, params []byte, secre
 		return &Result{SnapshotIDs: []string{snapshotID}}, nil
 	}
 	var summary restic.BackupSummary
-	lastStep := 0
+	gate := &uploadProgressGate{now: time.Now}
 	onProgress := func(p model.Progress) {
-		d.progress(p)
 		if p.Phase != model.BackupPhaseUploading {
+			d.progress(p)
 			return
 		}
-		// 每跨过一个 10% 记录一条；restic 扫描期间总量会增长，百分比可能回退，只记录更高的档位。
-		step := int(p.Percent) / 10
-		if step > lastStep && step < 10 {
-			lastStep = step
-			d.logf("info", "上传进度 %d%%：%s / %s，文件 %d / %d", step*10, humanBytes(p.BytesDone), humanBytes(p.BytesTotal), p.FilesDone, p.FilesTotal)
+		// restic 每秒一条 status；只按 10% 档位或每分钟上报一次，避免刷库和刷日志。
+		if !gate.allow(p.Percent) {
+			return
 		}
+		d.progress(p)
+		d.logf("info", "上传进度 %.0f%%：%s / %s，文件 %d / %d", p.Percent, humanBytes(p.BytesDone), humanBytes(p.BytesTotal), p.FilesDone, p.FilesTotal)
 	}
 	d.logf("info", "开始上传到 restic 仓库")
 	if task.Kind == "filesystem" {

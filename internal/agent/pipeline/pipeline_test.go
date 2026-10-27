@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"backupmanagementcenter/internal/agent/backup"
 	"backupmanagementcenter/internal/agent/restic"
@@ -401,6 +402,34 @@ func (backupScriptExecutor) Run(_ context.Context, cmd backup.Cmd, onStdout func
 	return 0, nil
 }
 
+func TestUploadProgressGateReportsAtDecilesOrEveryMinute(t *testing.T) {
+	now := time.Unix(0, 0)
+	g := &uploadProgressGate{now: func() time.Time { return now }}
+
+	check := func(percent float64, want bool) {
+		t.Helper()
+		if got := g.allow(percent); got != want {
+			t.Fatalf("allow(%.1f) = %v, want %v", percent, got, want)
+		}
+	}
+
+	check(0, true) // 首条立即上报
+	now = now.Add(30 * time.Second)
+	check(3, false) // 同档位且不足 1 分钟
+	now = now.Add(31 * time.Second)
+	check(11, true) // 跨 10% 档位
+	now = now.Add(9 * time.Second)
+	check(15, false) // 同档位未满 1 分钟
+	now = now.Add(52 * time.Second)
+	check(15, true) // 满 1 分钟兜底上报
+	now = now.Add(time.Second)
+	check(30, true) // 跨 10% 档位
+	now = now.Add(time.Second)
+	check(25, false) // 档位回退不算跨档，且未满 1 分钟
+	now = now.Add(time.Minute)
+	check(100, true) // 100% 不是 10% 档位，靠 1 分钟兜底
+}
+
 func TestRunBackupReportsSnapshotProgressAndLogs(t *testing.T) {
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o600); err != nil {
@@ -457,6 +486,67 @@ func TestRunBackupReportsSnapshotProgressAndLogs(t *testing.T) {
 		}
 	}
 	_ = progress
+}
+
+// denseProgressExecutor 在备份时每秒级地吐 status（同档位多条 + 一次跨档），
+// 用于验证上传进度上报被限流。
+type denseProgressExecutor struct{}
+
+func (denseProgressExecutor) Run(_ context.Context, cmd backup.Cmd, onStdout func(string), _ func(string)) (int, error) {
+	if len(cmd.Args) == 0 {
+		return 1, nil
+	}
+	switch cmd.Args[0] {
+	case "snapshots":
+		onStdout("[]")
+	case "backup":
+		for _, pct := range []float64{0.51, 0.52, 0.53, 0.54, 0.59} {
+			onStdout(fmt.Sprintf(`{"message_type":"status","percent_done":%v,"total_bytes":1000,"bytes_done":500}`, pct))
+		}
+		onStdout(`{"message_type":"status","percent_done":0.62,"total_bytes":1000,"bytes_done":620}`)
+		onStdout(`{"message_type":"summary","snapshot_id":"abc123"}`)
+	}
+	return 0, nil
+}
+
+func TestRunBackupThrottlesUploadProgress(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	params, err := json.Marshal(model.BackupTask{
+		PlanID:     "p1",
+		Kind:       model.KindFilesystem,
+		Repository: model.RepoAccess{RepositoryPath: "repo"},
+		Source:     model.PlanSource{Paths: []string{src}},
+		Tags:       []string{"run:r1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var uploading, progressLogs int
+	deps := Deps{
+		Exec: denseProgressExecutor{},
+		Logf: func(level, format string, args ...any) {
+			if strings.HasPrefix(fmt.Sprintf(format, args...), "上传进度") {
+				progressLogs++
+			}
+		},
+		Progress: func(p model.Progress) {
+			if p.Phase == model.BackupPhaseUploading {
+				uploading++
+			}
+		},
+	}
+
+	if _, err := Execute(context.Background(), deps, t.TempDir(), bmcv1.ExecuteCommand_BACKUP, params, backup.SecretBundle{ResticPassword: "pw"}); err != nil {
+		t.Fatalf("Execute BACKUP: %v", err)
+	}
+	// 5 条同档位只留 1 条，跨到 60% 再留 1 条。
+	if uploading != 2 || progressLogs != 2 {
+		t.Fatalf("uploading progress = %d, progress logs = %d, want 2/2", uploading, progressLogs)
+	}
 }
 
 // protectionRestoreExecutor 在收到 `restic restore` 时把预置的保护快照内容写到

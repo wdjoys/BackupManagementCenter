@@ -467,7 +467,11 @@ func (s *Scheduler) tickStaleQueued(ctx context.Context, now time.Time) {
 				timeout = time.Duration(p.TimeoutSeconds) * time.Second
 			}
 		}
-		if now.Before(r.QueuedAt.Add(timeout)) {
+		start := r.QueuedAt
+		if r.StartedAt != nil {
+			start = *r.StartedAt
+		}
+		if now.Before(start.Add(timeout)) {
 			continue
 		}
 		if !s.agentOffline(ctx, r.AgentID) {

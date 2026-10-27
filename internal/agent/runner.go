@@ -180,13 +180,9 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 		return
 	}
 
-	// Check if already running (duplicate command_id)
+	// 已在执行的重派也要确认，避免服务端因收不到确认而反复重派。
 	r.mu.Lock()
-	if _, exists := r.running[runID]; exists {
-		r.mu.Unlock()
-		log.Printf("[WARN] run %s already in progress, ignoring duplicate", runID)
-		return
-	}
+	_, running := r.running[runID]
 	r.mu.Unlock()
 
 	// Send CommandAccepted immediately
@@ -201,6 +197,10 @@ func (r *Runner) Execute(ctx context.Context, stream bmcv1.AgentControl_ConnectC
 	}
 	if err := stream.Send(accepted); err != nil {
 		log.Printf("[ERROR] send CommandAccepted: %v", err)
+		return
+	}
+	if running {
+		log.Printf("[INFO] run %s already in progress, acknowledged duplicate", runID)
 		return
 	}
 

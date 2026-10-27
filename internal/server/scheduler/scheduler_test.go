@@ -681,6 +681,26 @@ func TestStaleQueuedRunFailsWhenAgentOffline(t *testing.T) {
 	}
 }
 
+func TestStaleQueuedRetryUsesOriginalStartTime(t *testing.T) {
+	fst := newFakeStore(t)
+	fst.plans = append(fst.plans, model.Plan{ID: "plan-1", TimeoutSeconds: 60})
+	started := mustTime("2026-08-22T10:10:00Z")
+	fst.runs = append(fst.runs, model.Run{
+		ID: "run-retry", PlanID: "plan-1", AgentID: "agent-1", Operation: model.OpBackup,
+		Status: model.RunQueued, QueuedAt: mustTime("2026-08-22T10:00:00Z"), StartedAt: &started,
+	})
+	fst.agents["agent-1"] = model.Agent{ID: "agent-1", Status: model.AgentOffline}
+	s := New(fst, newFakeStarter(), nil, 0)
+	tickAt(s, mustTime("2026-08-22T10:10:30Z"))
+	if len(fst.transitions) != 0 {
+		t.Fatalf("离线重排的超时不应从更早的入队时间计算: %+v", fst.transitions)
+	}
+	tickAt(s, mustTime("2026-08-22T10:11:00Z"))
+	if len(fst.transitions) != 1 || fst.transitions[0].to != model.RunFailed {
+		t.Fatalf("离线重排仍应从首次开始时间起按期限失败: %+v", fst.transitions)
+	}
+}
+
 // TestStaleQueuedRunUsesDefaultTimeoutWhenNoPlan verifies that a system
 // run (no plan_id) uses the 300s default timeout.
 func TestStaleQueuedRunUsesDefaultTimeoutWhenNoPlan(t *testing.T) {

@@ -500,8 +500,8 @@ func markAgentsOfflineOnStartup(ctx context.Context, st agentStatusStore) {
 	}
 }
 
-// recoverStaleRuns 处理重启前遗留的在途 run：可重试的放回队列；破坏性操作
-// （备份/恢复）直接失败，并把被中断的恢复请求一并推进到可人工解除的安全终态。
+// recoverStaleRuns 处理重启前遗留的在途 run：可重试的运行（含备份）放回队列；
+// 不可重试的运行直接失败，并把被中断的恢复请求推进到可人工解除的安全终态。
 //
 // 此前只把恢复 run 置 failed 而不同步 restore_requests.phase，该行会永久停在
 // 中间态（如 restoring）：POST /restores/{id}/resolve 以 restore_conflict 拒绝，
@@ -515,7 +515,6 @@ func recoverStaleRuns(ctx context.Context, st staleRunStore, notifier runFailure
 	for _, run := range stale {
 		if startupRetryable(run.Operation) {
 			_ = st.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
-				r.StartedAt = nil
 				r.LeaseExpiresAt = nil
 				r.ErrorCode = ""
 				r.ErrorMessage = ""

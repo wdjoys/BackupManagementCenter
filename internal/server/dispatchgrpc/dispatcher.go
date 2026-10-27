@@ -850,7 +850,6 @@ func (d *Dispatcher) checkTimeouts() {
 		if run.LeaseExpiresAt != nil && now.After(*run.LeaseExpiresAt) {
 			if retryableOperation(run.Operation) {
 				if err := d.store.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
-					r.StartedAt = nil
 					r.LeaseExpiresAt = nil
 					r.ErrorCode = ""
 					r.ErrorMessage = ""
@@ -887,12 +886,12 @@ func (d *Dispatcher) checkTimeouts() {
 
 		timeout := time.Duration(timeoutSeconds) * time.Second
 
-		// Check queued time for dispatched runs, started time for running runs
+		// 已开始过的重派沿用首次开始时间；尚未开始的运行按入队时间计时。
 		var elapsed time.Duration
-		if run.Status == model.RunDispatched {
-			elapsed = now.Sub(run.QueuedAt)
-		} else if run.Status == model.RunRunning && run.StartedAt != nil {
+		if run.StartedAt != nil {
 			elapsed = now.Sub(*run.StartedAt)
+		} else if run.Status == model.RunDispatched {
+			elapsed = now.Sub(run.QueuedAt)
 		}
 
 		if elapsed > timeout {

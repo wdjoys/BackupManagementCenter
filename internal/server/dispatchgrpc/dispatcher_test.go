@@ -304,6 +304,44 @@ func TestCheckTimeoutsRunningTimeoutNotifies(t *testing.T) {
 	}
 }
 
+func TestRetryLeasePreservesStartAndTimeoutUsesIt(t *testing.T) {
+	st := newFakeStore()
+	started := time.Now().UTC().Add(-time.Minute)
+	expired := time.Now().UTC().Add(-time.Second)
+	run := queuedRun("run-retry")
+	run.Status = model.RunDispatched
+	run.StartedAt = &started
+	run.LeaseExpiresAt = &expired
+	st.addRun(run)
+	d, _ := newTestDispatcher(st, &fakeSource{})
+	d.enqueuedRuns[run.ID] = true // 模拟仍被现有仓库 worker 持有
+	d.checkTimeouts()
+	got := st.snapshot(run.ID)
+	if got.Status != model.RunQueued || got.StartedAt == nil || !got.StartedAt.Equal(started) {
+		t.Fatalf("租约过期重排应保留首次开始时间: %+v", got)
+	}
+	lease := time.Now().UTC().Add(time.Minute)
+	if err := st.TransitionRun(context.Background(), run.ID, model.RunQueued, model.RunDispatched, func(r *model.Run) {
+		r.LeaseExpiresAt = &lease
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d.checkTimeouts()
+	if got := st.snapshot(run.ID); got.Status != model.RunDispatched {
+		t.Fatalf("尚未超过首次开始时间后的超时，不应按更早的入队时间失败: %+v", got)
+	}
+	old := time.Now().UTC().Add(-10 * time.Minute)
+	overdue := queuedRun("run-overdue")
+	overdue.Status = model.RunDispatched
+	overdue.StartedAt = &old
+	overdue.LeaseExpiresAt = &lease
+	st.addRun(overdue)
+	d.checkTimeouts()
+	if got := st.snapshot(overdue.ID); got.Status != model.RunFailed || got.ErrorCode != model.ErrTimeout {
+		t.Fatalf("重派仍需按首次开始时间超时: %+v", got)
+	}
+}
+
 func TestCheckTimeoutsDispatchedTimeoutNotifies(t *testing.T) {
 	st := newFakeStore()
 	r := queuedRun("run-d") // QueuedAt one hour ago exceeds the 300s default

@@ -486,8 +486,10 @@ func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca 
 
 	if run.Status == model.RunDispatched {
 		err := s.store.TransitionRun(ctx, runID, model.RunDispatched, model.RunRunning, func(r *model.Run) {
-			now := time.Now().UTC()
-			r.StartedAt = &now
+			if r.StartedAt == nil {
+				now := time.Now().UTC()
+				r.StartedAt = &now
+			}
 			r.LeaseExpiresAt = nil
 		})
 		if err == nil && run.Operation == model.OpRestore {
@@ -499,6 +501,9 @@ func (s *Service) handleCommandAccepted(ctx context.Context, agentID string, ca 
 		}
 		if err == nil {
 			s.appendServerRunLog(ctx, runID, "info", "Agent 已接收任务，开始执行")
+			if updated, getErr := s.store.GetRun(ctx, runID); getErr == nil && updated.Status == model.RunRunning {
+				s.bus.Publish(runID, events.Event{Type: events.State, Run: updated})
+			}
 		}
 		return err
 	}
@@ -758,7 +763,9 @@ func (s *Service) handleRunResult(ctx context.Context, agentID string, result *b
 			// Fast-finished runs may still be 'dispatched'.
 			err = s.store.TransitionRun(ctx, runID, model.RunDispatched, toStatus, func(r *model.Run) {
 				now := time.Now().UTC()
-				r.StartedAt = &now
+				if r.StartedAt == nil {
+					r.StartedAt = &now
+				}
 				r.FinishedAt = &now
 				r.ErrorCode = result.GetErrorCode()
 				r.ErrorMessage = result.GetErrorMessage()
@@ -1003,7 +1010,6 @@ func (s *Service) handleDisconnect(agentID string) {
 				}
 				if retryableOperation(run.Operation) {
 					_ = s.store.TransitionRun(ctx, run.ID, run.Status, model.RunQueued, func(r *model.Run) {
-						r.StartedAt = nil
 						r.LeaseExpiresAt = nil
 						r.ErrorCode = ""
 						r.ErrorMessage = ""

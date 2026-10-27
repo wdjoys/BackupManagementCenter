@@ -137,9 +137,20 @@ func TestRunner_DuplicateCommandIdIgnored(t *testing.T) {
 	runner.Execute(ctx, received, cmd)
 	time.Sleep(100 * time.Millisecond)
 
-	// Second call with same command_id should be ignored
-	runner.Execute(ctx, received, cmd)
-	time.Sleep(100 * time.Millisecond)
+	// 重连后同一 run 的新命令必须确认，但不能启动第二次执行。
+	retryStream := &fakeStream{}
+	runner.SetStream(retryStream)
+	retry := &bmcv1.ExecuteCommand{
+		CommandId: "cmd-2", RunId: cmd.RunId, Operation: cmd.Operation, ParamsJson: cmd.ParamsJson,
+	}
+	runner.Execute(ctx, retryStream, retry)
+	retryStream.mu.Lock()
+	messages := append([]*bmcv1.AgentMessage(nil), retryStream.sent...)
+	retryStream.mu.Unlock()
+	if len(messages) != 1 || messages[0].GetCommandAccepted().GetRunId() != cmd.RunId ||
+		messages[0].GetCommandAccepted().GetCommandId() != retry.CommandId {
+		t.Fatalf("重派必须在新流确认当前命令: %+v", messages)
+	}
 
 	fake.mu.Lock()
 	calls := fake.calls

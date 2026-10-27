@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"backupmanagementcenter/internal/model"
+	"backupmanagementcenter/internal/server/store"
 )
 
 type fakeAgentStatusStore struct {
@@ -43,5 +44,37 @@ func TestMarkAgentsOfflineOnStartup(t *testing.T) {
 	}
 	if st.status != model.AgentOffline {
 		t.Fatalf("应写入 offline，实际 %q", st.status)
+	}
+}
+
+type staleBackupStore struct {
+	run model.Run
+}
+
+func (s *staleBackupStore) ListRunsByStatus(context.Context, []string) ([]model.Run, error) {
+	return []model.Run{s.run}, nil
+}
+
+func (s *staleBackupStore) TransitionRun(_ context.Context, _ string, from, to string, mutate func(*model.Run)) error {
+	if s.run.Status != from {
+		return store.ErrInvalidTransition
+	}
+	s.run.Status = to
+	mutate(&s.run)
+	return nil
+}
+
+func (*staleBackupStore) FinishRestoreRun(context.Context, store.FinishRestoreRunInput) error {
+	return nil
+}
+
+func TestRestartRequeuePreservesBackupStart(t *testing.T) {
+	started := time.Now().UTC().Add(-time.Hour)
+	st := &staleBackupStore{run: model.Run{
+		ID: "run-1", Operation: model.OpBackup, Status: model.RunRunning, StartedAt: &started,
+	}}
+	recoverStaleRuns(context.Background(), st, nil)
+	if st.run.Status != model.RunQueued || st.run.StartedAt == nil || !st.run.StartedAt.Equal(started) {
+		t.Fatalf("重启重排必须保留备份首次开始时间: %+v", st.run)
 	}
 }

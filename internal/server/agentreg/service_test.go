@@ -115,8 +115,28 @@ func (f *fakeStore) ConsumeEnrollmentToken(_ context.Context, tokenHash string, 
 	return nil, store.ErrTokenInvalid
 }
 
-func (f *fakeStore) ListRunsByStatus(_ context.Context, _ []string) ([]model.Run, error) {
-	return nil, nil
+func (f *fakeStore) ListRunsByStatus(_ context.Context, statuses []string) ([]model.Run, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var runs []model.Run
+	for _, run := range f.runs {
+		for _, status := range statuses {
+			if run.Status == status {
+				runs = append(runs, *run)
+				break
+			}
+		}
+	}
+	return runs, nil
+}
+
+func (f *fakeStore) SetAgentStatus(_ context.Context, agentID string, status model.AgentStatus, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a := f.agents[agentID]; a != nil {
+		a.Status = status
+	}
+	return nil
 }
 
 func (f *fakeStore) ReEnrollAgent(_ context.Context, agentID string, tokenHash string, _ time.Time) error {
@@ -323,6 +343,61 @@ func baseRun(id, planID, status string) model.Run {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+func TestReconnectAcceptedPreservesStartAndPublishesRunning(t *testing.T) {
+	st := newFakeStore()
+	started := time.Now().UTC().Add(-time.Hour)
+	run := baseRun("run-reconnect", "plan-1", model.RunRunning)
+	run.StartedAt = &started
+	st.addRun(run)
+	svc, _ := newTestService(st)
+	svc.handleDisconnect("agent-1")
+	queued := st.snapshot(run.ID)
+	if queued.Status != model.RunQueued || queued.StartedAt == nil || !queued.StartedAt.Equal(started) {
+		t.Fatalf("断线后应保留首次开始时间: %+v", queued)
+	}
+	if err := st.TransitionRun(context.Background(), run.ID, model.RunQueued, model.RunDispatched, func(r *model.Run) {
+		lease := time.Now().Add(time.Minute)
+		r.LeaseExpiresAt = &lease
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ch, cancel := svc.bus.Subscribe(run.ID)
+	defer cancel()
+	if err := svc.handleCommandAccepted(context.Background(), "agent-1", &bmcv1.CommandAccepted{RunId: run.ID}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ch: // 接收日志
+	case <-time.After(time.Second):
+		t.Fatal("没有收到运行日志")
+	}
+	select {
+	case ev := <-ch:
+		if ev.Type != events.State || ev.Run == nil || ev.Run.Status != model.RunRunning ||
+			ev.Run.StartedAt == nil || !ev.Run.StartedAt.Equal(started) || ev.Run.LeaseExpiresAt != nil {
+			t.Fatalf("重连确认应发布保留首次开始时间的运行状态: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("没有收到重连后的运行状态")
+	}
+}
+
+func TestDispatchedResultPreservesPreviousStart(t *testing.T) {
+	st := newFakeStore()
+	started := time.Now().UTC().Add(-time.Hour)
+	run := baseRun("run-late-result", "plan-1", model.RunDispatched)
+	run.StartedAt = &started
+	st.addRun(run)
+	svc, _ := newTestService(st)
+	if err := svc.handleRunResult(context.Background(), "agent-1", failedResult(run.ID)); err != nil {
+		t.Fatal(err)
+	}
+	got := st.snapshot(run.ID)
+	if got.Status != model.RunFailed || got.StartedAt == nil || !got.StartedAt.Equal(started) {
+		t.Fatalf("迟到的结果不能覆盖首次开始时间: %+v", got)
+	}
+}
 
 func TestHandleRunResultRunningFailureNotifies(t *testing.T) {
 	st := newFakeStore()

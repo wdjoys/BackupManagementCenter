@@ -120,6 +120,7 @@ docker compose --env-file deploy/.env.agent -f deploy/docker-compose.agent.yml u
 ## 5. 运维与升级
 
 - **升级顺序**：始终先升级 Server，通过 `curl --fail <PUBLIC_URL>/health/ready` 确认返回 HTTP 200 后，再滚动升级各受管主机上的 Agent。
+- **升级必须真正拉取新镜像**：`docker compose up -d` 不会为已存在的本地同名标签重新拉取；Agent 模板现已声明 `pull_policy: always`，宿主机若是旧版 compose 文件则手工执行 `docker compose pull && docker compose up -d`。否则 Agent 会继续运行旧镜像，表现为新行为（如上传进度上报节奏）完全不生效。
 - **备份重连重派**：已升级 Agent 对仍在执行的同一 run 会重新确认，但不会启动第二次备份；Server 重排时保留首次开始时间，重连后将运行状态推送到 Web，超时仍从该开始时间计算。先升级 Server，再滚动升级 Agent；旧 Agent 在升级前仍可能因缺少重复确认而反复重派。升级前已被旧版本清空的开始时间无法自动恢复，下一次确认会重新记录。此变更不修改配置、数据库结构或 proto 字段；回滚二进制会恢复旧重派行为。
 - **运行去重升级**：Server 启动时自动为 `runs` 增加可空 `dedup_key` 和活跃运行唯一索引；已有运行记录不改写，旧记录仍可读取，重复启动不会重复迁移。新提交的同参数任务在排队、下发或执行期间复用已有运行，终态后可再次提交。升级前停止 Server 并备份数据目录中的 `bmc.db`（包含可能存在的 `bmc.db-wal`/`bmc.db-shm`）及 `master.key`，备份位置由运维自行选择；启动时若存在数据库，程序还会在数据目录创建 `bmc.db.pre-migration-<UTC时间>.bak`。回滚时停止 Server，恢复升级前数据库与主密钥备份，再启动旧版本；不建议旧版本继续写入已升级的数据库。先升级 Server、确认 `/health/ready` 返回 200，再升级 Agent。
 - **运行日志标识升级**：Server 启动时自动把 `run_logs` 主键从 `(run_id, seq)` 改为自增 `id`，并新增 `source`（`agent`/`server`）与 `source_seq` 两列及 `(run_id, source, source_seq)` 唯一索引。历史行按原 `seq` 升序保留并重新分配 `id`，其中 `seq >= 2^62` 的行（旧 dispatcher 的服务端诊断日志高位段）回填为 `source='server'`，其余为 `agent`；日志内容、时间戳与来源序号均不改写，重复启动不会重复迁移。REST 分页参数由 `before_seq` 改为 `before_id`（旧参数被接受但忽略），Agent 协议 `LogEntry` 新增可选 `source` 字段：未升级的 Agent 留空时按 `agent` 归类，因此**可以先升级 Server 再滚动升级 Agent**。如需回滚到旧版本 Server，必须恢复升级前的数据库备份。

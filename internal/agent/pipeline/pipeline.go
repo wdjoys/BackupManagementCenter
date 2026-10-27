@@ -94,27 +94,28 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.2f %s", v, units[i])
 }
 
-// uploadProgressGate 决定上传进度是否对外上报/记录：每跨过 10% 一档，
-// 或距上次上报满 1 分钟一次，以先到者为准。restic 扫描期间总量会增长，
-// 百分比可能回退，档位只前进不回退。
+// uploadProgressGate 决定上传进度是否上报/记录：每跨过一个 10% 档位必报一次，
+// 另外每满 1 分钟再报一次，两条节奏互不影响（跨档不会把分钟节奏往后推）。
+// restic 扫描期间总量会增长，百分比可能回退，档位只前进不回退。
 type uploadProgressGate struct {
 	lastStep   int
-	lastReport time.Time
+	lastMinute time.Time
 	now        func() time.Time
 }
 
 func (g *uploadProgressGate) allow(percent float64) bool {
 	now := g.now()
+	report := false
 	if step := int(percent) / 10; step > g.lastStep && step < 10 {
 		g.lastStep = step
-		g.lastReport = now
-		return true
+		report = true
 	}
-	if !g.lastReport.IsZero() && now.Sub(g.lastReport) < time.Minute {
-		return false
+	// 首条进度立即上报；之后每分钟至少一条心跳，避免长时间停在同档位时日志静默。
+	if g.lastMinute.IsZero() || now.Sub(g.lastMinute) >= time.Minute {
+		g.lastMinute = now
+		report = true
 	}
-	g.lastReport = now
-	return true
+	return report
 }
 
 // describeBackupSource 生成不含凭据的备份源描述，用于运行日志。

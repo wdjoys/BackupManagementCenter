@@ -5,6 +5,9 @@ services:
     container_name: bmc-agent
     # Agent 镜像地址
     image: ${BMC_AGENT_IMAGE:-wdjoys/backup-management-center-agent:latest}
+    # 与 Server 模板一致：升级后 docker compose up -d 必须真正拉取新镜像，
+    # 否则本地同名标签的旧镜像会让 Agent 一直停在旧版本行为。
+    pull_policy: always
     build:
       context: ..
       dockerfile: Dockerfile.agent

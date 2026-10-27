@@ -211,6 +211,13 @@ jobs:
 
             deploy() {
               dir="$1"
+              # up -d 不会为已存在的本地同名标签重新拉取镜像；宿主机 compose 若未写
+              # pull_policy，新镜像永远不会生效（Agent 会一直跑旧代码）。这里显式拉取，
+              # 拉取失败只告警，避免镜像仓库短暂不可用阻塞整轮部署。
+              if ! pull_output="$(cd "$dir" && docker compose -f docker-compose.yml pull -q 2>&1)"; then
+                printf '%s\n' "$pull_output"
+                echo "::warning::镜像拉取失败，继续使用本地镜像 $dir"
+              fi
               if ! output="$(cd "$dir" && docker compose -f docker-compose.yml up -d --no-build --remove-orphans 2>&1)"; then
                 printf '%s\n' "$output"
                 echo "::error::compose 更新失败 $dir :: $(printf '%s' "$output" | tail -n 5 | tr '\n' ' ' | cut -c1-300)"

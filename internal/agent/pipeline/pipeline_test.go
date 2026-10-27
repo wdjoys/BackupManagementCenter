@@ -402,7 +402,7 @@ func (backupScriptExecutor) Run(_ context.Context, cmd backup.Cmd, onStdout func
 	return 0, nil
 }
 
-func TestUploadProgressGateReportsAtDecilesOrEveryMinute(t *testing.T) {
+func TestUploadProgressGateReportsAtDecilesAndEveryMinute(t *testing.T) {
 	now := time.Unix(0, 0)
 	g := &uploadProgressGate{now: func() time.Time { return now }}
 
@@ -414,20 +414,22 @@ func TestUploadProgressGateReportsAtDecilesOrEveryMinute(t *testing.T) {
 	}
 
 	check(0, true) // 首条立即上报
-	now = now.Add(30 * time.Second)
-	check(3, false) // 同档位且不足 1 分钟
-	now = now.Add(31 * time.Second)
-	check(11, true) // 跨 10% 档位
-	now = now.Add(9 * time.Second)
-	check(15, false) // 同档位未满 1 分钟
-	now = now.Add(52 * time.Second)
-	check(15, true) // 满 1 分钟兜底上报
+	now = now.Add(5 * time.Second)
+	check(10, true) // 跨 10% 档位
+	now = now.Add(5 * time.Second)
+	check(11, false) // 同档位且不足 1 分钟
+	now = now.Add(50 * time.Second)
+	check(11, true) // 满 1 分钟：跨档不推迟分钟心跳
 	now = now.Add(time.Second)
-	check(30, true) // 跨 10% 档位
+	check(20, true) // 跨 10% 档位
+	now = now.Add(58 * time.Second)
+	check(21, false) // 同档位未满 1 分钟
 	now = now.Add(time.Second)
-	check(25, false) // 档位回退不算跨档，且未满 1 分钟
+	check(21, true) // 第二次分钟心跳
+	now = now.Add(time.Second)
+	check(15, false) // 档位回退不算跨档，且未到下一分钟
 	now = now.Add(time.Minute)
-	check(100, true) // 100% 不是 10% 档位，靠 1 分钟兜底
+	check(100, true) // 100% 不是 10% 档位，靠分钟心跳
 }
 
 func TestRunBackupReportsSnapshotProgressAndLogs(t *testing.T) {

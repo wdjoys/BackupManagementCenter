@@ -3,8 +3,10 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"backupmanagementcenter/internal/model"
+	"backupmanagementcenter/internal/server/notification"
 	"backupmanagementcenter/internal/server/store"
 )
 
@@ -68,4 +70,23 @@ func (s *Server) handlePutTelegramSettings(w http.ResponseWriter, r *http.Reques
 		ChatID:     ts.ChatID,
 		UpdatedAt:  ts.UpdatedAt.Format(timeRFC3339),
 	})
+}
+
+// POST /settings/telegram/test — sends a verification message with the
+// supplied credentials, falling back to the saved pair when a field is
+// empty. The token is never echoed back.
+func (s *Server) handleTestTelegramSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BotToken string `json:"bot_token"`
+		ChatID   string `json:"chat_id"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	n := notification.NewTelegramNotifier(s.ST, s.PublicURL)
+	if err := n.SendTest(r.Context(), strings.TrimSpace(body.BotToken), strings.TrimSpace(body.ChatID)); err != nil {
+		writeErr(w, http.StatusBadGateway, "telegram_test_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

@@ -171,6 +171,7 @@ func New(s *Server) http.Handler {
 			r.Post("/restores/{id}/resolve", s.handleResolveRestore)
 			r.Get("/settings/telegram", s.handleGetTelegramSettings)
 			r.Put("/settings/telegram", s.handlePutTelegramSettings)
+			r.Post("/settings/telegram/test", s.handleTestTelegramSettings)
 		})
 	})
 

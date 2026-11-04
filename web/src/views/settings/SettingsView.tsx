@@ -19,6 +19,7 @@ export const SettingsView: React.FC = () => {
   const [settings, setSettings] = useState<TelegramSettings | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
 
   const [botToken, setBotToken] = useState('')
@@ -78,6 +79,23 @@ export const SettingsView: React.FC = () => {
       toastError(isApiClientError(err) ? err.message : t('settings.save_failed'))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleTest = async () => {
+    setTesting(true)
+    setValidationError(null)
+    try {
+      // 表单中有值就用表单值，留空则由服务端回落到已保存的配置。
+      await apiPost('/settings/telegram/test', {
+        bot_token: botToken.trim(),
+        chat_id: chatId.trim(),
+      })
+      toastSuccess(t('settings.test_success'))
+    } catch (err: unknown) {
+      toastError(isApiClientError(err) ? err.message : t('settings.test_failed'))
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -247,6 +265,20 @@ export const SettingsView: React.FC = () => {
                   <Save className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
                 {t('common.save')}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleTest}
+                disabled={saving || testing}
+                className="h-9 text-xs gap-1.5"
+              >
+                {testing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                {t('settings.test_send')}
               </Button>
             </div>
           </form>

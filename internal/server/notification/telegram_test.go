@@ -342,3 +342,67 @@ func TestNopNotifierIsNoop(t *testing.T) {
 		t.Fatalf("nop notifier returned error: %v", err)
 	}
 }
+
+func TestSendTest(t *testing.T) {
+	st := &fakeStore{settings: &model.TelegramSettings{BotToken: "12345:SECRET-TOKEN", ChatID: "-10099"}}
+
+	t.Run("explicit credentials win over stored settings", func(t *testing.T) {
+		var got capturedRequest
+		rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			got.req = r
+			if err := json.NewDecoder(r.Body).Decode(&got.body); err != nil {
+				t.Fatal(err)
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Header: make(http.Header)}, nil
+		})
+		if err := newTestNotifier(st, rt, "").SendTest(context.Background(), "999:OTHER", "-2002"); err != nil {
+			t.Fatal(err)
+		}
+		if got.req.URL.Path != "/bot999:OTHER/sendMessage" {
+			t.Fatalf("path=%s, want explicit token", got.req.URL.Path)
+		}
+		if got.body.ChatID != "-2002" {
+			t.Fatalf("chat_id=%s, want explicit chat", got.body.ChatID)
+		}
+		if !strings.Contains(got.body.Text, "测试消息") {
+			t.Fatalf("text=%q, want test message", got.body.Text)
+		}
+	})
+
+	t.Run("empty credentials fall back to stored settings", func(t *testing.T) {
+		var got capturedRequest
+		rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			got.req = r
+			if err := json.NewDecoder(r.Body).Decode(&got.body); err != nil {
+				t.Fatal(err)
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Header: make(http.Header)}, nil
+		})
+		if err := newTestNotifier(st, rt, "").SendTest(context.Background(), "", ""); err != nil {
+			t.Fatal(err)
+		}
+		if got.req.URL.Path != "/bot12345:SECRET-TOKEN/sendMessage" || got.body.ChatID != "-10099" {
+			t.Fatalf("stored settings not used: path=%s chat=%s", got.req.URL.Path, got.body.ChatID)
+		}
+	})
+
+	t.Run("unconfigured", func(t *testing.T) {
+		rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("must not send when unconfigured")
+			return nil, nil
+		})
+		if err := newTestNotifier(&fakeStore{}, rt, "").SendTest(context.Background(), "", ""); err == nil {
+			t.Fatal("expected error when unconfigured")
+		}
+	})
+
+	t.Run("api error is scrubbed", func(t *testing.T) {
+		rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, &url.Error{Op: "Post", URL: "https://api.telegram.org/bot12345:SECRET-TOKEN/sendMessage", Err: errors.New("boom")}
+		})
+		err := newTestNotifier(st, rt, "").SendTest(context.Background(), "", "")
+		if err == nil || strings.Contains(err.Error(), "SECRET-TOKEN") {
+			t.Fatalf("error must be non-nil and scrubbed: %v", err)
+		}
+	})
+}

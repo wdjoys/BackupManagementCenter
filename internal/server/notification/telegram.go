@@ -92,6 +92,32 @@ func (t *TelegramNotifier) NotifyPlanFailure(ctx context.Context, runID string) 
 	return t.sendMessage(ctx, settings.BotToken, settings.ChatID, renderFailure(*run, *plan, t.publicURL))
 }
 
+// SendTest delivers a fixed verification message using the supplied
+// credentials. Empty fields fall back to the stored settings, so the UI can
+// verify either unsaved input or an already-saved configuration without ever
+// reading the token back.
+func (t *TelegramNotifier) SendTest(ctx context.Context, botToken, chatID string) error {
+	if botToken == "" || chatID == "" {
+		settings, err := t.st.GetTelegramSettings(ctx)
+		if errors.Is(err, store.ErrNotFound) {
+			return errors.New("telegram is not configured")
+		}
+		if err != nil {
+			return fmt.Errorf("telegram test: load settings: %w", err)
+		}
+		if botToken == "" {
+			botToken = settings.BotToken
+		}
+		if chatID == "" {
+			chatID = settings.ChatID
+		}
+	}
+	if botToken == "" || chatID == "" {
+		return errors.New("telegram is not configured")
+	}
+	return t.sendMessage(ctx, botToken, chatID, "BMC Telegram 测试消息\n收到此消息说明失败通知配置有效。")
+}
+
 type sendMessageRequest struct {
 	ChatID                string `json:"chat_id"`
 	Text                  string `json:"text"`

@@ -398,6 +398,9 @@ export default {
       "unboundSuccessfully": "Repository unbound successfully",
       "unbindFailed": "Failed to unbind repository",
       "retryFailed": "Failed to dispatch retry task",
+      "checkNow": "Check now",
+      "checkTriggered": "Check task submitted — track it in Runs",
+      "checkTriggerFailed": "Failed to submit repository check",
       "checkFailedHint": "Repository check failed, see run history for details"
     },
     "subtitle": "Rclone storage targets and restic repositories",

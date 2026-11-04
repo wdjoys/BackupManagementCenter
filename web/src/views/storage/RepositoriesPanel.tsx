@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { PageLoadingState } from '@/components/PageLoadingState'
 import { formatDateTime, translateEnum } from '@/i18n'
 import type { Repository } from '@/api/types'
-import { Link, RefreshCw, Info, RotateCcw, Unlink, Loader2 } from 'lucide-react'
+import { Link, RefreshCw, Info, RotateCcw, Unlink, Loader2, ShieldCheck } from 'lucide-react'
 
 export interface RepositoriesPanelProps {
   repos: Repository[]
@@ -22,6 +22,7 @@ export interface RepositoriesPanelProps {
   onLoadRepos: () => void
   onOpenBind: () => void
   onRetryRepo: (repo: Repository) => void
+  onRunCheck: (repo: Repository) => void
   onOpenUnbind: (repo: Repository) => void
 }
 
@@ -40,6 +41,7 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
   onLoadRepos,
   onOpenBind,
   onRetryRepo,
+  onRunCheck,
   onOpenUnbind,
 }) => {
   const { t } = useTranslation()
@@ -148,7 +150,22 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                             </TableCell>
                             <TableCell className="text-xs">
                               <div className="flex items-center gap-1">
-                                {repo.status !== 'ready' && (
+                                {repo.status === 'ready' ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled={actionLoading}
+                                    className="h-7 text-xs text-primary gap-1"
+                                    onClick={() => onRunCheck(repo)}
+                                  >
+                                    {actionLoading ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                                    ) : (
+                                      <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+                                    )}
+                                    {t('storage.repositoryDialog.checkNow')}
+                                  </Button>
+                                ) : (
                                   <Button
                                     variant="ghost"
                                     size="sm"
@@ -213,7 +230,22 @@ export const RepositoriesPanel: React.FC<RepositoriesPanelProps> = ({
                           </div>
                         )}
                         <div className="flex items-center justify-end gap-2 pt-1">
-                          {repo.status !== 'ready' && (
+                          {repo.status === 'ready' ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={actionLoading}
+                              className="h-7 text-xs text-primary gap-1"
+                              onClick={() => onRunCheck(repo)}
+                            >
+                              {actionLoading ? (
+                                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+                              )}
+                              {t('storage.repositoryDialog.checkNow')}
+                            </Button>
+                          ) : (
                             <Button
                               variant="outline"
                               size="sm"

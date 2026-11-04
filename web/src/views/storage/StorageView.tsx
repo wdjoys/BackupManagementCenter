@@ -251,12 +251,12 @@ export const StorageView: React.FC = () => {
     }
   }
 
-  const handleRetryRepo = async (repo: Repository) => {
+  // 仓库检查与"重试初始化"共用 POST /repositories/{id}/check；成功/失败文案按入口区分。
+  const submitRepoCheck = async (repo: Repository, successMessage: string, failureMessage: string) => {
     setRepoActionLoading((prev) => ({ ...prev, [repo.id]: true }))
     try {
-      // 服务端只有 /check（触发一次 restic check）；此前的 /retry 未注册，必然 404。
       await apiPost(`/repositories/${repo.id}/check`, {})
-      toastSuccess(t('storage.repositoryDialog.retried'))
+      toastSuccess(successMessage)
       await loadRepos()
     } catch (err: unknown) {
       // toast 文案一律走 i18n：已映射的错误码给出本地化原因；未映射的码用本地化
@@ -264,11 +264,24 @@ export const StorageView: React.FC = () => {
       toastError(
         isApiClientError(err)
           ? (localizeErrorCode(err.code) ?? t('storage.repositoryDialog.retryFailedCode', { code: err.code }))
-          : t('storage.repositoryDialog.retryFailed')
+          : failureMessage
       )
     } finally {
       setRepoActionLoading((prev) => ({ ...prev, [repo.id]: false }))
     }
+  }
+
+  const handleRetryRepo = (repo: Repository) => {
+    void submitRepoCheck(repo, t('storage.repositoryDialog.retried'), t('storage.repositoryDialog.retryFailed'))
+  }
+
+  // 仓库就绪时的手动校验入口：立即跑一次 restic check（完整校验会读数据子集）。
+  const handleRunCheck = (repo: Repository) => {
+    void submitRepoCheck(
+      repo,
+      t('storage.repositoryDialog.checkTriggered'),
+      t('storage.repositoryDialog.checkTriggerFailed')
+    )
   }
 
   // Unbind repo flow
@@ -340,6 +353,7 @@ export const StorageView: React.FC = () => {
             onLoadRepos={loadRepos}
             onOpenBind={openBindRepoDialog}
             onRetryRepo={handleRetryRepo}
+            onRunCheck={handleRunCheck}
             onOpenUnbind={openUnbindRepo}
           />
         </TabsContent>

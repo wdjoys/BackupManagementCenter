@@ -398,6 +398,9 @@ export default {
       "unboundSuccessfully": "仓库已成功解绑",
       "unbindFailed": "解绑仓库失败",
       "retryFailed": "重试任务下发失败",
+      "checkNow": "立即校验",
+      "checkTriggered": "校验任务已提交，可在运行记录查看结果",
+      "checkTriggerFailed": "提交校验任务失败",
       "checkFailedHint": "仓库检查失败，详情见运行记录"
     },
     "subtitle": "Rclone 存储目标与 Restic 备份仓库管理",

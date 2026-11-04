@@ -136,17 +136,63 @@ func Execute(ctx context.Context, d Deps, tempDir string, op bmcv1.ExecuteComman
 	// Tell the backup package which tool paths to use
 	backup.SetToolPaths(d.Tools)
 
+	res, err := executeOp(ctx, d, tempDir, op, params, secrets)
+	// 陈旧仓库锁（exit 11）此前会让单个仓库永久不可用：备份、校验、快照列举全被拒，
+	// 周检永远失败→last_check_at 不更新→仓库长期停在「待检查」，而唯一的自愈路径
+	// （unlock 后重试）只存在于删除快照。restic 自己的 unlock 只删除陈旧锁（30 分钟
+	// 以上，或同主机进程已退出），活着的 prune 锁不会被抢走，因此对所有操作重试一次。
+	if err != nil && ctx.Err() == nil && restic.IsRepositoryLocked(err) {
+		if retried, retryErr, ok := retryAfterUnlock(ctx, d, tempDir, op, params, secrets); ok {
+			res, err = retried, retryErr
+		}
+	}
+	if op == bmcv1.ExecuteCommand_BACKUP && err != nil {
+		if ctx.Err() != nil {
+			d.logf("warn", "备份已取消")
+		} else {
+			d.logf("error", "备份失败：%v", err)
+		}
+	}
+	return res, err
+}
+
+// retryAfterUnlock 清理陈旧锁后重试一次操作。ok=false 表示不适用（参数里没有仓库、
+// unlock 本身失败等），调用方保留原始错误。重试使用独立子目录，避免上次尝试残留的
+// 导出文件混进本次备份。
+func retryAfterUnlock(ctx context.Context, d Deps, tempDir string, op bmcv1.ExecuteCommand_Operation, params []byte, secrets backup.SecretBundle) (res *Result, err error, ok bool) {
+	var payload struct {
+		Repository model.RepoAccess `json:"repository"`
+	}
+	if json.Unmarshal(params, &payload) != nil || payload.Repository.RepositoryPath == "" {
+		return nil, nil, false
+	}
+	opts, oerr := newResticOpts(d, payload.Repository.RepositoryPath, tempDir, secrets)
+	if oerr != nil {
+		return nil, nil, false
+	}
+	d.logf("warn", "仓库被陈旧锁占用（restic exit 11），执行 restic unlock 后重试一次")
+	if uerr := restic.Unlock(ctx, d.Exec, opts); uerr != nil {
+		d.logf("warn", "restic unlock 失败，保留原始错误：%v", uerr)
+		return nil, nil, false
+	}
+	retryDir, merr := os.MkdirTemp(tempDir, "retry-")
+	if merr != nil {
+		return nil, nil, false
+	}
+	res, err = executeOp(ctx, d, retryDir, op, params, secrets)
+	if err != nil {
+		d.logf("warn", "清理陈旧锁后重试仍失败：%v", err)
+		return res, err, true
+	}
+	d.logf("info", "陈旧仓库锁已清理，重试成功")
+	return res, err, true
+}
+
+// executeOp 是 Execute 的单次执行体；锁恢复重试会再次调用它。
+func executeOp(ctx context.Context, d Deps, tempDir string, op bmcv1.ExecuteCommand_Operation, params []byte, secrets backup.SecretBundle) (*Result, error) {
 	switch op {
 	case bmcv1.ExecuteCommand_BACKUP:
-		res, err := runBackup(ctx, d, tempDir, params, secrets)
-		if err != nil {
-			if ctx.Err() != nil {
-				d.logf("warn", "备份已取消")
-			} else {
-				d.logf("error", "备份失败：%v", err)
-			}
-		}
-		return res, err
+		return runBackup(ctx, d, tempDir, params, secrets)
 	case bmcv1.ExecuteCommand_RESTORE:
 		return runRestore(ctx, d, tempDir, params, secrets, false)
 	case bmcv1.ExecuteCommand_RESTORE_DRY_RUN:

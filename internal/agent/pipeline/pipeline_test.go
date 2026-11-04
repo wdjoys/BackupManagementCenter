@@ -922,3 +922,81 @@ func TestValidateAllowedPathsDistinguishesMissingFromOutside(t *testing.T) {
 		t.Fatalf("path inside the root must pass, got %v", err)
 	}
 }
+
+// lockScriptExecutor 按调用顺序返回预设结果，用于验证锁恢复重试。
+type lockScriptExecutor struct {
+	steps []struct {
+		code           int
+		stdout, stderr string
+	}
+	cmds []backup.Cmd
+}
+
+func (e *lockScriptExecutor) Run(_ context.Context, cmd backup.Cmd, onStdout, onStderr func(string)) (int, error) {
+	e.cmds = append(e.cmds, cmd)
+	if len(e.cmds) > len(e.steps) {
+		return 0, fmt.Errorf("unexpected command %q", cmd.Args)
+	}
+	step := e.steps[len(e.cmds)-1]
+	if onStdout != nil && step.stdout != "" {
+		onStdout(step.stdout)
+	}
+	if onStderr != nil && step.stderr != "" {
+		onStderr(step.stderr)
+	}
+	return step.code, nil
+}
+
+// 陈旧仓库锁（restic exit 11）必须先 unlock 再重试一次：此前只有删除快照路径
+// 会自愈，备份/校验/快照列举反复失败，仓库永远停在「待检查」。
+func TestExecuteRecoversStaleRepositoryLock(t *testing.T) {
+	exec := &lockScriptExecutor{steps: []struct {
+		code           int
+		stdout, stderr string
+	}{
+		{code: 11, stderr: "unable to create lock in backend: repository is already locked exclusively by PID 28300 on 4a31f1f6b016"},
+		{code: 0},
+		{code: 0, stdout: "[]"},
+	}}
+	var logs []string
+	params, err := json.Marshal(model.SnapshotsTask{Repository: model.RepoAccess{RepositoryPath: "rclone:remote:/repo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Execute(context.Background(), Deps{
+		Exec: exec,
+		Logf: func(_ string, format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+	}, t.TempDir(), bmcv1.ExecuteCommand_SNAPSHOTS, params, backup.SecretBundle{ResticPassword: "pw"})
+	if err != nil {
+		t.Fatalf("Execute SNAPSHOTS: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected result")
+	}
+	if len(exec.cmds) != 3 {
+		t.Fatalf("command count = %d, want 3: %#v", len(exec.cmds), exec.cmds)
+	}
+	if exec.cmds[1].Args[0] != "unlock" {
+		t.Fatalf("second command = %q, want restic unlock", exec.cmds[1].Args)
+	}
+	if joined := strings.Join(logs, "\n"); !strings.Contains(joined, "restic unlock") || !strings.Contains(joined, "重试成功") {
+		t.Fatalf("missing recovery logs:\n%s", joined)
+	}
+}
+
+func TestExecuteDoesNotUnlockForNonLockFailure(t *testing.T) {
+	exec := &lockScriptExecutor{steps: []struct {
+		code           int
+		stdout, stderr string
+	}{{code: 1, stderr: "permission denied"}}}
+	params, err := json.Marshal(model.SnapshotsTask{Repository: model.RepoAccess{RepositoryPath: "rclone:remote:/repo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Execute(context.Background(), Deps{Exec: exec}, t.TempDir(), bmcv1.ExecuteCommand_SNAPSHOTS, params, backup.SecretBundle{ResticPassword: "pw"}); err == nil {
+		t.Fatal("expected failure")
+	}
+	if len(exec.cmds) != 1 {
+		t.Fatalf("command count = %d, want 1", len(exec.cmds))
+	}
+}

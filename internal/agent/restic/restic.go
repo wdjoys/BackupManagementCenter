@@ -525,6 +525,25 @@ func DeleteSnapshots(ctx context.Context, exec backup.Executor, opts Options, sn
 	return runDelete(ctx, exec, opts, args)
 }
 
+// Unlock removes stale locks left behind by crashed or killed restic processes.
+// restic 只删除自己判定为陈旧的锁（30 分钟以上，或同主机进程已退出），
+// 因此对正在运行的 prune 是安全的。
+func Unlock(ctx context.Context, exec backup.Executor, opts Options) error {
+	if opts.Exe == "" {
+		return fmt.Errorf("restic exe not set")
+	}
+	args := append([]string{"unlock"}, resticRepositoryArgs(opts)...)
+	_, err := runResticDeleteCommand(ctx, exec, opts, args)
+	return err
+}
+
+// IsRepositoryLocked reports whether err carries restic's "repository locked"
+// exit code (11), possibly wrapped by pipeline errors.
+func IsRepositoryLocked(err error) bool {
+	var resticErr *ResticError
+	return errors.As(err, &resticErr) && resticErr.Code == model.ErrRepositoryLocked
+}
+
 func resticRepositoryArgs(opts Options) []string {
 	args := make([]string, 0, 6)
 	if opts.RepoPath != "" {

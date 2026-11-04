@@ -3,6 +3,7 @@ package dispatchgrpc
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ type fakeStore struct {
 	finishedRestores []store.FinishRestoreRunInput
 	repoBlocked      bool
 	transitionError  error
+	logs             []model.RunLog
 }
 
 func newFakeStore() *fakeStore {
@@ -134,8 +136,23 @@ func (f *fakeStore) PruneHistory(context.Context, time.Time) (store.HistoryPrune
 	return store.HistoryPruneResult{}, nil
 }
 
-func (f *fakeStore) AppendRunLogs(_ context.Context, _ []model.RunLog) error {
+func (f *fakeStore) AppendRunLogs(_ context.Context, logs []model.RunLog) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.logs = append(f.logs, logs...)
 	return nil
+}
+
+func (f *fakeStore) logsFor(runID string) []model.RunLog {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []model.RunLog
+	for _, l := range f.logs {
+		if l.RunID == runID {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func (f *fakeStore) ListRunsByStatus(_ context.Context, statuses []string) ([]model.Run, error) {
@@ -390,5 +407,43 @@ func TestCheckTimeoutsRunningTimeoutCancelsAgent(t *testing.T) {
 	}
 	if run := st.snapshot("run-cancel"); run == nil || run.Status != model.RunFailed || run.ErrorCode != model.ErrTimeout {
 		t.Fatalf("run not marked as timeout failure: %+v", run)
+	}
+}
+
+// 仓库校验在大仓库上本就超过 5 分钟：watchdog 必须按 check 的 30 分钟上限，
+// 而不是系统任务默认 300s，否则运行会被误杀；且超时失败必须留下可读日志，
+// 否则界面上只有一条没有明细的「失败」。
+func TestCheckTimeoutsUsesCheckTimeoutAndLogs(t *testing.T) {
+	st := newFakeStore()
+	started := time.Now().UTC().Add(-10 * time.Minute)
+	r := queuedRun("run-check")
+	r.PlanID = ""
+	r.Operation = model.OpCheck
+	r.Status = model.RunRunning
+	r.StartedAt = &started
+	st.addRun(r)
+
+	d, _ := newTestDispatcher(st, &fakeSource{})
+	d.checkTimeouts()
+	if got := st.snapshot("run-check"); got.Status != model.RunRunning {
+		t.Fatalf("10 分钟的仓库校验不应按 5 分钟超时: %+v", got)
+	}
+
+	long := time.Now().UTC().Add(-31 * time.Minute)
+	overdue := queuedRun("run-check-overdue")
+	overdue.PlanID = ""
+	overdue.Operation = model.OpCheck
+	overdue.Status = model.RunRunning
+	overdue.StartedAt = &long
+	st.addRun(overdue)
+
+	d.checkTimeouts()
+	got := st.snapshot("run-check-overdue")
+	if got.Status != model.RunFailed || got.ErrorCode != model.ErrTimeout {
+		t.Fatalf("超过 30 分钟的仓库校验应超时失败: %+v", got)
+	}
+	logs := st.logsFor("run-check-overdue")
+	if len(logs) == 0 || !strings.Contains(logs[0].Message, "运行超时") {
+		t.Fatalf("超时失败必须留下可读日志: %+v", logs)
 	}
 }

@@ -1287,14 +1287,17 @@ func runCheck(ctx context.Context, d Deps, tempDir string, params []byte, secret
 	if err != nil {
 		return nil, err
 	}
-	if err := restic.Check(ctx, d.Exec, opts); err != nil {
-		return nil, &PipelineError{Code: "check_failed", Message: "restic check failed", Cause: err}
-	}
 	// 检查成功时此前不写任何日志，运维只能看到"已分发/运行成功"三行，无法判断这次
-	// 到底只做了结构校验还是读了数据子集 —— 而后者才是位腐检测的关键。补一行摘要。
+	// 到底只做了结构校验还是读了数据子集 —— 而后者才是位腐检测的关键。
 	scope := "仅结构校验（未读数据）"
 	if opts.ReadDataSubset != "" && opts.ReadDataSubset != "0" {
 		scope = "结构校验 + 数据子集 " + opts.ReadDataSubset
+	}
+	// 先写一行"开始"：校验被取消或超时（大仓库读数据子集可能跑很久）时，
+	// 运行日志里至少能看出这次校验的起点与范围，而不是只剩"已分发"。
+	d.logf("info", "开始仓库检查：%s", scope)
+	if err := restic.Check(ctx, d.Exec, opts); err != nil {
+		return nil, &PipelineError{Code: "check_failed", Message: "restic check failed", Cause: err}
 	}
 	d.logf("info", "仓库检查完成：%s", scope)
 	resultJSON, _ := json.Marshal(map[string]bool{"checked": true})

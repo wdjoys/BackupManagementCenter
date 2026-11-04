@@ -859,6 +859,7 @@ func (d *Dispatcher) checkTimeouts() {
 					d.Enqueue(ctx, run.ID, run.AgentID, run.RepositoryID)
 				}
 			} else {
+				d.appendDispatchLog(ctx, run.ID, "warn", "Agent 连接租约过期（下发后长时间未开始执行），运行判定失败")
 				if err := d.store.TransitionRun(ctx, run.ID, run.Status, model.RunFailed, func(r *model.Run) {
 					now := time.Now().UTC()
 					r.FinishedAt = &now
@@ -872,10 +873,15 @@ func (d *Dispatcher) checkTimeouts() {
 			continue
 		}
 		// 系统维护任务没有 Plan 可读取超时；forget 可能因 --retry-lock 等待
-		// 远端锁释放，不能沿用普通 5 分钟默认值。
+		// 远端锁释放，check 在大仓库/开启 --read-data-subset 时也远超 5 分钟，
+		// 都不能沿用普通 5 分钟默认值——此前仓库校验被 5 分钟硬失败，运行记录
+		// 只剩一条没有日志的「失败」，而调用方（手工校验/周检）本来就按 30 分钟设计。
 		timeoutSeconds := 300
-		if run.Operation == model.OpForget {
+		switch run.Operation {
+		case model.OpForget:
 			timeoutSeconds = 15 * 60
+		case model.OpCheck:
+			timeoutSeconds = 30 * 60
 		}
 		if run.PlanID != "" {
 			plan, err := d.store.GetPlan(ctx, run.PlanID)
@@ -897,6 +903,10 @@ func (d *Dispatcher) checkTimeouts() {
 		if elapsed > timeout {
 			// Timeout exceeded
 			log.Printf("watchdog: run %s timed out (status=%s, elapsed=%v, timeout=%v)", run.ID, run.Status, elapsed, timeout)
+			// 运行记录必须留下可读原因：watchdog 直接改写终态，不写日志时用户只看到
+			// 一条「失败」且没有任何明细（实测仓库校验被 5 分钟超时杀掉的场景）。
+			d.appendDispatchLog(ctx, run.ID, "warn", fmt.Sprintf(
+				"运行超时：已运行 %s，超过上限 %s，已请求 Agent 停止", elapsed.Round(time.Second), timeout))
 
 			if run.Status == model.RunRunning {
 				// Running but no response for 30s -> force fail

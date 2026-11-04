@@ -11,6 +11,7 @@ export default {
     "reset": "Reset",
     "run": "Run",
     "actions": "Actions",
+    "details": "Details",
     "name": "Name",
     "status": "Status",
     "never": "Never",

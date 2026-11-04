@@ -457,18 +457,23 @@ export const RunsView: React.FC = () => {
                               {formatDuration(run.started_at ?? null, run.finished_at ?? null)}
                             </TableCell>
                             <TableCell className="text-xs">
-                              {canCancel && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={(e) => openCancelDialog(e, run)}
-                                  className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
-                                  aria-label={t('runs.cancel')}
-                                >
-                                  <XSquare className="h-3.5 w-3.5" aria-hidden="true" />
-                                  {t('common.cancel')}
+                              <div className="flex items-center gap-1">
+                                {canCancel && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={(e) => openCancelDialog(e, run)}
+                                    className="h-7 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 gap-1"
+                                    aria-label={t('runs.cancel')}
+                                  >
+                                    <XSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                                    {t('common.cancel')}
+                                  </Button>
+                                )}
+                                <Button asChild variant="outline" size="sm" className="h-7 text-xs">
+                                  <Link to={`/runs/${run.id}`}>{t('common.details')}</Link>
                                 </Button>
-                              )}
+                              </div>
                             </TableCell>
                           </TableRow>
                         )
@@ -541,7 +546,7 @@ export const RunsView: React.FC = () => {
                               className="h-7 text-xs"
                             >
                               <Link to={`/runs/${run.id}`}>
-                                {t('common.actions')}
+                                {t('common.details')}
                               </Link>
                             </Button>
                           </div>

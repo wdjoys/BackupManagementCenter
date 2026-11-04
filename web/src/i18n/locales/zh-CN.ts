@@ -11,6 +11,7 @@ export default {
     "reset": "重置",
     "run": "运行",
     "actions": "操作",
+    "details": "详情",
     "name": "名称",
     "status": "状态",
     "never": "从未",
